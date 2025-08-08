@@ -109,3 +109,11 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
 alias g="git"
+
+mosht() {
+  if [ -z "$1" ]; then
+    echo "Usage: mosht hostname"
+    return 1
+  fi
+  mosh "$1" -- tmux new -A -s default
+}
