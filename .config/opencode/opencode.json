@@ -4,6 +4,7 @@
   "model": "github-copilot/claude-opus-4-5",
   "autoupdate": true,
   "share": "disabled",
+  "instructions": "Never Git push without explicit permission! When you need to look up documentation for libraries, frameworks, or APIs, use the context7 MCP tools.",
   "watcher": {
     "ignore": [
       "node_modules/**",
