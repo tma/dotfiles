@@ -6,7 +6,8 @@
   "share": "disabled",
   "instructions": [
     "Never Git push without explicit permission!",
-    "When you need to look up documentation for libraries, frameworks, or APIs, use the context7 MCP tools."
+    "When you need to look up documentation for libraries, frameworks, or APIs, use the context7 MCP tools.",
+    "When searching for open source code examples, implementations, or GitHub issues, use the github MCP tools."
   ],
   "watcher": {
     "ignore": [
@@ -23,6 +24,16 @@
     "context7": {
       "type": "remote",
       "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    },
+    "github": {
+      "type": "local",
+      "command": ["sh", "-c", "docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token) ghcr.io/github/github-mcp-server"],
+      "enabled": true
+    },
+    "duckduckgo": {
+      "type": "local",
+      "command": ["docker", "run", "-i", "--rm", "mcp/duckduckgo"],
       "enabled": true
     }
   }
