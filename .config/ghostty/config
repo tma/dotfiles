@@ -1,0 +1,6 @@
+shell-integration-features = true
+term = xterm-256color
+macos-option-as-alt = false
+font-family = "Menlo"
+font-thicken = true
+window-padding-x = 12
