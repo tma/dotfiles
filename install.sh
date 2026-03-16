@@ -4,13 +4,37 @@ set -euo pipefail
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$HOME/.opencode/bin:$PATH"
 
-append_if_missing() {
-  local file="$1"
-  local line="$2"
+link_dotfile() {
+  local source_path="$1"
+  local target_path="$2"
 
-  touch "$file"
-  if ! grep -Fqx "$line" "$file"; then
-    printf '%s\n' "$line" >> "$file"
+  if [ -d "$source_path" ]; then
+    mkdir -p "$target_path"
+    for subitem in "$source_path"/*; do
+      [ -e "$subitem" ] || continue
+      local subname
+      subname="$(basename "$subitem")"
+      ln -sfn "$subitem" "$target_path/$subname"
+      echo "Linked $target_path/$subname -> $subitem"
+    done
+    return
+  fi
+
+  ln -sfn "$source_path" "$target_path"
+  echo "Linked $target_path -> $source_path"
+}
+
+ensure_local_shell_file() {
+  local file="$1"
+
+  if [ ! -e "$file" ]; then
+    printf '%s\n' '# Local shell overrides.' > "$file"
+    echo "Created $file"
+    return
+  fi
+
+  if [ -L "$file" ]; then
+    echo "Skipping managed symlink $file"
   fi
 }
 
@@ -18,24 +42,14 @@ append_if_missing() {
 for file in "$DOTFILES_DIR"/.*; do
   filename="$(basename "$file")"
   case "$filename" in
-    .|..|.git|.gitignore|.gitmodules) continue ;;
+    .|..|.git|.gitignore|.gitmodules|.bashrc.local|.zshrc.local) continue ;;
   esac
 
-  target="$HOME/$filename"
-
-  if [ -d "$file" ]; then
-    mkdir -p "$target"
-    for subitem in "$file"/*; do
-      [ -e "$subitem" ] || continue
-      subname="$(basename "$subitem")"
-      ln -sfn "$subitem" "$target/$subname"
-      echo "Linked $target/$subname -> $subitem"
-    done
-  else
-    ln -sf "$file" "$target"
-    echo "Linked $target -> $file"
-  fi
+  link_dotfile "$file" "$HOME/$filename"
 done
+
+ensure_local_shell_file "$HOME/.bashrc.local"
+ensure_local_shell_file "$HOME/.zshrc.local"
 
 # --- Install or update OpenCode ---
 if command -v opencode >/dev/null 2>&1; then
@@ -46,15 +60,9 @@ else
   curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 fi
 
-append_if_missing "$HOME/.bashrc" 'export PATH="$HOME/.opencode/bin:$PATH"'
-append_if_missing "$HOME/.zshrc" 'export PATH="$HOME/.opencode/bin:$PATH"'
-
-# --- Install Starship ---
-if command -v curl >/dev/null 2>&1; then
+# --- Install Starship when missing ---
+if ! command -v starship >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 fi
-
-append_if_missing "$HOME/.bashrc" 'if command -v starship >/dev/null 2>&1; then eval "$(starship init bash)"; fi'
-append_if_missing "$HOME/.zshrc" 'if command -v starship >/dev/null 2>&1; then eval "$(starship init zsh)"; fi'
 
 echo "Dotfiles installed successfully!"
