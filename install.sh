@@ -1,7 +1,18 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="$HOME/.opencode/bin:$PATH"
+
+append_if_missing() {
+  local file="$1"
+  local line="$2"
+
+  touch "$file"
+  if ! grep -Fqx "$line" "$file"; then
+    printf '%s\n' "$line" >> "$file"
+  fi
+}
 
 # --- Symlink dotfiles ---
 for file in "$DOTFILES_DIR"/.*; do
@@ -26,19 +37,24 @@ for file in "$DOTFILES_DIR"/.*; do
   fi
 done
 
-# --- Install OpenCode ---
-if ! command -v opencode &>/dev/null; then
+# --- Install or update OpenCode ---
+if command -v opencode >/dev/null 2>&1; then
+  echo "Updating OpenCode..."
+  opencode upgrade
+else
   echo "Installing OpenCode..."
-  curl -fsSL https://opencode.ai/install | bash
+  curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 fi
-export PATH="$HOME/.opencode/bin:$PATH"
 
-# Append to shell rc files only if not already present
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-  [ -f "$rc" ] || continue
-  if ! grep -q '.opencode/bin' "$rc"; then
-    echo 'export PATH="$HOME/.opencode/bin:$PATH"' >> "$rc"
-  fi
-done
+append_if_missing "$HOME/.bashrc" 'export PATH="$HOME/.opencode/bin:$PATH"'
+append_if_missing "$HOME/.zshrc" 'export PATH="$HOME/.opencode/bin:$PATH"'
+
+# --- Install Starship ---
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+fi
+
+append_if_missing "$HOME/.bashrc" 'if command -v starship >/dev/null 2>&1; then eval "$(starship init bash)"; fi'
+append_if_missing "$HOME/.zshrc" 'if command -v starship >/dev/null 2>&1; then eval "$(starship init zsh)"; fi'
 
 echo "Dotfiles installed successfully!"
