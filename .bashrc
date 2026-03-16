@@ -7,12 +7,12 @@ export PATH="$HOME/.opencode/bin:$PATH"
 if command -v gh >/dev/null 2>&1; then
 fi
 
-alias g="git"
+alias g='git'
 
 if command -v starship >/dev/null 2>&1; then
-  eval "$(starship init zsh)"
+  eval "$(starship init bash)"
 fi
 
-if [ -f "$HOME/.zshrc.local" ]; then
-  . "$HOME/.zshrc.local"
+if [ -f "$HOME/.bashrc.local" ]; then
+  . "$HOME/.bashrc.local"
 fi
