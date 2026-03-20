@@ -20,5 +20,6 @@
     "gpt-4o",
     "o4-mini*",
     "gemini-2*"
-  ]
+  ],
+  "lastChangelogVersion": "0.61.0"
 }
