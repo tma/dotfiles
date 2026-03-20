@@ -4,6 +4,9 @@ export LC_CTYPE=en_US.UTF-8
 export EDITOR="zed"
 export PATH="$HOME/.opencode/bin:$PATH"
 
+# pi coding agent — extended prompt cache (Anthropic: 1h, OpenAI: 24h)
+export PI_CACHE_RETENTION=long
+
 if command -v gh >/dev/null 2>&1; then
 fi
 

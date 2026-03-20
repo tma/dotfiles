@@ -108,6 +108,38 @@ install_starship_if_missing() {
   return 0
 }
 
+link_pi_agent() {
+  # Pi stores transient state (auth.json, sessions/, bin/) alongside config
+  # in ~/.pi/agent/. We symlink only the managed pieces individually so
+  # transient files are left untouched.
+  local pi_src="$DOTFILES_DIR/.pi/agent"
+  local pi_dest="$HOME/.pi/agent"
+  local failures=0
+
+  if [ ! -d "$pi_src" ]; then
+    return 0
+  fi
+
+  if ! mkdir -p "$pi_dest"; then
+    warn "Failed to create $pi_dest"
+    return 1
+  fi
+
+  for item in "$pi_src"/*; do
+    [ -e "$item" ] || continue
+    local name
+    name="$(basename "$item")"
+    if ln -sfn "$item" "$pi_dest/$name"; then
+      log "Linked $pi_dest/$name -> $item"
+    else
+      warn "Failed to link $pi_dest/$name"
+      failures=$((failures + 1))
+    fi
+  done
+
+  return "$failures"
+}
+
 main() {
   local failures=0
 
@@ -115,13 +147,17 @@ main() {
     local filename
     filename="$(basename "$file")"
     case "$filename" in
-      .|..|.git|.gitignore|.gitmodules|.bashrc.local|.zshrc.local) continue ;;
+      .|..|.git|.gitignore|.gitmodules|.bashrc.local|.zshrc.local|.pi) continue ;;
     esac
 
     if ! link_dotfile "$file" "$HOME/$filename"; then
       failures=$((failures + 1))
     fi
   done
+
+  if ! link_pi_agent; then
+    failures=$((failures + 1))
+  fi
 
   if ! ensure_local_shell_file "$HOME/.bashrc.local"; then
     failures=$((failures + 1))

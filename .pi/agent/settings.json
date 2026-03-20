@@ -1,0 +1,24 @@
+{
+  "defaultProvider": "github-copilot",
+  "defaultModel": "claude-opus-4.6",
+  "defaultThinkingLevel": "xhigh",
+  "editorPaddingX": 2,
+  "hideThinkingBlock": true,
+  "collapseChangelog": true,
+  "quietStartup": false,
+  "theme": "dark",
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "treeFilterMode": "default",
+  "enableSkillCommands": true,
+  "compaction": {
+    "enabled": true,
+    "keepRecentTokens": 30000
+  },
+  "enabledModels": [
+    "claude-*",
+    "gpt-4o",
+    "o4-mini*",
+    "gemini-2*"
+  ]
+}
