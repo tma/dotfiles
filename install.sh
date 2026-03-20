@@ -88,6 +88,26 @@ install_or_update_opencode() {
   return 0
 }
 
+install_or_update_pi() {
+  if ! command -v npm >/dev/null 2>&1; then
+    warn "npm not available; skipping pi install"
+    return 0
+  fi
+
+  if command -v pi >/dev/null 2>&1; then
+    log "Updating pi..."
+  else
+    log "Installing pi..."
+  fi
+
+  if npm install -g @mariozechner/pi-coding-agent; then
+    return 0
+  fi
+
+  warn "pi install failed; continuing without blocking bootstrap"
+  return 0
+}
+
 link_pi_agent() {
   # Pi stores transient state (auth.json, sessions/, bin/) alongside config
   # in ~/.pi/agent/. We symlink only the managed pieces individually so
@@ -148,6 +168,10 @@ main() {
   fi
 
   if ! install_or_update_opencode; then
+    failures=$((failures + 1))
+  fi
+
+  if ! install_or_update_pi; then
     failures=$((failures + 1))
   fi
 
