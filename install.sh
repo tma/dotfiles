@@ -88,26 +88,6 @@ install_or_update_opencode() {
   return 0
 }
 
-install_starship_if_missing() {
-  if command -v starship >/dev/null 2>&1; then
-    log "Starship already installed"
-    return 0
-  fi
-
-  if ! command -v curl >/dev/null 2>&1; then
-    warn "curl not available; skipping Starship install"
-    return 0
-  fi
-
-  log "Installing Starship..."
-  if sh -c 'curl -fsSL https://starship.rs/install.sh | sh -s -- -y'; then
-    return 0
-  fi
-
-  warn "Starship install failed; continuing without blocking bootstrap"
-  return 0
-}
-
 link_pi_agent() {
   # Pi stores transient state (auth.json, sessions/, bin/) alongside config
   # in ~/.pi/agent/. We symlink only the managed pieces individually so
@@ -168,10 +148,6 @@ main() {
   fi
 
   if ! install_or_update_opencode; then
-    failures=$((failures + 1))
-  fi
-
-  if ! install_starship_if_missing; then
     failures=$((failures + 1))
   fi
 
