@@ -21,12 +21,14 @@
     "o4-mini*",
     "gemini-2*"
   ],
-  "lastChangelogVersion": "0.61.0",
+  "lastChangelogVersion": "0.61.1",
   "packages": [
     "npm:pi-subagents",
     {
       "source": "npm:shitty-extensions",
-      "extensions": ["./extensions/oracle.ts"],
+      "extensions": [
+        "./extensions/oracle.ts"
+      ],
       "skills": []
     }
   ]
