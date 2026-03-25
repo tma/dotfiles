@@ -15,21 +15,15 @@
     "enabled": true,
     "keepRecentTokens": 30000
   },
-  "enabledModels": [
-    "claude-*",
-    "gpt-4o",
-    "o4-mini*",
-    "gemini-2*"
-  ],
+  "enabledModels": ["claude-*", "gpt-4o", "o4-mini*", "gemini-2*"],
   "lastChangelogVersion": "0.61.1",
   "packages": [
     "npm:pi-subagents",
     {
       "source": "npm:shitty-extensions",
-      "extensions": [
-        "./extensions/oracle.ts"
-      ],
+      "extensions": ["+extensions/oracle.ts", "+extensions/memory-mode.ts"],
       "skills": []
-    }
+    },
+    "https://github.com/davebcn87/pi-autoresearch"
   ]
 }

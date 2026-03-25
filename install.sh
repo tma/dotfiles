@@ -26,6 +26,12 @@ link_dotfile() {
       [ -e "$subitem" ] || continue
       local subname
       subname="$(basename "$subitem")"
+      # If target is a real directory (not a symlink), back it up so
+      # ln -sfn can replace it with a symlink instead of linking inside it.
+      if [ -d "$target_path/$subname" ] && [ ! -L "$target_path/$subname" ]; then
+        mv "$target_path/$subname" "$target_path/$subname.bak"
+        warn "Renamed $target_path/$subname -> $target_path/$subname.bak"
+      fi
       if ln -sfn "$subitem" "$target_path/$subname"; then
         log "Linked $target_path/$subname -> $subitem"
       else
