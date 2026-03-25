@@ -15,13 +15,18 @@
     "enabled": true,
     "keepRecentTokens": 30000
   },
-  "enabledModels": ["claude-*", "gpt-4o", "o4-mini*", "gemini-2*"],
-  "lastChangelogVersion": "0.61.1",
+  "enabledModels": ["claude-*-4.6", "gpt-5.4", "gemini-3.1*"],
+  "lastChangelogVersion": "0.62.0",
   "packages": [
     "npm:pi-subagents",
     {
       "source": "npm:shitty-extensions",
-      "extensions": ["+extensions/oracle.ts", "+extensions/memory-mode.ts"],
+      "extensions": [
+        "./extensions/oracle.ts",
+        "./extensions/memory-mode.ts",
+        "+extensions/memory-mode.ts",
+        "+extensions/oracle.ts"
+      ],
       "skills": []
     },
     "https://github.com/davebcn87/pi-autoresearch"
