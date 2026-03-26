@@ -344,6 +344,26 @@ async function runAgent(
 		result.exitCode = exitCode;
 		result.durationMs = Date.now() - startTime;
 		if (aborted) throw new Error("Subagent aborted");
+
+		// Apply per-agent output line limits (maxOutputLines frontmatter)
+		if (agent.maxOutputLines) {
+			for (let i = result.messages.length - 1; i >= 0; i--) {
+				const msg = result.messages[i];
+				if (msg.role === "assistant") {
+					for (const part of msg.content) {
+						if (part.type === "text") {
+							const lines = part.text.split("\n");
+							if (lines.length > agent.maxOutputLines) {
+								part.text = lines.slice(0, agent.maxOutputLines).join("\n")
+									+ `\n\n[Truncated: ${lines.length} → ${agent.maxOutputLines} lines]`;
+							}
+						}
+					}
+					break;
+				}
+			}
+		}
+
 		return result;
 	} finally {
 		if (tmpFile) try { fs.unlinkSync(tmpFile); } catch {}
@@ -547,7 +567,15 @@ export default function (pi: ExtensionAPI) {
 
 				for (let i = 0; i < params.chain.length; i++) {
 					const step = params.chain[i];
-					const task = step.task.replace(/\{previous\}/g, previousOutput);
+
+					// Compress previous output to avoid context bloat in downstream steps
+					const MAX_PREVIOUS_CHARS = 4000;
+					let previousForTask = previousOutput;
+					if (previousOutput.length > MAX_PREVIOUS_CHARS) {
+						previousForTask = previousOutput.slice(0, MAX_PREVIOUS_CHARS)
+							+ `\n\n[Output truncated: ${previousOutput.length} chars total, showing first ${MAX_PREVIOUS_CHARS}]`;
+					}
+					const task = step.task.replace(/\{previous\}/g, previousForTask);
 
 					const chainOnUpdate: OnUpdate | undefined = onUpdate
 						? (partial) => {
