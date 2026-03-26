@@ -17,6 +17,13 @@ link_dotfile() {
   local target_path="$2"
 
   if [ -d "$source_path" ]; then
+    # If target is a directory symlink (from a previous run), remove it so we
+    # can create a real directory and symlink individual files instead.
+    if [ -L "$target_path" ]; then
+      rm "$target_path"
+      log "Removed old directory symlink $target_path"
+    fi
+
     if ! mkdir -p "$target_path"; then
       warn "Failed to create directory $target_path"
       return 1
@@ -26,17 +33,8 @@ link_dotfile() {
       [ -e "$subitem" ] || continue
       local subname
       subname="$(basename "$subitem")"
-      # If target is a real directory (not a symlink), back it up so
-      # ln -sfn can replace it with a symlink instead of linking inside it.
-      if [ -d "$target_path/$subname" ] && [ ! -L "$target_path/$subname" ]; then
-        mv "$target_path/$subname" "$target_path/$subname.bak"
-        warn "Renamed $target_path/$subname -> $target_path/$subname.bak"
-      fi
-      if ln -sfn "$subitem" "$target_path/$subname"; then
-        log "Linked $target_path/$subname -> $subitem"
-      else
-        warn "Failed to link $target_path/$subname"
-      fi
+      # Recurse into subdirectories so only files become symlinks.
+      link_dotfile "$subitem" "$target_path/$subname"
     done
     return 0
   fi
