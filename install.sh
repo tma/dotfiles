@@ -104,7 +104,7 @@ install_or_update_pi() {
     log "Installing pi..."
   fi
 
-  if npm install -g @mariozechner/pi-coding-agent; then
+  if npm install -g @mariozechner/pi-coding-agent 2>/dev/null; then
     return 0
   fi
 
