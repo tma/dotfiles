@@ -318,26 +318,64 @@ async function runRemoteAgent(
 export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("remote", {
-		description: "Run a task in a Codespace: /remote <task>",
+		description: "Run a task in a Codespace: /remote [PR-URL] <task>",
 		handler: async (args, ctx) => {
-			const task = args?.trim();
-			if (!task) {
-				ctx.ui.notify("Usage: /remote <task>", "warning");
+			const input = args?.trim();
+			if (!input) {
+				ctx.ui.notify("Usage: /remote [PR-URL] <task>", "warning");
 				return;
 			}
 
-			const info = getRepoAndBranch(ctx.cwd);
-			if (!info) {
-				ctx.ui.notify("Not in a GitHub repo", "error");
-				return;
+			// Parse PR URL if provided
+			const prMatch = input.match(/^(https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+))\s*(.*)/);
+			let repo: string;
+			let branch: string;
+			let task: string;
+			let prUrl: string | null = null;
+			let checkoutBranch: string | null = null;
+
+			if (prMatch) {
+				// PR URL mode: extract repo, get head branch from PR
+				prUrl = prMatch[1];
+				repo = prMatch[2];
+				task = prMatch[4] || `Review and work on PR #${prMatch[3]}`;
+
+				ctx.ui.notify(`Fetching PR #${prMatch[3]} from ${repo}…`, "info");
+				cmuxLog(`Fetching PR: ${prUrl}`);
+
+				try {
+					const prJson = execFileSync("gh", [
+						"pr", "view", prUrl,
+						"--json", "headRefName,baseRefName,title",
+					], { timeout: 15000, encoding: "utf-8" });
+					const pr = JSON.parse(prJson);
+					branch = pr.headRefName;
+					checkoutBranch = branch;
+					ctx.ui.notify(`PR branch: ${branch}`, "info");
+					cmuxLog(`PR branch: ${branch} (base: ${pr.baseRefName})`);
+				} catch (e) {
+					ctx.ui.notify("Failed to fetch PR details", "error");
+					return;
+				}
+			} else {
+				// Local mode: use current repo + branch
+				const info = getRepoAndBranch(ctx.cwd);
+				if (!info) {
+					ctx.ui.notify("Not in a GitHub repo", "error");
+					return;
+				}
+				repo = info.repo;
+				branch = info.branch;
+				task = input;
 			}
 
-			ctx.ui.notify(`Looking for Codespace on ${info.repo}@${info.branch}…`, "info");
-			cmuxLog(`Looking for Codespace: ${info.repo}@${info.branch}`);
+			ctx.ui.notify(`Looking for Codespace on ${repo}@${branch}…`, "info");
+			cmuxLog(`Looking for Codespace: ${repo}@${branch}`);
 
 			// Find or create Codespace
-			let cs = findCodespace(info.repo, info.branch);
+			let cs = findCodespace(repo, branch);
 			let csName: string;
+			let needsCheckout = false;
 
 			if (cs) {
 				ctx.ui.notify(`Found Codespace: ${cs.name} (${cs.state})`, "info");
@@ -347,11 +385,43 @@ export default function (pi: ExtensionAPI) {
 					cmuxLog("Codespace will auto-start on SSH connect", "progress");
 				}
 				csName = cs.name;
+			} else if (checkoutBranch) {
+				// No codespace on the PR branch — look for one on the default branch
+				ctx.ui.notify(`No Codespace on ${branch}, looking for one on default branch…`, "info");
+				cmuxLog(`No Codespace on ${branch}, checking default branch`);
+
+				// Find any codespace for this repo (prefer master/main)
+				const allCs = listCodespaces(repo);
+				const defaultCs = allCs.find((c) =>
+					c.ref === "main" || c.ref === "master"
+				) ?? allCs[0]; // fall back to any codespace for this repo
+
+				if (defaultCs) {
+					ctx.ui.notify(`Found Codespace on ${defaultCs.ref}: ${defaultCs.name}, will checkout ${branch}`, "info");
+					cmuxLog(`Using ${defaultCs.name} (${defaultCs.ref}), will checkout ${branch}`);
+					csName = defaultCs.name;
+					needsCheckout = true;
+				} else {
+					// Create on default branch, then checkout
+					ctx.ui.notify(`No Codespace for ${repo}, creating one…`, "info");
+					cmuxSetStatus("remote", "creating…", "cloud.fill", "#8e8e93");
+					cmuxLog("Creating Codespace on default branch…", "progress");
+					const name = createCodespace(repo, "main");
+					if (!name) {
+						ctx.ui.notify("Failed to create Codespace", "error");
+						cmuxLog("Failed to create Codespace", "error");
+						return;
+					}
+					csName = name;
+					needsCheckout = true;
+					ctx.ui.notify(`Created Codespace: ${csName}`, "info");
+					cmuxLog(`Created: ${csName}`, "success");
+				}
 			} else {
-				ctx.ui.notify(`No Codespace on ${info.branch}, creating one…`, "info");
+				ctx.ui.notify(`No Codespace on ${branch}, creating one…`, "info");
 				cmuxSetStatus("remote", "creating…", "cloud.fill", "#8e8e93");
 				cmuxLog("Creating Codespace…", "progress");
-				const name = createCodespace(info.repo, info.branch);
+				const name = createCodespace(repo, branch);
 				if (!name) {
 					ctx.ui.notify("Failed to create Codespace", "error");
 					cmuxLog("Failed to create Codespace", "error");
@@ -362,12 +432,30 @@ export default function (pi: ExtensionAPI) {
 				cmuxLog(`Created: ${csName}`, "success");
 			}
 
+			// Checkout PR branch inside the codespace if needed
+			if (needsCheckout && checkoutBranch) {
+				ctx.ui.notify(`Checking out ${checkoutBranch} in Codespace…`, "info");
+				cmuxSetStatus("remote", "checkout…", "cloud.fill", "#8e8e93");
+				cmuxLog(`Checking out ${checkoutBranch}…`, "progress");
+				try {
+					execFileSync("gh", [
+						"cs", "ssh", "-c", csName, "--",
+						`cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}`,
+					], { timeout: 120000, encoding: "utf-8" });
+					cmuxLog(`Checked out ${checkoutBranch}`, "success");
+				} catch (e) {
+					ctx.ui.notify(`Failed to checkout ${checkoutBranch}`, "error");
+					cmuxLog(`Checkout failed: ${checkoutBranch}`, "error");
+					return;
+				}
+			}
+
 			// Run task with live streaming into chat
 			ctx.ui.notify(`Running task in ${csName}…`, "info");
 
 			pi.sendMessage({
 				customType: "remote-status",
-				content: [{ type: "text", text: `☁ Remote task started in Codespace \`${csName}\` on \`${info.repo}@${info.branch}\`\n\n**Task:** ${task}` }],
+				content: [{ type: "text", text: `☁ Remote task started in Codespace \`${csName}\` on \`${repo}@${branch}\`${prUrl ? ` ([PR](${prUrl}))` : ""}\n\n**Task:** ${task}` }],
 				display: "user",
 			});
 
