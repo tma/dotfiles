@@ -358,10 +358,10 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 			} else {
-				// Local mode: use current repo + branch
+				// No PR URL — task only, use current repo + branch
 				const info = getRepoAndBranch(ctx.cwd);
 				if (!info) {
-					ctx.ui.notify("Not in a GitHub repo", "error");
+					ctx.ui.notify("Usage: /remote [PR-URL] <task>\nOr run from inside a GitHub repo", "error");
 					return;
 				}
 				repo = info.repo;
