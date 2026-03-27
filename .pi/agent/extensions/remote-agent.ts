@@ -98,7 +98,12 @@ function listCodespaces(repo?: string): CodespaceInfo[] {
 
 function findCodespace(repo: string, branch: string): CodespaceInfo | null {
 	const all = listCodespaces(repo);
-	return all.find((cs) => cs.ref === branch) ?? null;
+	// Exact match on branch — prefer Available, but accept any state
+	const exact = all.filter((cs) => cs.ref === branch);
+	if (exact.length > 0) {
+		return exact.find((cs) => cs.state === "Available") ?? exact[0];
+	}
+	return null;
 }
 
 function ensureCodespaceRunning(cs: CodespaceInfo): boolean {
@@ -378,8 +383,8 @@ export default function (pi: ExtensionAPI) {
 			let needsCheckout = false;
 
 			if (cs) {
-				ctx.ui.notify(`Found Codespace: ${cs.name} (${cs.state})`, "info");
-				cmuxLog(`Found: ${cs.name} (${cs.state})`);
+				ctx.ui.notify(`Found Codespace on ${branch}: ${cs.name} (${cs.state})`, "info");
+				cmuxLog(`Found on ${branch}: ${cs.name} (${cs.state})`);
 				if (cs.state !== "Available") {
 					cmuxSetStatus("remote", "starting…", "cloud.fill", "#8e8e93");
 					cmuxLog("Codespace will auto-start on SSH connect", "progress");
