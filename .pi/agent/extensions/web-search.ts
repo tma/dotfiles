@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
 
@@ -49,7 +50,7 @@ export default function (pi: ExtensionAPI) {
 			if (results.length === 0) {
 				return {
 					content: [{ type: "text", text: "No results found." }],
-					details: { query: params.query },
+					details: { query: params.query, count: 0 },
 				};
 			}
 
@@ -61,6 +62,15 @@ export default function (pi: ExtensionAPI) {
 				content: [{ type: "text", text }],
 				details: { query: params.query, count: results.length },
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			const d = result.details as { query: string; count: number };
+			let line = theme.fg("success", `${d.count} results`) + theme.fg("muted", ` for "${d.query}"`);
+			if (expanded) {
+				line += "\n" + theme.fg("dim", result.content?.[0]?.text ?? "");
+			}
+			return new Text(line, 0, 0);
 		},
 	});
 
@@ -81,6 +91,17 @@ export default function (pi: ExtensionAPI) {
 				content: [{ type: "text", text: result.text }],
 				details: { url: params.url, length: result.text.length, source: result.source },
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			const d = result.details as { url: string; length: number; source: string };
+			const kb = (d.length / 1024).toFixed(1);
+			let line = theme.fg("success", `Fetched ${kb}KB`) + theme.fg("muted", ` from ${d.url} (${d.source})`);
+			if (expanded) {
+				const preview = (result.content?.[0]?.text ?? "").slice(0, 500);
+				line += "\n" + theme.fg("dim", preview + (d.length > 500 ? "…" : ""));
+			}
+			return new Text(line, 0, 0);
 		},
 	});
 }

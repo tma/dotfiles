@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const ENDPOINT = "https://mcp.context7.com/mcp";
@@ -64,8 +65,19 @@ export default function (pi: ExtensionAPI) {
 
 			return {
 				content: [{ type: "text", text: text || "No libraries found." }],
-				details: { libraryName: params.libraryName },
+				details: { libraryName: params.libraryName, length: text.length },
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			const d = result.details as { libraryName: string; length: number };
+			let line = d.length > 0
+				? theme.fg("success", "Resolved") + theme.fg("muted", ` "${d.libraryName}"`)
+				: theme.fg("warning", "No libraries found") + theme.fg("muted", ` for "${d.libraryName}"`);
+			if (expanded) {
+				line += "\n" + theme.fg("dim", result.content?.[0]?.text ?? "");
+			}
+			return new Text(line, 0, 0);
 		},
 	});
 
@@ -92,10 +104,20 @@ export default function (pi: ExtensionAPI) {
 				arguments: { libraryId: params.libraryId, query: params.query },
 			});
 
+			const kb = (text.length / 1024).toFixed(1);
 			return {
 				content: [{ type: "text", text: text || "No documentation found." }],
-				details: { libraryId: params.libraryId },
+				details: { libraryId: params.libraryId, query: params.query, kb },
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			const d = result.details as { libraryId: string; query: string; kb: string };
+			let line = theme.fg("success", `${d.kb}KB docs`) + theme.fg("muted", ` from ${d.libraryId}`) + theme.fg("dim", ` — "${d.query}"`);
+			if (expanded) {
+				line += "\n" + theme.fg("dim", result.content?.[0]?.text ?? "");
+			}
+			return new Text(line, 0, 0);
 		},
 	});
 }
