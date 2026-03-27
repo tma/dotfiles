@@ -55,6 +55,7 @@ interface SessionStats {
 	inputTokens: number;
 	outputTokens: number;
 	cacheRead: number;
+	cacheWrite: number;
 	cost: number;
 	turns: number;
 	errors: number;
@@ -187,6 +188,7 @@ export default function (pi: ExtensionAPI) {
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	let totalCacheRead = 0;
+	let totalCacheWrite = 0;
 	let totalCost = 0;
 	let totalTurns = 0;
 	let agentState: "idle" | "working" | "error" = "idle";
@@ -203,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 			inputTokens: totalInputTokens,
 			outputTokens: totalOutputTokens,
 			cacheRead: totalCacheRead,
+			cacheWrite: totalCacheWrite,
 			cost: totalCost,
 			turns: totalTurns,
 			errors: errorsThisLoop,
@@ -253,6 +256,7 @@ export default function (pi: ExtensionAPI) {
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
 		totalCacheRead = 0;
+		totalCacheWrite = 0;
 		totalCost = 0;
 		totalTurns = 0;
 		filesEdited = new Set();
@@ -260,6 +264,22 @@ export default function (pi: ExtensionAPI) {
 		commandsRun = 0;
 		agentState = "idle";
 		subagentInfo = null;
+
+		// Bootstrap from existing session entries (matches Pi's footer logic)
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if ((entry as any).type === "message" && (entry as any).message?.role === "assistant") {
+				const u = (entry as any).message.usage;
+				if (u) {
+					totalInputTokens += u.input || 0;
+					totalOutputTokens += u.output || 0;
+					totalCacheRead += u.cacheRead || 0;
+					totalCacheWrite += u.cacheWrite || 0;
+					totalCost += u.cost?.total || 0;
+					totalTurns++;
+				}
+			}
+		}
+
 		cmuxLog(`Session started${currentModel ? ` (${currentModel})` : ""}`);
 		cmuxSetStatus("pi", "idle", "terminal.fill", "#8e8e93");
 		flushStats();
@@ -354,6 +374,7 @@ export default function (pi: ExtensionAPI) {
 				totalInputTokens += u.input || 0;
 				totalOutputTokens += u.output || 0;
 				totalCacheRead += u.cacheRead || 0;
+				totalCacheWrite += u.cacheWrite || 0;
 				totalCost += u.cost?.total || 0;
 			}
 			flushStats();

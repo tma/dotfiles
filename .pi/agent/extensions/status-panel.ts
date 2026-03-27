@@ -65,14 +65,11 @@ export default function (pi: ExtensionAPI) {
 	function closePanel(): boolean {
 		if (!isCmux() || !panelSurfaceId) return false;
 
-		// Send 'q' to quit the script, then close the surface
-		execFile("cmux", ["send", "--surface", panelSurfaceId, "\x03"], { timeout: 3000 }, () => {});
-		setTimeout(() => {
-			if (panelSurfaceId) {
-				execFile("cmux", ["close-surface", "--surface", panelSurfaceId], { timeout: 3000 }, () => {});
-			}
-			panelSurfaceId = null;
-		}, 500);
+		// Close synchronously — Pi may be exiting
+		try {
+			execFileSync("cmux", ["close-surface", "--surface", panelSurfaceId], { timeout: 2000 });
+		} catch {}
+		panelSurfaceId = null;
 
 		return true;
 	}
@@ -84,6 +81,25 @@ export default function (pi: ExtensionAPI) {
 			return openPanel(cwd);
 		}
 	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (isCmux() && !panelSurfaceId) {
+			togglePanel(ctx.cwd);
+		}
+	});
+
+	pi.on("session_shutdown", async () => {
+		if (panelSurfaceId) {
+			closePanel();
+		}
+	});
+
+	// Fallback: catch process exit in case session_shutdown doesn't fire
+	process.on("exit", () => {
+		if (panelSurfaceId) {
+			closePanel();
+		}
+	});
 
 	pi.registerCommand("status", {
 		description: "Toggle right status panel (cmux split)",

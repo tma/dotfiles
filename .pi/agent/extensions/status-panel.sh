@@ -16,7 +16,7 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
   fi
 fi
 
-set -euo pipefail
+set +e
 
 # Colors
 DIM='\033[2m'
@@ -45,6 +45,12 @@ draw() {
 
   # Append a line to buffer, clear rest of line
   p() { buf+="$*"$'\033[K\n'; }
+  # Helper: wrap text in OSC 8 clickable link
+  link() {
+    local url="$1" text="$2"
+    echo -ne "\033]8;;${url}\a${text}\033]8;;\a"
+  }
+
   # Horizontal rule
   hr() { local r; r=$(printf '%*s' "$cols" '' | tr ' ' '─'); p "${DIM}${r}${RESET}"; }
 
@@ -91,6 +97,7 @@ draw() {
       model=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model',''))" 2>/dev/null || true)
       state=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))" 2>/dev/null || true)
       ctx_pct=$(echo "$stats" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d.get('contextPercent'); print(f'{p:.0f}' if p is not None else '')" 2>/dev/null || true)
+      ctx_window=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contextWindow',0))" 2>/dev/null || true)
 
       # Model + state
       local state_icon state_color
@@ -111,24 +118,36 @@ draw() {
         [[ ${ctx_pct%.*} -gt 70 ]] && bar_color="$YELLOW"
         [[ ${ctx_pct%.*} -gt 90 ]] && bar_color="$RED"
         local bar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+        # Format context window size
+        local win_label=""
+        if [[ -n "$ctx_window" && "$ctx_window" != "0" ]]; then
+          local cwint=${ctx_window%.*}
+          if [[ $cwint -ge 1000000 ]]; then
+            win_label=" / $((cwint / 1000000))M"
+          elif [[ $cwint -ge 1000 ]]; then
+            win_label=" / $((cwint / 1000))k"
+          fi
+        fi
         p ""
-        p " ${bar} ${ctx_pct}%"
+        p " ${bar} ${ctx_pct}%${GRAY}${win_label}${RESET}"
         p ""
       fi
 
-      # Token counts
-      local in_tok out_tok cache_tok cost turns
+      # Token counts — match Pi's footer format: ↑input ↓output R{cache} W{cacheWrite} $cost
+      local in_tok out_tok cr_tok cw_tok cost turns
       in_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('inputTokens',0); print(f'{v/1000:.1f}k' if v>=1000 else v)" 2>/dev/null || true)
       out_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('outputTokens',0); print(f'{v/1000:.1f}k' if v>=1000 else v)" 2>/dev/null || true)
-      cache_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cacheRead',0); print(f'{v/1000:.1f}k' if v>=1000 else v)" 2>/dev/null || true)
-      cost=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cost',0); print(f'\${v:.4f}' if v>0 else '')" 2>/dev/null || true)
+      cr_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cacheRead',0); print(f'{v/1000:.1f}k' if v>=1000 else ('' if v==0 else v))" 2>/dev/null || true)
+      cw_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cacheWrite',0); print(f'{v/1000:.1f}k' if v>=1000 else ('' if v==0 else v))" 2>/dev/null || true)
+      cost=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cost',0); print(f'\${v:.3f}' if v>0 else '')" 2>/dev/null || true)
       turns=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('turns',0))" 2>/dev/null || true)
 
       local tok_line=" ${GRAY}↑${in_tok} ↓${out_tok}"
-      [[ "$cache_tok" != "0" ]] && tok_line+=" cache:${cache_tok}"
+      [[ -n "$cr_tok" ]] && tok_line+=" R${cr_tok}"
+      [[ -n "$cw_tok" ]] && tok_line+=" W${cw_tok}"
       [[ -n "$cost" ]] && tok_line+="  ${cost}"
-      tok_line+="${RESET}"
       [[ "$turns" != "0" ]] && tok_line+="  ${turns} turn$([[ "$turns" != "1" ]] && echo 's')"
+      tok_line+="${RESET}"
       p "$tok_line"
     fi
   fi
@@ -136,6 +155,11 @@ draw() {
   # ── Modified files with +/- stats ──────────────────
   p ""
   hr
+  local git_root
+  git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+  # Collect changed files for the diff link
+  local diff_files=""
+  local diff_args=""
   p " ${BOLD}Files${RESET}"
   hr
 
@@ -187,7 +211,8 @@ draw() {
       *) ic="?"; co="$GRAY";   lb="staged" ;;
     esac
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(short "$f") ${ds} ${GRAY}${lb}${RESET}"
+    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds} ${GRAY}${lb}${RESET}"
+    diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git diff --cached --name-status 2>/dev/null)
 
@@ -199,7 +224,8 @@ draw() {
       M) ic="~"; co="$YELLOW" ;; D) ic="-"; co="$RED" ;; *) ic="?"; co="$GRAY" ;;
     esac
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(short "$f") ${ds}"
+    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds}"
+    diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git diff --name-status 2>/dev/null)
 
@@ -207,7 +233,8 @@ draw() {
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${GREEN}+${RESET} $(short "$f") ${ds}"
+    [[ $file_count -lt $max_files ]] && p " ${GREEN}+${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds}"
+    diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git ls-files --others --exclude-standard 2>/dev/null)
 

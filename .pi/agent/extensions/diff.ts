@@ -2,7 +2,7 @@
  * Diff Extension
  *
  * /diff command shows modified/deleted/new files from git status and opens
- * the selected file in VS Code's diff view.
+ * the selected file in Zed's diff view.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -17,7 +17,7 @@ interface FileInfo {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("diff", {
-		description: "Show git changes and open in VS Code diff view",
+		description: "Show git changes and open diff in Zed",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("No UI available", "error");
@@ -66,65 +66,25 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const WINDOWS_UNSAFE_CMD_CHARS_RE = /[&|<>^%\r\n]/;
-			const quoteCmdArg = (value: string) => `"${value.replace(/"/g, '""')}"`;
-
-			const openWithCode = async (file: string) => {
-				if (process.platform === "win32") {
-					if (WINDOWS_UNSAFE_CMD_CHARS_RE.test(file)) {
-						ctx.ui.notify(
-							`Refusing to open ${file}: path contains Windows cmd metacharacters (& | < > ^ % or newline).`,
-							"error",
-						);
-						return null;
-					}
-					const commandLine = `code -g ${quoteCmdArg(file)}`;
-					return pi.exec("cmd", ["/d", "/s", "/c", commandLine], { cwd: ctx.cwd });
-				}
-				return pi.exec("code", ["-g", file], { cwd: ctx.cwd });
-			};
-
 			const openSelected = async (fileInfo: FileInfo): Promise<void> => {
 				try {
-					// Open in VS Code diff view.
-					// For untracked files, git difftool won't work, so fall back to just opening the file.
 					if (fileInfo.status === "?") {
-						const openResult = await openWithCode(fileInfo.file);
-						if (!openResult) return;
-						if (openResult.code !== 0) {
-							const openStderr = openResult.stderr.trim();
-							ctx.ui.notify(
-								`Failed to open ${fileInfo.file} (exit ${openResult.code})${openStderr ? `: ${openStderr}` : ""}`,
-								"error",
-							);
-						}
+						// Untracked: just open the file
+						const r = await pi.exec("zed", [fileInfo.file], { cwd: ctx.cwd });
+						if (r.code !== 0) ctx.ui.notify(`Failed to open ${fileInfo.file}`, "error");
 						return;
 					}
 
-					const diffResult = await pi.exec("git", ["difftool", "-y", "--tool=vscode", fileInfo.file], {
-						cwd: ctx.cwd,
-					});
-					if (diffResult.code !== 0) {
-						const diffStderr = diffResult.stderr.trim();
-						ctx.ui.notify(
-							`Failed to show diff with vscode for ${fileInfo.file} (exit ${diffResult.code})${diffStderr ? `: ${diffStderr}` : ""}`,
-							"error",
-						);
-						ctx.ui.notify(
-							"Troubleshooting: check git difftool config (e.g. `git config --get difftool.vscode.cmd`).",
-							"info",
-						);
+					// Create temp file with HEAD version for Zed --diff
+					const tmpResult = await pi.exec("mktemp", ["/tmp/zed-diff-XXXXXX"], { cwd: ctx.cwd });
+					const tmpFile = tmpResult.stdout.trim();
+					await pi.exec("bash", ["-c", `git show HEAD:${fileInfo.file} > ${tmpFile} 2>/dev/null || true`], { cwd: ctx.cwd });
 
-						const openResult = await openWithCode(fileInfo.file);
-						if (!openResult) return;
-						if (openResult.code !== 0) {
-							const openStderr = openResult.stderr.trim();
-							ctx.ui.notify(
-								`Failed to open ${fileInfo.file} (exit ${openResult.code})${openStderr ? `: ${openStderr}` : ""}`,
-								"error",
-							);
-						}
-					}
+					const r = await pi.exec("zed", ["--diff", tmpFile, fileInfo.file], { cwd: ctx.cwd });
+					if (r.code !== 0) ctx.ui.notify(`Failed to diff ${fileInfo.file}`, "error");
+
+					// Cleanup after Zed reads it
+					setTimeout(() => pi.exec("rm", ["-f", tmpFile], { cwd: ctx.cwd }), 5000);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					ctx.ui.notify(`Failed to open ${fileInfo.file}: ${message}`, "error");
