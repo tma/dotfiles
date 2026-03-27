@@ -201,7 +201,14 @@ async function runRemoteAgent(
 		agentPrompt,
 	];
 
-	const sshCmd = `npx -y @mariozechner/pi-coding-agent ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+	const sshCmd = [
+		// Ensure modern Node + npm (Codespace base images can have ancient Node)
+		`export NVM_DIR="$HOME/.nvm"`,
+		`[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"`,
+		`command -v npm >/dev/null 2>&1 || { curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && . "$NVM_DIR/nvm.sh" && nvm install --lts; }`,
+		`command -v pi >/dev/null 2>&1 || npm install -g @mariozechner/pi-coding-agent`,
+		`pi ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`,
+	].join(" && ");
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
