@@ -103,6 +103,11 @@ function findCodespace(repo: string, branch: string): CodespaceInfo | null {
 	if (exact.length > 0) {
 		return exact.find((cs) => cs.state === "Available") ?? exact[0];
 	}
+	// No exact match — log what we found for debugging
+	if (all.length > 0) {
+		const refs = all.map((cs) => cs.ref).join(", ");
+		cmuxLog(`No codespace on "${branch}". Found: ${refs}`, "warning");
+	}
 	return null;
 }
 
