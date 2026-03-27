@@ -201,14 +201,9 @@ async function runRemoteAgent(
 		agentPrompt,
 	];
 
-	const sshCmd = [
-		// Ensure modern Node + npm (Codespace base images can have ancient Node)
-		`export NVM_DIR="$HOME/.nvm"`,
-		`[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"`,
-		`command -v npm >/dev/null 2>&1 || { curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && . "$NVM_DIR/nvm.sh" && nvm install --lts; }`,
-		`command -v pi >/dev/null 2>&1 || npm install -g @mariozechner/pi-coding-agent`,
-		`pi ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`,
-	].join(" && ");
+	const piCmd = `pi ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+	// Use login shell so PATH includes nvm, vendor/node, etc.
+	const sshCmd = `bash -l -c '${piCmd.replace(/'/g, "'\\''")}'`;
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
@@ -476,7 +471,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					execFileSync("gh", [
 						"cs", "ssh", "-c", csName, "--",
-						`cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}`,
+						`bash -l -c 'cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}'`,
 					], { timeout: 120000, encoding: "utf-8" });
 					cmuxLog(`Checked out ${checkoutBranch}`, "success");
 				} catch (e) {
