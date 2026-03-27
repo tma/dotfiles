@@ -203,12 +203,20 @@ async function runRemoteAgent(
 	];
 
 	const piCmd = piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-	// Login shell. Resolve vendor node paths (glob doesn't expand in PATH assignment).
-	// Write auth from arg, run pi, clean up.
+	// Login shell. Ensure modern node+npm+pi are available.
 	const authSetup = authEnv
 		? `mkdir -p ~/.pi/agent; echo '${authEnv.replace(/'/g, "'\\''")}' > ~/.pi/agent/auth.json; `
 		: "";
-	const sshCmd = `bash -l -c 'for d in /workspaces/*/vendor/node/bin /workspaces/*/vendor/node; do [ -d "\$d" ] && export PATH="\$d:\$PATH"; done; command -v pi >/dev/null || npm install -g @mariozechner/pi-coding-agent >&2; ${authSetup}pi ${piCmd}; rm -f ~/.pi/agent/auth.json'`;
+	const setup = [
+		// If npm missing, install Node LTS via NodeSource
+		`command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs; } >&2`,
+		// If pi missing, install it
+		`command -v pi >/dev/null 2>&1 || npm install -g @mariozechner/pi-coding-agent >&2`,
+		authSetup,
+		`pi ${piCmd}`,
+		`rm -f ~/.pi/agent/auth.json`,
+	].filter(Boolean).join("; ");
+	const sshCmd = `bash -l -c '${setup}'`;
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
@@ -476,7 +484,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					execFileSync("gh", [
 						"cs", "ssh", "-c", csName, "--",
-						`bash -l -c 'for d in /workspaces/*/vendor/node/bin /workspaces/*/vendor/node; do [ -d "\$d" ] && export PATH="\$d:\$PATH"; done; cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}'`,
+						`bash -l -c 'cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}'`,
 					], { timeout: 120000, encoding: "utf-8" });
 					cmuxLog(`Checked out ${checkoutBranch}`, "success");
 				} catch (e) {
