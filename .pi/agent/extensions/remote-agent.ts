@@ -103,15 +103,9 @@ function findCodespace(repo: string, branch: string): CodespaceInfo | null {
 
 function ensureCodespaceRunning(cs: CodespaceInfo): boolean {
 	if (cs.state === "Available") return true;
-	try {
-		execFileSync("gh", ["cs", "start", "--codespace", cs.name], {
-			timeout: 120000,
-			encoding: "utf-8",
-		});
-		return true;
-	} catch {
-		return false;
-	}
+	// No explicit start command — SSH auto-starts stopped codespaces.
+	// Just return true and let the SSH connection handle it.
+	return true;
 }
 
 function createCodespace(repo: string, branch: string): string | null {
@@ -350,12 +344,7 @@ export default function (pi: ExtensionAPI) {
 				cmuxLog(`Found: ${cs.name} (${cs.state})`);
 				if (cs.state !== "Available") {
 					cmuxSetStatus("remote", "starting…", "cloud.fill", "#8e8e93");
-					cmuxLog("Starting Codespace…", "progress");
-				}
-				if (!ensureCodespaceRunning(cs)) {
-					ctx.ui.notify(`Failed to start Codespace ${cs.name}`, "error");
-					cmuxLog(`Failed to start ${cs.name}`, "error");
-					return;
+					cmuxLog("Codespace will auto-start on SSH connect", "progress");
 				}
 				csName = cs.name;
 			} else {
