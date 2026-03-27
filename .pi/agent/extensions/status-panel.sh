@@ -32,9 +32,11 @@ GRAY='\033[90m'
 
 # Track session start
 SESSION_START=$(date +%s)
+DRAW_COUNT=0
 # Stats file scoped per project directory (matches notify.ts)
-SAFE_CWD=$(pwd | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/-\+/-/g')
-STATS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}.json"
+SAFE_CWD=$(pwd | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g')
+PI_PID="${PI_PID:-$$}"
+STATS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}-${PI_PID}.json"
 
 # Hide cursor during draws
 tput civis 2>/dev/null || true
@@ -56,34 +58,10 @@ draw() {
   # Horizontal rule
   hr() { local r; r=$(printf '%*s' "$cols" '' | tr ' ' '─'); p "${DIM}${r}${RESET}"; }
 
-  # ── Header ──────────────────────────────────────────
-  hr
-  p " ${BOLD}Status${RESET}"
-  hr
-
-  # ── Git branch ──────────────────────────────────────
-  local branch
-  branch=$(git branch --show-current 2>/dev/null || echo "detached")
-  local ahead=0 behind=0
-  local ab
-  ab=$(git rev-list --left-right --count "origin/${branch}...HEAD" 2>/dev/null) && {
-    behind=$(echo "$ab" | cut -f1)
-    ahead=$(echo "$ab" | cut -f2)
-  }
-
-  local bi="${branch}"
-  [[ "$ahead" != "0" ]] && bi+=" ↑${ahead}"
-  [[ "$behind" != "0" ]] && bi+=" ↓${behind}"
-  p " ${CYAN}⎇${RESET} ${BOLD}${bi}${RESET}"
-
-  # ── Session duration ────────────────────────────────
-  local elapsed=$(( $(date +%s) - SESSION_START ))
-  local mins=$((elapsed / 60)) secs=$((elapsed % 60))
-  if [[ $mins -gt 0 ]]; then
-    p " ${GRAY}⏱ ${mins}m${secs}s${RESET}"
-  else
-    p " ${GRAY}⏱ ${secs}s${RESET}"
-  fi
+  # Pulse dot — cycles through brightness on each draw
+  local spin_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local si=$((DRAW_COUNT % ${#spin_frames[@]}))
+  local pulse="${CYAN}${spin_frames[$si]}${RESET}"
 
   # ── Pi session info ─────────────────────────────────
   if [[ -f "$STATS_FILE" ]]; then
@@ -92,8 +70,9 @@ draw() {
     if [[ -n "$stats" ]]; then
       p ""
       hr
-      p " ${BOLD}Session${RESET}"
+      p " ${BOLD}Session${RESET} ${pulse}"
       hr
+      p ""
 
       local model state ctx_pct ctx_tokens ctx_window
       model=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model',''))" 2>/dev/null || true)
@@ -108,7 +87,7 @@ draw() {
         error)   state_icon="✗"; state_color="$RED" ;;
         *)       state_icon="○"; state_color="$GRAY" ;;
       esac
-      [[ -n "$model" ]] && p " ${state_color}${state_icon}${RESET} ${BOLD}${model}${RESET}"
+      [[ -n "$model" ]] && p " ${BOLD}${model}${RESET} ${state_color}${state_icon}${RESET}"
 
       # Context window bar
       if [[ -n "$ctx_pct" && "$ctx_pct" != "0" ]]; then
@@ -153,22 +132,98 @@ draw() {
       p "$tok_line"
     fi
   fi
-
-  # ── Modified files with +/- stats ──────────────────
   p ""
+
+  # ── Todos ────────────────────────────────────────────
+  local TODOS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}-${PI_PID}-todos.json"
+  if [[ -f "$TODOS_FILE" ]]; then
+    local todos_json
+    todos_json=$(cat "$TODOS_FILE" 2>/dev/null)
+    local task_count
+    task_count=$(echo "$todos_json" | python3 -c "import sys,json; t=json.load(sys.stdin).get('tasks',[]); print(len(t))" 2>/dev/null || echo "0")
+
+    if [[ "$task_count" -gt 0 ]]; then
+      hr
+      p " ${BOLD}Tasks${RESET}"
+      hr
+      p ""
+
+      local done_count total_count
+      done_count=$(echo "$todos_json" | python3 -c "
+import sys,json
+tasks=json.load(sys.stdin).get('tasks',[])
+print(sum(1 for t in tasks if t['status'] in ('completed','cancelled')))
+" 2>/dev/null || echo "0")
+      total_count="$task_count"
+
+      # Progress bar
+      local bar_width=$((cols - 12))
+      local filled=0
+      [[ "$total_count" -gt 0 ]] && filled=$(( (done_count * bar_width) / total_count ))
+      [[ $filled -gt $bar_width ]] && filled=$bar_width
+      local empty=$((bar_width - filled))
+      local bar_color="$BLUE"
+      [[ "$done_count" -eq "$total_count" ]] && bar_color="$GREEN"
+      local tbar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+      p " ${tbar} ${done_count}/${total_count}"
+      p ""
+
+      # Task list
+      local task_lines
+      task_lines=$(echo "$todos_json" | python3 -c "
+import sys,json
+tasks=json.load(sys.stdin).get('tasks',[])
+icons={'pending':'○','in_progress':'▸','completed':'✓','cancelled':'✗'}
+colors={'pending':'\033[90m','in_progress':'\033[34m','completed':'\033[32m','cancelled':'\033[2m'}
+reset='\033[0m'
+dim='\033[2m'
+for t in tasks:
+    s=t['status']
+    ic=icons.get(s,'?')
+    co=colors.get(s,'')
+    title=t['title']
+    if s in ('completed','cancelled'):
+        print(f' {co}{ic}{reset} {dim}{title}{reset}')
+    else:
+        print(f' {co}{ic}{reset} {title}')
+" 2>/dev/null)
+      while IFS= read -r tline; do
+        [[ -n "$tline" ]] && p "$tline"
+      done <<< "$task_lines"
+    fi
+  fi
+  p ""
+
+  # ── Changes (branch + files) ────────────────────────
   hr
+  p " ${BOLD}Changes${RESET}"
+  hr
+  p ""
+
+  local branch
+  branch=$(git branch --show-current 2>/dev/null || echo "detached")
+  local ahead=0 behind=0
+  local ab
+  ab=$(git rev-list --left-right --count "origin/${branch}...HEAD" 2>/dev/null) && {
+    behind=$(echo "$ab" | cut -f1)
+    ahead=$(echo "$ab" | cut -f2)
+  }
+
+  local bi="${branch}"
+  [[ "$ahead" != "0" ]] && bi+=" ↑${ahead}"
+  [[ "$behind" != "0" ]] && bi+=" ↓${behind}"
+  p " ${CYAN}⎇${RESET} ${BOLD}${bi}${RESET}"
+  p ""
+
   local git_root
   git_root=$(git rev-parse --show-toplevel 2>/dev/null)
-  # Collect changed files for the diff link
   local diff_files=""
   local diff_args=""
-  p " ${BOLD}Files${RESET}"
-  hr
 
   local file_count=0
-  local max_files=$((rows - 20))
+  local max_files=$((rows - 30))
   [[ $max_files -lt 5 ]] && max_files=5
-  local maxpath=$((cols - 24))
+  local maxpath=$((cols - 16))
 
   short() {
     local f="$1"
@@ -246,11 +301,6 @@ draw() {
     p " ${GRAY}… +$((file_count - max_files)) more${RESET}"
   fi
 
-  # ── Footer ──────────────────────────────────────────
-  p ""
-  hr
-  p " ${GRAY}auto-refresh 2s • ctrl+c to close${RESET}"
-
   # Cursor home + buffer + clear below
   printf '\033[H%b\033[J' "$buf"
 }
@@ -265,5 +315,6 @@ fi
 clear
 while true; do
   draw
-  sleep 2
+  DRAW_COUNT=$((DRAW_COUNT + 1))
+  sleep 1
 done

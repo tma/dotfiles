@@ -47,9 +47,8 @@ function resetCmuxDetection(): void {
 const STATS_DIR = path.join(os.tmpdir(), "pi-status");
 
 function getStatsFile(cwd: string): string {
-	// Scope stats file per project directory to avoid cross-session conflicts
 	const safeName = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
-	return path.join(STATS_DIR, `${safeName}.json`);
+	return path.join(STATS_DIR, `${safeName}-${process.pid}.json`);
 }
 
 let statsFile = "";

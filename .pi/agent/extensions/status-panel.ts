@@ -50,9 +50,29 @@ export default function (pi: ExtensionAPI) {
 
 		if (!panelSurfaceId) return false;
 
+		// Resize the panel pane to ~1/3 width by shrinking it from the left
+		try {
+			// Find which pane owns this surface
+			const tree = cmuxSync(["tree"]);
+			if (tree) {
+				const lines = tree.split("\n");
+				let panePaneId: string | null = null;
+				for (const line of lines) {
+					const paneMatch = line.match(/(pane:\d+)/);
+					if (paneMatch) panePaneId = paneMatch[1];
+					if (line.includes(panelSurfaceId!)) break;
+				}
+				if (panePaneId) {
+					const cols = process.stdout.columns || 200;
+					const shrinkBy = Math.round(cols / 6);
+					execFileSync("cmux", ["resize-pane", "--pane", panePaneId, "-L", "--amount", String(shrinkBy)], { timeout: 2000 });
+				}
+			}
+		} catch {}
+
 		// Send cd + script to the new surface and press enter
 		setTimeout(() => {
-			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && ${scriptPath}`;
+			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && PI_PID=${process.pid} ${scriptPath}`;
 			execFile("cmux", ["send", "--surface", panelSurfaceId!, cmd], { timeout: 3000 }, () => {});
 			setTimeout(() => {
 				execFile("cmux", ["send-key", "--surface", panelSurfaceId!, "enter"], { timeout: 3000 }, () => {});
