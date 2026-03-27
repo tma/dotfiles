@@ -153,3 +153,4 @@ gh search prs "review:approved" --repo owner/repo
 4. **Use `gh api`** for endpoints without a dedicated subcommand
 5. **Paginate with `--paginate`** when listing — default page size is 30
 6. **Don't create tokens** — `gh` manages auth automatically
+7. **Never use web_search or web_read** for GitHub data — `gh` has it all: issues, PRs, code search, Actions, API. Don't scrape github.com.
