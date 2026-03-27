@@ -50,24 +50,31 @@ export default function (pi: ExtensionAPI) {
 
 		if (!panelSurfaceId) return false;
 
-		// Resize the panel pane to ~1/3 width by shrinking it from the left
+		// Resize pi's pane to ~3/4 width
+		// After 50/50 split, grow pi's (left) pane right so it gets 3/4, panel gets 1/4
 		try {
-			// Find which pane owns this surface
 			const tree = cmuxSync(["tree"]);
 			if (tree) {
-				const lines = tree.split("\n");
-				let panePaneId: string | null = null;
-				for (const line of lines) {
+				let piPaneId: string | null = null;
+				let currentPaneId: string | null = null;
+				for (const line of tree.split("\n")) {
 					const paneMatch = line.match(/(pane:\d+)/);
-					if (paneMatch) panePaneId = paneMatch[1];
-					if (line.includes(panelSurfaceId!)) break;
+					if (paneMatch) currentPaneId = paneMatch[1];
+					if (line.includes("\u25c0 here")) {
+						piPaneId = currentPaneId;
+						break;
+					}
 				}
-				if (panePaneId) {
-					const cols = process.stdout.columns || 200;
-					const shrinkBy = Math.round(cols / 6);
-					execFileSync("cmux", ["resize-pane", "--pane", panePaneId, "-L", "--amount", String(shrinkBy)], { timeout: 2000 });
+				if (piPaneId) {
+					const cols = process.stdout.columns || 80;
+					execFileSync("cmux", ["resize-pane", "--pane", piPaneId, "-R", "--amount", String(Math.round(cols * 3 / 4))], { timeout: 2000 });
 				}
 			}
+		} catch {}
+
+		// Set tab title
+		try {
+			execFileSync("cmux", ["rename-tab", "--surface", panelSurfaceId!, "Status"], { timeout: 2000 });
 		} catch {}
 
 		// Send cd + script to the new surface and press enter
