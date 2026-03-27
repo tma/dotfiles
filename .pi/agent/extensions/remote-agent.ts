@@ -72,17 +72,31 @@ interface CodespaceInfo {
 	repository: string;
 	state: string;
 	ref: string;
+	lastUsedAt: string;
+}
+
+const MAX_AGE_DAYS = 3;
+
+function isStale(cs: CodespaceInfo): boolean {
+	try {
+		const lastUsed = new Date(cs.lastUsedAt).getTime();
+		const ageDays = (Date.now() - lastUsed) / (1000 * 60 * 60 * 24);
+		return ageDays > MAX_AGE_DAYS;
+	} catch {
+		return true;
+	}
 }
 
 function listCodespaces(repo?: string): CodespaceInfo[] {
 	try {
-		const args = ["cs", "list", "--json", "name,repository,gitStatus,state"];
+		const args = ["cs", "list", "--json", "name,repository,gitStatus,state,lastUsedAt"];
 		if (repo) args.push("--repo", repo);
 		const out = execFileSync("gh", args, { timeout: 15000, encoding: "utf-8" });
 		const list = JSON.parse(out) as Array<{
 			name: string;
 			repository: string;
 			state: string;
+			lastUsedAt: string;
 			gitStatus: { ref: string };
 		}>;
 		return list.map((cs) => ({
@@ -90,6 +104,7 @@ function listCodespaces(repo?: string): CodespaceInfo[] {
 			repository: cs.repository,
 			state: cs.state,
 			ref: cs.gitStatus.ref,
+			lastUsedAt: cs.lastUsedAt,
 		}));
 	} catch {
 		return [];
@@ -98,14 +113,17 @@ function listCodespaces(repo?: string): CodespaceInfo[] {
 
 function findCodespace(repo: string, branch: string): CodespaceInfo | null {
 	const all = listCodespaces(repo);
-	// Exact match on branch — prefer Available, but accept any state
-	const exact = all.filter((cs) => cs.ref === branch);
+	// Exact match on branch, not stale — prefer Available
+	const exact = all.filter((cs) => cs.ref === branch && !isStale(cs));
 	if (exact.length > 0) {
 		return exact.find((cs) => cs.state === "Available") ?? exact[0];
 	}
-	// No exact match — log what we found for debugging
-	if (all.length > 0) {
-		const refs = all.map((cs) => cs.ref).join(", ");
+	// Log for debugging
+	const staleExact = all.filter((cs) => cs.ref === branch && isStale(cs));
+	if (staleExact.length > 0) {
+		cmuxLog(`Skipped stale codespace on "${branch}" (>${MAX_AGE_DAYS}d old)`, "warning");
+	} else if (all.length > 0) {
+		const refs = all.slice(0, 5).map((cs) => cs.ref).join(", ");
 		cmuxLog(`No codespace on "${branch}". Found: ${refs}`, "warning");
 	}
 	return null;
@@ -402,9 +420,10 @@ export default function (pi: ExtensionAPI) {
 
 				// Find any codespace for this repo (prefer master/main)
 				const allCs = listCodespaces(repo);
-				const defaultCs = allCs.find((c) =>
+				const fresh = allCs.filter((c) => !isStale(c));
+				const defaultCs = fresh.find((c) =>
 					c.ref === "main" || c.ref === "master"
-				) ?? allCs[0]; // fall back to any codespace for this repo
+				) ?? fresh[0];
 
 				if (defaultCs) {
 					ctx.ui.notify(`Found Codespace on ${defaultCs.ref}: ${defaultCs.name}, will checkout ${branch}`, "info");
