@@ -191,6 +191,7 @@ function basename(p: string): string {
 async function runRemoteAgent(
 	codespace: string,
 	agentPrompt: string,
+	authEnv?: string,
 	signal?: AbortSignal,
 	onEvent?: (ev: any) => void,
 ): Promise<RemoteRunResult> {
@@ -202,9 +203,12 @@ async function runRemoteAgent(
 	];
 
 	const piCmd = piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-	// Login shell for full PATH. Prepend vendor node paths (owner/repo codespaces).
-	// Install pi if missing.
-	const sshCmd = `bash -l -c 'export PATH=/workspaces/*/vendor/node/bin:/workspaces/*/vendor/node:\$PATH; command -v pi >/dev/null || npm install -g @mariozechner/pi-coding-agent >&2; pi ${piCmd}'`;
+	// Login shell. Resolve vendor node paths (glob doesn't expand in PATH assignment).
+	// Write auth from arg, run pi, clean up.
+	const authSetup = authEnv
+		? `mkdir -p ~/.pi/agent; echo '${authEnv.replace(/'/g, "'\\''")}' > ~/.pi/agent/auth.json; `
+		: "";
+	const sshCmd = `bash -l -c 'for d in /workspaces/*/vendor/node/bin /workspaces/*/vendor/node; do [ -d "\$d" ] && export PATH="\$d:\$PATH"; done; command -v pi >/dev/null || npm install -g @mariozechner/pi-coding-agent >&2; ${authSetup}pi ${piCmd}; rm -f ~/.pi/agent/auth.json'`;
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
@@ -472,7 +476,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					execFileSync("gh", [
 						"cs", "ssh", "-c", csName, "--",
-						`bash -l -c 'cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}'`,
+						`bash -l -c 'for d in /workspaces/*/vendor/node/bin /workspaces/*/vendor/node; do [ -d "\$d" ] && export PATH="\$d:\$PATH"; done; cd /workspaces/* 2>/dev/null; git fetch origin ${checkoutBranch} && git checkout ${checkoutBranch}'`,
 					], { timeout: 120000, encoding: "utf-8" });
 					cmuxLog(`Checked out ${checkoutBranch}`, "success");
 				} catch (e) {
@@ -482,20 +486,16 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			// Sync auth credentials to Codespace
-			cmuxSetStatus("remote", "auth…", "cloud.fill", "#8e8e93");
-			cmuxLog("Syncing auth to Codespace…", "progress");
+			// Read local auth and pass as env var (never written to disk in Codespace)
+			let authEnv = "";
 			try {
 				const authFile = `${process.env.HOME}/.pi/agent/auth.json`;
-				execFileSync("gh", [
-					"cs", "cp", "-c", csName,
-					authFile, "remote:~/.pi/agent/auth.json",
-				], { timeout: 30000, encoding: "utf-8" });
-				cmuxLog("Auth synced", "success");
-			} catch {
-				ctx.ui.notify("Failed to sync auth — remote Pi may not authenticate", "warning");
-				cmuxLog("Auth sync failed", "warning");
-			}
+				const { readFileSync } = require("fs");
+				const auth = readFileSync(authFile, "utf-8").trim();
+				if (auth && auth !== "{}") {
+					authEnv = `PI_AUTH='${auth.replace(/'/g, "'\\''")}'`;
+				}
+			} catch {}
 
 			// Run task with live streaming into chat
 			ctx.ui.notify(`Running task in ${csName}…`, "info");
@@ -508,7 +508,7 @@ export default function (pi: ExtensionAPI) {
 
 			let lastReportedTurn = 0;
 
-			const result = await runRemoteAgent(csName, task, undefined, (ev) => {
+			const result = await runRemoteAgent(csName, task, authEnv || undefined, undefined, (ev) => {
 				if (ev.type === "message_end" && ev.message?.role === "assistant") {
 					lastReportedTurn++;
 
