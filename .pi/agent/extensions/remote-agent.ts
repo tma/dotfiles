@@ -482,6 +482,21 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
+			// Sync auth credentials to Codespace
+			cmuxSetStatus("remote", "auth…", "cloud.fill", "#8e8e93");
+			cmuxLog("Syncing auth to Codespace…", "progress");
+			try {
+				const authFile = `${process.env.HOME}/.pi/agent/auth.json`;
+				execFileSync("gh", [
+					"cs", "cp", "-c", csName,
+					authFile, "remote:~/.pi/agent/auth.json",
+				], { timeout: 30000, encoding: "utf-8" });
+				cmuxLog("Auth synced", "success");
+			} catch {
+				ctx.ui.notify("Failed to sync auth — remote Pi may not authenticate", "warning");
+				cmuxLog("Auth sync failed", "warning");
+			}
+
 			// Run task with live streaming into chat
 			ctx.ui.notify(`Running task in ${csName}…`, "info");
 
