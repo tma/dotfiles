@@ -94,7 +94,15 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(result, { expanded }, theme) {
-			const d = result.details as { url: string; length: number; source: string };
+			const d = result.details as { url?: string; length?: number; source?: string };
+			if (result.isError || d.length == null) {
+				const msg = result.content?.[0]?.text ?? "Failed to fetch";
+				let line = theme.fg("error", "Failed") + theme.fg("muted", d.url ? ` ${d.url}` : "");
+				if (expanded) {
+					line += "\n" + theme.fg("dim", msg.slice(0, 500));
+				}
+				return new Text(line, 0, 0);
+			}
 			const kb = (d.length / 1024).toFixed(1);
 			let line = theme.fg("success", `Fetched ${kb}KB`) + theme.fg("muted", ` from ${d.url} (${d.source})`);
 			if (expanded) {
