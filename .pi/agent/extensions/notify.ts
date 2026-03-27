@@ -11,7 +11,9 @@
  */
 
 import { execFile } from "node:child_process";
-import { accessSync } from "node:fs";
+import { accessSync, writeFileSync, mkdirSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ── cmux detection ───────────────────────────────────────────────────────────
@@ -20,14 +22,60 @@ let _cmuxAvailable: boolean | null = null;
 
 function isCmux(): boolean {
 	if (_cmuxAvailable !== null) return _cmuxAvailable;
-	try {
-		const sockPath = process.env.CMUX_SOCKET_PATH ?? "/tmp/cmux.sock";
-		accessSync(sockPath);
-		_cmuxAvailable = true;
-	} catch {
-		_cmuxAvailable = false;
-	}
+	_cmuxAvailable = detectCmux();
 	return _cmuxAvailable;
+}
+
+function detectCmux(): boolean {
+	if (process.env.CMUX_WORKSPACE_ID) return true;
+	try {
+		const sockPath = process.env.CMUX_SOCKET_PATH
+			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
+		accessSync(sockPath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resetCmuxDetection(): void {
+	_cmuxAvailable = null;
+}
+
+// ── stats file for status panel ──────────────────────────────────────────────
+
+const STATS_DIR = path.join(os.tmpdir(), "pi-status");
+const STATS_FILE = path.join(STATS_DIR, "session.json");
+
+interface SessionStats {
+	model: string;
+	contextTokens: number | null;
+	contextWindow: number;
+	contextPercent: number | null;
+	inputTokens: number;
+	outputTokens: number;
+	cacheRead: number;
+	cost: number;
+	turns: number;
+	errors: number;
+	state: "idle" | "working" | "error";
+	filesEdited: string[];
+	filesCreated: string[];
+	commandsRun: number;
+	subagent: {
+		mode: "single" | "parallel" | "chain" | null;
+		agents: string[];
+		completed: number;
+		total: number;
+	} | null;
+	updatedAt: number;
+}
+
+function writeStats(stats: SessionStats): void {
+	try {
+		mkdirSync(STATS_DIR, { recursive: true });
+		writeFileSync(STATS_FILE, JSON.stringify(stats), "utf-8");
+	} catch {}
 }
 
 // ── cmux commands ────────────────────────────────────────────────────────────
@@ -132,10 +180,40 @@ export default function (pi: ExtensionAPI) {
 	let filesEdited = new Set<string>();
 	let filesCreated = new Set<string>();
 	let commandsRun = 0;
-	let lastToolName = "";
+
 	let activeSubagents = 0;
 	let completedSubagents = 0;
 	let loggedSubagents = new Set<string>();
+	let totalInputTokens = 0;
+	let totalOutputTokens = 0;
+	let totalCacheRead = 0;
+	let totalCost = 0;
+	let totalTurns = 0;
+	let agentState: "idle" | "working" | "error" = "idle";
+	let subagentInfo: SessionStats["subagent"] = null;
+	let currentCtx: { getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined } | null = null;
+
+	function flushStats(): void {
+		const usage = currentCtx?.getContextUsage?.();
+		writeStats({
+			model: currentModel,
+			contextTokens: usage?.tokens ?? null,
+			contextWindow: usage?.contextWindow ?? 0,
+			contextPercent: usage?.percent ?? null,
+			inputTokens: totalInputTokens,
+			outputTokens: totalOutputTokens,
+			cacheRead: totalCacheRead,
+			cost: totalCost,
+			turns: totalTurns,
+			errors: errorsThisLoop,
+			state: agentState,
+			filesEdited: [...filesEdited],
+			filesCreated: [...filesCreated],
+			commandsRun,
+			subagent: subagentInfo,
+			updatedAt: Date.now(),
+		});
+	}
 
 	function buildSummary(elapsed: string): string {
 		const parts: string[] = [];
@@ -168,16 +246,31 @@ export default function (pi: ExtensionAPI) {
 	// ── session lifecycle ────────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		resetCmuxDetection();
+		currentCtx = ctx;
 		cmuxClearLog();
 		currentModel = ctx.model?.name ?? "";
+		totalInputTokens = 0;
+		totalOutputTokens = 0;
+		totalCacheRead = 0;
+		totalCost = 0;
+		totalTurns = 0;
+		filesEdited = new Set();
+		filesCreated = new Set();
+		commandsRun = 0;
+		agentState = "idle";
+		subagentInfo = null;
 		cmuxLog(`Session started${currentModel ? ` (${currentModel})` : ""}`);
 		cmuxSetStatus("pi", "idle", "terminal.fill", "#8e8e93");
+		flushStats();
 	});
 
 	pi.on("session_shutdown", async () => {
 		cmuxClearStatus("pi");
 		cmuxClearProgress();
 		cmuxLog("Session ended");
+		agentState = "idle";
+		flushStats();
 	});
 
 	pi.on("session_switch", async (event) => {
@@ -207,22 +300,23 @@ export default function (pi: ExtensionAPI) {
 		toolsThisTurn = 0;
 		errorsThisLoop = 0;
 		startTime = Date.now();
-		filesEdited = new Set();
-		filesCreated = new Set();
-		commandsRun = 0;
-		lastToolName = "";
 		activeSubagents = 0;
 		completedSubagents = 0;
 		loggedSubagents = new Set();
+		agentState = "working";
+		subagentInfo = null;
 		cmuxSetStatus("pi", "working", "terminal.fill", "#ff9500");
 		cmuxSetProgress(0, "Starting...");
+		flushStats();
 	});
 
-	pi.on("agent_end", async (event) => {
+	pi.on("agent_end", async (_event) => {
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 		const body = buildSummary(elapsed);
 
 		cmuxClearProgress();
+		agentState = "idle";
+		subagentInfo = null;
 
 		if (errorsThisLoop > 0) {
 			cmuxSetStatus("pi", "done (errors)", "exclamationmark.triangle.fill", "#ff3b30");
@@ -238,6 +332,8 @@ export default function (pi: ExtensionAPI) {
 		setTimeout(() => {
 			cmuxSetStatus("pi", "idle", "terminal.fill", "#8e8e93");
 		}, 10000);
+
+		flushStats();
 	});
 
 	// ── turns ────────────────────────────────────────────────────────────
@@ -249,12 +345,26 @@ export default function (pi: ExtensionAPI) {
 		cmuxSetProgress(Math.min(0.9, turnCount / 10), `Turn ${turnCount}`);
 	});
 
+	pi.on("message_end", async (event) => {
+		const msg = event.message;
+		if (msg.role === "assistant") {
+			totalTurns++;
+			const u = (msg as any).usage;
+			if (u) {
+				totalInputTokens += u.input || 0;
+				totalOutputTokens += u.output || 0;
+				totalCacheRead += u.cacheRead || 0;
+				totalCost += u.cost?.total || 0;
+			}
+			flushStats();
+		}
+	});
+
 	// ── tool execution ───────────────────────────────────────────────────
 
 	pi.on("tool_execution_start", async (event) => {
 		toolsThisTurn++;
 		const name = event.toolName;
-		lastToolName = name;
 
 		if (name === "subagent") {
 			const args = event.args ?? {};
@@ -262,41 +372,46 @@ export default function (pi: ExtensionAPI) {
 				const agents = args.chain.map((s: any) => s.agent).join(" → ");
 				activeSubagents = args.chain.length;
 				completedSubagents = 0;
+				subagentInfo = { mode: "chain", agents: args.chain.map((s: any) => s.agent), completed: 0, total: activeSubagents };
 				cmuxLog(`Chain: ${agents}`, "progress");
 				cmuxSetStatus("pi", `chain (0/${activeSubagents})`, "arrow.triangle.branch", "#af52de");
 			} else if (args.tasks?.length) {
 				const agents = args.tasks.map((t: any) => t.agent).join(", ");
 				activeSubagents = args.tasks.length;
 				completedSubagents = 0;
+				subagentInfo = { mode: "parallel", agents: args.tasks.map((t: any) => t.agent), completed: 0, total: activeSubagents };
 				cmuxLog(`Parallel: ${agents}`, "progress");
 				cmuxSetStatus("pi", `fleet (0/${activeSubagents})`, "square.grid.2x2", "#af52de");
 			} else if (args.agent) {
 				activeSubagents = 1;
 				completedSubagents = 0;
+				subagentInfo = { mode: "single", agents: [args.agent], completed: 0, total: 1 };
 				cmuxLog(`Subagent: ${args.agent}`, "progress");
 				cmuxSetStatus("pi", args.agent, "person.fill", "#af52de");
 			}
 			cmuxSetProgress(0, "Subagents...");
+			flushStats();
 		} else if (name === "bash") {
 			commandsRun++;
 			const cmd = String(event.args?.command ?? "").slice(0, 60);
 			cmuxLog(`$ ${cmd}${cmd.length >= 60 ? "…" : ""}`, "progress");
 			cmuxSetStatus("pi", "bash", "terminal", "#ff9500");
 		} else if (name === "edit") {
-			const path = String(event.args?.path ?? "");
-			filesEdited.add(basename(path));
-			cmuxLog(`edit: ${basename(path)}`, "progress");
+			const epath = String(event.args?.path ?? "");
+			filesEdited.add(basename(epath));
+			cmuxLog(`edit: ${basename(epath)}`, "progress");
 			cmuxSetStatus("pi", name, "pencil", "#ff9500");
 		} else if (name === "write") {
-			const path = String(event.args?.path ?? "");
-			filesCreated.add(basename(path));
-			cmuxLog(`write: ${basename(path)}`, "progress");
+			const wpath = String(event.args?.path ?? "");
+			filesCreated.add(basename(wpath));
+			cmuxLog(`write: ${basename(wpath)}`, "progress");
 			cmuxSetStatus("pi", name, "pencil", "#ff9500");
 		} else if (name === "read") {
-			const path = String(event.args?.path ?? "");
-			cmuxLog(`read: ${basename(path)}`, "info");
+			const rpath = String(event.args?.path ?? "");
+			cmuxLog(`read: ${basename(rpath)}`, "info");
 		}
 		// grep, find, ls are too noisy to log
+		flushStats();
 	});
 
 	// ── subagent progress tracking ───────────────────────────────────────
@@ -317,9 +432,11 @@ export default function (pi: ExtensionAPI) {
 		if (details.mode === "chain") {
 			cmuxSetStatus("pi", `chain (${done}/${total})`, "arrow.triangle.branch", "#af52de");
 			cmuxSetProgress(progress, `Chain ${done}/${total}`);
+			if (subagentInfo) subagentInfo.completed = done;
 		} else if (details.mode === "parallel") {
 			cmuxSetStatus("pi", `fleet (${done}/${total})`, "square.grid.2x2", "#af52de");
 			cmuxSetProgress(progress, `Fleet ${done}/${total}`);
+			if (subagentInfo) subagentInfo.completed = done;
 		}
 
 		// Log individual completions
@@ -331,6 +448,8 @@ export default function (pi: ExtensionAPI) {
 				cmuxLog(`${icon} ${r.agent} finished`, level);
 			}
 		}
+
+		flushStats();
 	});
 
 	pi.on("tool_execution_end", async (event) => {
@@ -344,7 +463,6 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (event.toolName === "subagent") {
-			// Subagent tool finished — restore normal working status
 			const ok = completedSubagents;
 			const total = activeSubagents;
 			if (total > 1) {
@@ -353,39 +471,10 @@ export default function (pi: ExtensionAPI) {
 			activeSubagents = 0;
 			completedSubagents = 0;
 			loggedSubagents = new Set();
+			subagentInfo = null;
 			cmuxClearProgress();
 			cmuxSetStatus("pi", "working", "terminal.fill", "#ff9500");
-		}
-	});
-
-	// ── tool_call: detect permission blocks ──────────────────────────────
-	// When permission-gate blocks a tool, the agent pauses. We can detect
-	// this via tool_call returning { block: true } — but we don't see the
-	// return value. Instead, we track the "waiting" state: if a tool_call
-	// fires for bash/edit/write and execution doesn't start quickly, the
-	// permission gate likely blocked it.
-
-	let pendingToolCall: ReturnType<typeof setTimeout> | null = null;
-
-	pi.on("tool_call", async (event) => {
-		const gatedTools = ["bash", "edit", "write"];
-		if (gatedTools.includes(event.toolName)) {
-			// Set a timer — if tool_execution_start doesn't fire within 500ms,
-			// assume permission gate is blocking
-			if (pendingToolCall) clearTimeout(pendingToolCall);
-			pendingToolCall = setTimeout(() => {
-				cmuxSetStatus("pi", "waiting", "lock.fill", "#ff3b30");
-				notify("Pi", `Approval needed for ${event.toolName}`, "Permission");
-				pendingToolCall = null;
-			}, 500);
-		}
-	});
-
-	pi.on("tool_execution_start", async () => {
-		// Tool started — permission was granted, cancel the waiting timer
-		if (pendingToolCall) {
-			clearTimeout(pendingToolCall);
-			pendingToolCall = null;
+			flushStats();
 		}
 	});
 
