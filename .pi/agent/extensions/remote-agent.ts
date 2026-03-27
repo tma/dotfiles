@@ -201,7 +201,7 @@ async function runRemoteAgent(
 		agentPrompt,
 	];
 
-	const sshCmd = `pi ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
+	const sshCmd = `npx -y @mariozechner/pi-coding-agent ${piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`;
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
@@ -477,21 +477,6 @@ export default function (pi: ExtensionAPI) {
 					cmuxLog(`Checkout failed: ${checkoutBranch}`, "error");
 					return;
 				}
-			}
-
-			// Ensure Pi is available in the Codespace
-			cmuxSetStatus("remote", "setup…", "cloud.fill", "#8e8e93");
-			cmuxLog("Checking Pi installation…", "progress");
-			try {
-				execFileSync("gh", [
-					"cs", "ssh", "-c", csName, "--",
-					"command -v pi || npm install -g @mariozechner/pi-coding-agent",
-				], { timeout: 120000, encoding: "utf-8" });
-				cmuxLog("Pi ready", "success");
-			} catch {
-				ctx.ui.notify("Failed to install Pi in Codespace", "error");
-				cmuxLog("Pi install failed", "error");
-				return;
 			}
 
 			// Run task with live streaming into chat
