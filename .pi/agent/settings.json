@@ -15,7 +15,11 @@
     "enabled": true,
     "keepRecentTokens": 30000
   },
-  "enabledModels": ["claude-*-4.6", "gpt-5.4", "gemini-3.1*"],
-  "lastChangelogVersion": "0.62.0",
+  "enabledModels": [
+    "claude-*-4.6",
+    "gpt-5.4",
+    "gemini-3.1*"
+  ],
+  "lastChangelogVersion": "0.63.1",
   "packages": []
 }
