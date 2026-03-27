@@ -479,6 +479,21 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
+			// Ensure Pi is available in the Codespace
+			cmuxSetStatus("remote", "setup…", "cloud.fill", "#8e8e93");
+			cmuxLog("Checking Pi installation…", "progress");
+			try {
+				execFileSync("gh", [
+					"cs", "ssh", "-c", csName, "--",
+					"command -v pi || npm install -g @mariozechner/pi-coding-agent",
+				], { timeout: 120000, encoding: "utf-8" });
+				cmuxLog("Pi ready", "success");
+			} catch {
+				ctx.ui.notify("Failed to install Pi in Codespace", "error");
+				cmuxLog("Pi install failed", "error");
+				return;
+			}
+
 			// Run task with live streaming into chat
 			ctx.ui.notify(`Running task in ${csName}…`, "info");
 
