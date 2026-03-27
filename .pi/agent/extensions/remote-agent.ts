@@ -202,8 +202,9 @@ async function runRemoteAgent(
 	];
 
 	const piCmd = piArgs.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-	// Login shell for full PATH. Install pi if missing.
-	const sshCmd = `bash -l -c 'command -v pi >/dev/null || npm install -g @mariozechner/pi-coding-agent >&2; pi ${piCmd}'`;
+	// Login shell for full PATH. Prepend vendor node paths (owner/repo codespaces).
+	// Install pi if missing.
+	const sshCmd = `bash -l -c 'export PATH=/workspaces/*/vendor/node/bin:/workspaces/*/vendor/node:\$PATH; command -v pi >/dev/null || npm install -g @mariozechner/pi-coding-agent >&2; pi ${piCmd}'`;
 
 	// Start cmux tracking
 	cmuxSetStatus("remote", `${codespace.slice(0, 20)}…`, "cloud.fill", "#5856d6");
