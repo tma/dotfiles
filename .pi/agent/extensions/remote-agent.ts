@@ -170,6 +170,7 @@ async function runRemoteAgent(
 	codespace: string,
 	agentPrompt: string,
 	signal?: AbortSignal,
+	onEvent?: (ev: any) => void,
 ): Promise<RemoteRunResult> {
 	const piArgs = [
 		"--mode", "json",
@@ -208,6 +209,8 @@ async function runRemoteAgent(
 			} catch {
 				return;
 			}
+
+			onEvent?.(ev);
 
 			// Track tool calls → cmux log + status
 			if (ev.type === "tool_execution_start") {
@@ -370,23 +373,63 @@ export default function (pi: ExtensionAPI) {
 				cmuxLog(`Created: ${csName}`, "success");
 			}
 
-			// Run task with live streaming
+			// Run task with live streaming into chat
 			ctx.ui.notify(`Running task in ${csName}…`, "info");
 
-			pi.sendUserMessage(
-				`A remote task is running in Codespace \`${csName}\` on \`${info.repo}@${info.branch}\`.\n\nTask: ${task}\n\nWatch the cmux sidebar for live progress. I'll report results when it completes.`,
-			);
+			pi.sendMessage({
+				customType: "remote-status",
+				content: [{ type: "text", text: `☁ Remote task started in Codespace \`${csName}\` on \`${info.repo}@${info.branch}\`\n\n**Task:** ${task}` }],
+				display: "user",
+			});
 
-			const result = await runRemoteAgent(csName, task);
+			let lastReportedTurn = 0;
+
+			const result = await runRemoteAgent(csName, task, undefined, (ev) => {
+				if (ev.type === "message_end" && ev.message?.role === "assistant") {
+					lastReportedTurn++;
+
+					// Collect tool calls from this turn
+					const tools: string[] = [];
+					let text = "";
+					for (const part of ev.message.content ?? []) {
+						if (part.type === "toolCall") {
+							const args = part.arguments as Record<string, unknown>;
+							if (part.name === "bash") {
+								tools.push(`$ ${String(args.command ?? "").slice(0, 80)}`);
+							} else if (part.name === "edit" || part.name === "write" || part.name === "read") {
+								tools.push(`${part.name}: ${basename(String(args.path ?? ""))}`);
+							} else {
+								tools.push(part.name);
+							}
+						}
+						if (part.type === "text") text = part.text;
+					}
+
+					const preview = text.length > 300 ? text.slice(0, 300) + "…" : text;
+					let summary = `**☁ Turn ${lastReportedTurn}**`;
+					if (tools.length > 0) summary += `  ·  ${tools.join("  ·  ")}`;
+					if (preview) summary += `\n> ${preview.replace(/\n/g, "\n> ")}`;
+
+					pi.sendMessage({
+						customType: "remote-turn",
+						content: [{ type: "text", text: summary }],
+						display: "user",
+					});
+				}
+			});
 
 			if (result.exitCode === 0) {
-				pi.sendUserMessage(
-					`Remote task completed in Codespace \`${csName}\`.\n\n**${result.turns} turns, ${result.toolCalls} tool calls.**\n\nResult:\n${result.output.slice(0, 4000)}`,
-				);
+				pi.sendMessage({
+					customType: "remote-status",
+					content: [{ type: "text", text: `☁ **Remote task completed** in \`${csName}\` — ${result.turns} turns, ${result.toolCalls} tool calls.\n\n${result.output.slice(0, 4000)}` }],
+					display: "user",
+				});
 			} else {
-				pi.sendUserMessage(
-					`Remote task failed in Codespace \`${csName}\` (exit ${result.exitCode}).\n\nOutput:\n${result.output.slice(0, 2000)}\n\nStderr:\n${result.stderr.slice(0, 2000)}`,
-				);
+				pi.sendMessage({
+					customType: "remote-status",
+					content: [{ type: "text", text: `☁ **Remote task failed** in \`${csName}\` (exit ${result.exitCode})\n\nOutput:\n${result.output.slice(0, 2000)}\n\nStderr:\n${result.stderr.slice(0, 2000)}` }],
+					display: "user",
+				});
 			}
 		},
 	});
