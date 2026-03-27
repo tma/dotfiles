@@ -32,7 +32,9 @@ GRAY='\033[90m'
 
 # Track session start
 SESSION_START=$(date +%s)
-STATS_FILE="${TMPDIR:-/tmp}/pi-status/session.json"
+# Stats file scoped per project directory (matches notify.ts)
+SAFE_CWD=$(pwd | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/-\+/-/g')
+STATS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}.json"
 
 # Hide cursor during draws
 tput civis 2>/dev/null || true

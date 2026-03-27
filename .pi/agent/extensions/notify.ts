@@ -45,7 +45,14 @@ function resetCmuxDetection(): void {
 // ── stats file for status panel ──────────────────────────────────────────────
 
 const STATS_DIR = path.join(os.tmpdir(), "pi-status");
-const STATS_FILE = path.join(STATS_DIR, "session.json");
+
+function getStatsFile(cwd: string): string {
+	// Scope stats file per project directory to avoid cross-session conflicts
+	const safeName = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
+	return path.join(STATS_DIR, `${safeName}.json`);
+}
+
+let statsFile = "";
 
 interface SessionStats {
 	model: string;
@@ -73,9 +80,10 @@ interface SessionStats {
 }
 
 function writeStats(stats: SessionStats): void {
+	if (!statsFile) return;
 	try {
 		mkdirSync(STATS_DIR, { recursive: true });
-		writeFileSync(STATS_FILE, JSON.stringify(stats), "utf-8");
+		writeFileSync(statsFile, JSON.stringify(stats), "utf-8");
 	} catch {}
 }
 
@@ -251,6 +259,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		resetCmuxDetection();
 		currentCtx = ctx;
+		statsFile = getStatsFile(ctx.cwd);
 		cmuxClearLog();
 		currentModel = ctx.model?.name ?? "";
 		totalInputTokens = 0;
