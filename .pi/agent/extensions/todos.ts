@@ -15,7 +15,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, accessSync } from "node:fs";
 import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -39,6 +39,20 @@ function flushTodos(tasks: Task[]): void {
 	} catch {}
 }
 
+// ── cmux detection ───────────────────────────────────────────────────────
+
+function isCmux(): boolean {
+	if (process.env.CMUX_WORKSPACE_ID) return true;
+	try {
+		const sockPath = process.env.CMUX_SOCKET_PATH
+			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
+		accessSync(sockPath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // ── cmux sidebar metadata ───────────────────────────────────────────
 
 function cmux(args: string[]): void {
@@ -48,17 +62,7 @@ function cmux(args: string[]): void {
 }
 
 function cmuxSetTaskStatus(tasks: Task[]): void {
-	if (tasks.length === 0) {
-		cmux(["clear-status", "tasks"]);
-		return;
-	}
-	const done = tasks.filter((t) => t.status === "completed" || t.status === "cancelled").length;
-	const total = tasks.length;
-	const ip = tasks.find((t) => t.status === "in_progress");
-	const label = ip ? `${done}/${total} · ${ip.title}` : `${done}/${total}`;
-	const color = done === total ? "#34c759" : "#007aff";
-	const icon = done === total ? "checkmark.circle.fill" : "checklist";
-	cmux(["set-status", "tasks", label, "--icon", icon, "--color", color]);
+	// Tasks are shown in the right status panel (status-panel.sh), not the cmux left sidebar
 }
 
 function cmuxLogTask(task: Task): void {
@@ -66,7 +70,18 @@ function cmuxLogTask(task: Task): void {
 		cmux(["log", "--level", "success", "--source", "tasks", "--", `✓ ${task.title}`]);
 	} else if (task.status === "in_progress") {
 		cmux(["log", "--level", "progress", "--source", "tasks", "--", `▸ ${task.title}`]);
+	} else if (task.status === "cancelled") {
+		cmux(["log", "--level", "warning", "--source", "tasks", "--", `✗ ${task.title}`]);
 	}
+}
+
+function cmuxNotifyAllDone(tasks: Task[]): void {
+	const completed = tasks.filter((t) => t.status === "completed").length;
+	const cancelled = tasks.filter((t) => t.status === "cancelled").length;
+	const total = tasks.length;
+	let body = `All ${total} tasks completed!`;
+	if (cancelled > 0) body = `${completed} completed, ${cancelled} cancelled`;
+	cmux(["notify", "--title", "✅ Tasks Done", "--body", body]);
 }
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -149,6 +164,12 @@ export default function (pi: ExtensionAPI) {
 		flushTodos(state.tasks);
 		cmuxSetTaskStatus(state.tasks);
 
+		// In cmux, todos are shown in the right status panel — skip the editor widget
+		if (isCmux()) {
+			ctx.ui.setWidget("todos", []);
+			return;
+		}
+
 		if (state.tasks.length === 0) {
 			ctx.ui.setWidget("todos", []);
 			return;
@@ -197,11 +218,16 @@ export default function (pi: ExtensionAPI) {
 			state = { tasks: params.tasks };
 			for (const task of params.tasks) {
 				const prev = oldMap.get(task.id);
-				if (prev !== task.status && (task.status === "completed" || task.status === "in_progress")) {
+				if (prev !== task.status && (task.status === "completed" || task.status === "in_progress" || task.status === "cancelled")) {
 					cmuxLogTask(task);
 				}
 			}
 			updateWidget(ctx);
+
+			// Notify when all tasks are done
+			if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "completed" || t.status === "cancelled")) {
+				cmuxNotifyAllDone(state.tasks);
+			}
 
 			const summary = formatTaskList(state.tasks);
 			return {
