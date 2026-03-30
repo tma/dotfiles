@@ -98,6 +98,20 @@ git pull --rebase
 git stash pop  # if stashed
 ```
 
+## Amending and rewriting history
+
+**Never amend commits or rewrite history when a PR is open for the branch.** Amending + force-pushing destroys review context — comments become orphaned and reviewers lose track of what changed.
+
+Before amending or rebasing, always check:
+
+```bash
+# Check if there's an open PR for the current branch
+gh pr view --json state,isDraft -q '.state + " draft=" + (.isDraft|tostring)' 2>/dev/null
+```
+
+- **No PR or draft PR:** amend/rebase freely, then `git push --force-with-lease`
+- **Open (non-draft) PR:** add a **new commit** instead — never amend, squash, or rebase
+
 ## Pushing
 
 ```bash
@@ -107,11 +121,12 @@ git push
 # First push of a new branch
 git push -u origin HEAD
 
-# Force push after rebase (only on personal branches)
+# Force push after rebase (only on personal branches, no open PR)
 git push --force-with-lease
 ```
 
 Never force push to `main` or shared branches.
+Never force push a branch with an open (non-draft) PR.
 
 ## Branches
 
@@ -130,4 +145,5 @@ git push origin --delete feature/description
 2. **Descriptive messages** — encode intent and context, not just "what"
 3. **Pull with rebase** — `git pull --rebase` unless you want a merge commit
 4. **Never force push shared branches** — use `--force-with-lease` on personal branches only
-5. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
+5. **Never amend/rebase with an open PR** — check `gh pr view` first; add new commits instead
+6. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
