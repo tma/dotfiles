@@ -68,6 +68,7 @@ export default function (pi: ExtensionAPI) {
 				if (piPaneId) {
 					const cols = process.stdout.columns || 80;
 					execFileSync("cmux", ["resize-pane", "--pane", piPaneId, "-R", "--amount", String(Math.round(cols * 3 / 4))], { timeout: 2000 });
+					execFileSync("cmux", ["focus-pane", "--pane", piPaneId], { timeout: 2000 });
 				}
 			}
 		} catch {}
