@@ -363,10 +363,19 @@ async function runAgent(
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const inv = getPiCommand(args);
+			// Strip CMUX env vars and block socket fallback so subagents
+			// don't detect cmux and open their own status panels / sidebar entries
+			const childEnv = {
+				...Object.fromEntries(
+					Object.entries(process.env).filter(([key]) => !key.startsWith("CMUX_"))
+				),
+				CMUX_SOCKET_PATH: "/dev/null/disabled",
+			};
 			const proc = spawn(inv.command, inv.args, {
 				cwd: opts.cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				env: childEnv,
 			});
 
 			let buf = "";
@@ -623,7 +632,7 @@ export default function (pi: ExtensionAPI) {
 	const SubagentParams = Type.Object({
 		agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 		task: Type.Optional(Type.String({ description: "Task (single mode)" })),
-		tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
+		tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks to run in parallel" })),
 		chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential chain steps" })),
 		cwd: Type.Optional(Type.String({ description: "Working directory" })),
 	});
@@ -632,9 +641,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerTool({
 		name: "subagent",
-		label: "Subagent",
+		label: "Agents",
 		description: [
-			"Delegate tasks to specialized subagents with isolated context windows.",
+			"Delegate tasks to specialized agents with isolated context windows.",
 			"Modes: single (agent + task), parallel (tasks[]), chain (steps with {previous}).",
 			"Available agents are defined in ~/.pi/agent/agents/ and .pi/agents/ as markdown files.",
 		].join(" "),
@@ -711,7 +720,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.tasks && params.tasks.length > 0) {
 				if (params.tasks.length > MAX_PARALLEL) {
 					return {
-						content: [{ type: "text", text: `Max ${MAX_PARALLEL} parallel tasks` }],
+						content: [{ type: "text", text: `Max ${MAX_PARALLEL} tasks` }],
 						details: makeDetails("parallel")([]),
 						isError: true,
 					};
@@ -747,7 +756,7 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						onUpdate: (partial) => {
 							const cur = partial.details?.results[0];
-							if (cur) { live[i] = cur; emitParallel(); }
+							if (cur) { live[i] = { ...cur, exitCode: -1 }; emitParallel(); }
 						},
 						makeDetails: makeDetails("parallel"),
 					});
@@ -805,15 +814,15 @@ export default function (pi: ExtensionAPI) {
 			if (args.chain?.length) {
 				const agents = args.chain.map((s: any) => s.agent);
 				const flow = agents.map((a: string) => theme.fg("accent", a)).join(theme.fg("muted", " → "));
-				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${flow}`, 0, 0);
+				return new Text(`${theme.fg("toolTitle", theme.bold("agents "))}${flow}`, 0, 0);
 			}
 			if (args.tasks?.length) {
 				const agents = args.tasks.map((t: any) => t.agent);
 				const list = agents.map((a: string) => theme.fg("accent", a)).join(theme.fg("muted", " | "));
-				return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}${list}`, 0, 0);
+				return new Text(`${theme.fg("toolTitle", theme.bold("agents "))}${list}`, 0, 0);
 			}
 			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}`,
+				`${theme.fg("toolTitle", theme.bold("agent "))}${theme.fg("accent", args.agent || "?")}`,
 				0,
 				0,
 			);
@@ -839,7 +848,7 @@ export default function (pi: ExtensionAPI) {
 			const totalDuration = details.results.reduce((sum, r) => sum + (r.durationMs || 0), 0);
 			const ok = details.results.filter((r) => r.exitCode === 0).length;
 			const icon = ok === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
-			const modeLabel = details.mode === "chain" ? "chain" : "parallel";
+			const modeLabel = details.mode === "chain" ? "chain" : "agents";
 
 			if (expanded) {
 				const c = new Container();
@@ -902,7 +911,7 @@ export default function (pi: ExtensionAPI) {
 	// ─── /run <agent> <task> ──────────────────────────────────────────────
 
 	pi.registerCommand("run", {
-		description: "Run a single subagent: /run <agent> <task>",
+		description: "Run a single agent: /run <agent> <task>",
 		getArgumentCompletions: agentCompletions,
 		handler: async (args, ctx) => {
 			if (!args?.trim()) {
@@ -1042,7 +1051,7 @@ ${agentList}
 2. Follow the **Execution Strategy** section to determine task ordering and parallelism.
 3. For each parallel group, use the subagent tool's parallel mode (tasks array).
 4. For sequential dependencies, use chain mode or run groups in sequence.
-5. Each subagent task description must be FULLY SELF-CONTAINED — copy all relevant context from the plan into each task. Subagents cannot read the plan file or see this conversation.
+5. Each agent task description must be FULLY SELF-CONTAINED — copy all relevant context from the plan into each task. Agents cannot read the plan file or see this conversation.
 6. Include file paths, function names, patterns to follow, and verification steps in each task.
 7. Do NOT re-plan or discuss. Execute now.`;
 
@@ -1061,7 +1070,7 @@ ${agentList}
 - Break the plan into independent subtasks that can run in parallel (use the tasks array).
 - Pick the best agent for each subtask (use "coder" for implementation, "scout" for analysis, "researcher" for research).
 - If some steps depend on others, group the independent ones into a parallel batch, and use a chain for sequential dependencies.
-- Each subtask must be self-contained — include all the relevant context, file paths, and requirements from our discussion so the subagent can execute without seeing this conversation.
+- Each subtask must be self-contained — include all the relevant context, file paths, and requirements from our discussion so the agent can execute without seeing this conversation.
 - Do NOT summarize or re-discuss the plan. Execute it now.
 
 Tip: Consider running /plan first to create a .pi/plan.md for more reliable execution.`;
