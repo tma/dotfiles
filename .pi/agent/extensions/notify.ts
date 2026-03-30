@@ -128,6 +128,19 @@ function cmuxClearLog(): void {
 	cmux(["clear-log"]);
 }
 
+function cmuxSetTabColor(color: string): void {
+	cmux(["workspace-action", "--action", "set-color", "--color", color]);
+}
+
+function cmuxClearTabColor(): void {
+	cmux(["workspace-action", "--action", "clear-color"]);
+}
+
+function truncTask(task: string, max: number = 50): string {
+	const clean = task.replace(/\s+/g, " ").trim();
+	return clean.length > max ? clean.slice(0, max) + "…" : clean;
+}
+
 // ── generic terminal notifications ───────────────────────────────────────────
 
 function notifyOSC777(title: string, body: string): void {
@@ -192,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 	let activeSubagents = 0;
 	let completedSubagents = 0;
 	let loggedSubagents = new Set<string>();
+	let subagentTaskList: Array<{ agent: string; task: string }> = [];
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	let totalCacheRead = 0;
@@ -296,6 +310,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		cmuxClearStatus("pi");
 		cmuxClearProgress();
+		cmuxClearTabColor();
 		cmuxLog("Session ended");
 		agentState = "idle";
 		flushStats();
@@ -333,8 +348,10 @@ export default function (pi: ExtensionAPI) {
 		loggedSubagents = new Set();
 		agentState = "working";
 		subagentInfo = null;
+		subagentTaskList = [];
 		cmuxSetStatus("pi", "working", "terminal.fill", "#ff9500");
 		cmuxSetProgress(0, "Starting...");
+		cmuxSetTabColor("Amber");
 		flushStats();
 	});
 
@@ -350,15 +367,18 @@ export default function (pi: ExtensionAPI) {
 			cmuxSetStatus("pi", "done (errors)", "exclamationmark.triangle.fill", "#ff3b30");
 			cmuxLog(`${body} (${errorsThisLoop} error${errorsThisLoop !== 1 ? "s" : ""})`, "warning");
 			notify("Pi", body, "Errors");
+			cmuxSetTabColor("Red");
 		} else {
 			cmuxSetStatus("pi", "idle", "checkmark.circle.fill", "#34c759");
 			cmuxLog(body, "success");
 			notify("Pi", body);
+			cmuxSetTabColor("Green");
 		}
 
-		// Fade status back to neutral after 10s
+		// Fade status + tab color back to neutral after 10s
 		setTimeout(() => {
 			cmuxSetStatus("pi", "idle", "terminal.fill", "#8e8e93");
+			cmuxClearTabColor();
 		}, 10000);
 
 		flushStats();
@@ -398,27 +418,37 @@ export default function (pi: ExtensionAPI) {
 		if (name === "subagent") {
 			const args = event.args ?? {};
 			if (args.chain?.length) {
-				const agents = args.chain.map((s: any) => s.agent).join(" → ");
+				subagentTaskList = args.chain.map((s: any) => ({ agent: s.agent, task: s.task }));
+			} else if (args.tasks?.length) {
+				subagentTaskList = args.tasks.map((t: any) => ({ agent: t.agent, task: t.task }));
+			} else if (args.agent) {
+				subagentTaskList = [{ agent: args.agent, task: args.task }];
+			}
+
+			if (args.chain?.length) {
 				activeSubagents = args.chain.length;
 				completedSubagents = 0;
 				subagentInfo = { mode: "chain", agents: args.chain.map((s: any) => s.agent), completed: 0, total: activeSubagents };
-				cmuxLog(`Chain: ${agents}`, "progress");
-				cmuxSetStatus("pi", `chain (0/${activeSubagents})`, "arrow.triangle.branch", "#af52de");
+				for (let i = 0; i < args.chain.length; i++) {
+					cmuxLog(`Step ${i + 1}: ${args.chain[i].agent} — ${truncTask(args.chain[i].task)}`, "progress");
+				}
+				cmuxSetStatus("pi", `chain 0 done · ${activeSubagents} running`, "arrow.triangle.branch", "#af52de");
 			} else if (args.tasks?.length) {
-				const agents = args.tasks.map((t: any) => t.agent).join(", ");
 				activeSubagents = args.tasks.length;
 				completedSubagents = 0;
 				subagentInfo = { mode: "parallel", agents: args.tasks.map((t: any) => t.agent), completed: 0, total: activeSubagents };
-				cmuxLog(`Parallel: ${agents}`, "progress");
-				cmuxSetStatus("pi", `fleet (0/${activeSubagents})`, "square.grid.2x2", "#af52de");
+				for (const t of args.tasks) {
+					cmuxLog(`${t.agent} — ${truncTask(t.task)}`, "progress");
+				}
+				cmuxSetStatus("pi", `agents 0 done · ${activeSubagents} running`, "square.grid.2x2", "#af52de");
 			} else if (args.agent) {
 				activeSubagents = 1;
 				completedSubagents = 0;
 				subagentInfo = { mode: "single", agents: [args.agent], completed: 0, total: 1 };
-				cmuxLog(`Subagent: ${args.agent}`, "progress");
+				cmuxLog(`${args.agent} — ${truncTask(args.task)}`, "progress");
 				cmuxSetStatus("pi", args.agent, "person.fill", "#af52de");
 			}
-			cmuxSetProgress(0, "Subagents...");
+			cmuxSetProgress(0, `Agents: 0 done · ${activeSubagents} running`);
 			flushStats();
 		} else if (name === "bash") {
 			commandsRun++;
@@ -459,12 +489,14 @@ export default function (pi: ExtensionAPI) {
 		const progress = total > 0 ? Math.min(0.9, done / total) : 0;
 
 		if (details.mode === "chain") {
-			cmuxSetStatus("pi", `chain (${done}/${total})`, "arrow.triangle.branch", "#af52de");
-			cmuxSetProgress(progress, `Chain ${done}/${total}`);
+			const running = total - done;
+			cmuxSetStatus("pi", `chain ${done} done · ${running} running`, "arrow.triangle.branch", "#af52de");
+			cmuxSetProgress(progress, `Agents: ${done} done · ${running} running`);
 			if (subagentInfo) subagentInfo.completed = done;
 		} else if (details.mode === "parallel") {
-			cmuxSetStatus("pi", `fleet (${done}/${total})`, "square.grid.2x2", "#af52de");
-			cmuxSetProgress(progress, `Fleet ${done}/${total}`);
+			const running = total - done;
+			cmuxSetStatus("pi", `agents ${done} done · ${running} running`, "square.grid.2x2", "#af52de");
+			cmuxSetProgress(progress, `Agents: ${done} done · ${running} running`);
 			if (subagentInfo) subagentInfo.completed = done;
 		}
 
@@ -492,14 +524,10 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (event.toolName === "subagent") {
-			const ok = completedSubagents;
-			const total = activeSubagents;
-			if (total > 1) {
-				cmuxLog(`Fleet complete: ${ok}/${total}`, event.isError ? "error" : "success");
-			}
 			activeSubagents = 0;
 			completedSubagents = 0;
 			loggedSubagents = new Set();
+			subagentTaskList = [];
 			subagentInfo = null;
 			cmuxClearProgress();
 			cmuxSetStatus("pi", "working", "terminal.fill", "#ff9500");
