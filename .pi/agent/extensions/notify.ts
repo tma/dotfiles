@@ -11,8 +11,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { accessSync, writeFileSync, mkdirSync } from "node:fs";
-import * as os from "node:os";
+import { accessSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -44,13 +43,6 @@ function resetCmuxDetection(): void {
 
 // ── stats file for status panel ──────────────────────────────────────────────
 
-const STATS_DIR = path.join(os.tmpdir(), "pi-status");
-
-function getStatsFile(cwd: string): string {
-	const safeName = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
-	return path.join(STATS_DIR, `${safeName}-${process.pid}.json`);
-}
-
 let statsFile = "";
 
 interface SessionStats {
@@ -81,7 +73,6 @@ interface SessionStats {
 function writeStats(stats: SessionStats): void {
 	if (!statsFile) return;
 	try {
-		mkdirSync(STATS_DIR, { recursive: true });
 		writeFileSync(statsFile, JSON.stringify(stats), "utf-8");
 	} catch {}
 }
@@ -272,7 +263,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		resetCmuxDetection();
 		currentCtx = ctx;
-		statsFile = getStatsFile(ctx.cwd);
+		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
 		cmuxClearLog();
 		currentModel = ctx.model?.name ?? "";
 		totalInputTokens = 0;

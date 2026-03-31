@@ -34,11 +34,13 @@ function cmuxSync(args: string[]): string | null {
 }
 
 export default function (pi: ExtensionAPI) {
+	let sessionDir = "";
 	let panelSurfaceId: string | null = null;
 	const scriptPath = path.join(path.dirname(import.meta.url.replace("file://", "")), "status-panel.sh");
 
 	function openPanel(cwd: string): boolean {
 		if (!isCmux()) return false;
+		if (!sessionDir) return false;
 
 		// Create a right split — returns "OK surface:<id> workspace:<id>"
 		const result = cmuxSync(["new-split", "right"]);
@@ -80,7 +82,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Send cd + script to the new surface and press enter
 		setTimeout(() => {
-			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && PI_PID=${process.pid} ${scriptPath}`;
+			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && PI_PID=${process.pid} PI_SESSION_DIR=${sessionDir.replace(/ /g, "\\ ")} ${scriptPath}`;
 			execFile("cmux", ["send", "--surface", panelSurfaceId!, cmd], { timeout: 3000 }, () => {});
 			setTimeout(() => {
 				execFile("cmux", ["send-key", "--surface", panelSurfaceId!, "enter"], { timeout: 3000 }, () => {});
@@ -111,6 +113,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
 		if (isCmux() && !panelSurfaceId) {
 			togglePanel(ctx.cwd);
 		}

@@ -17,24 +17,15 @@ import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
 import { writeFileSync, mkdirSync, accessSync } from "node:fs";
 import { execFile } from "node:child_process";
-import * as os from "node:os";
 import * as path from "node:path";
 
 // ── Shared state file (read by status-panel.sh) ─────────────────────
-
-const STATS_DIR = path.join(os.tmpdir(), "pi-status");
-
-function getTodosFile(cwd: string): string {
-	const safeName = cwd.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
-	return path.join(STATS_DIR, `${safeName}-${process.pid}-todos.json`);
-}
 
 let todosFile = "";
 
 function flushTodos(tasks: Task[]): void {
 	if (!todosFile) return;
 	try {
-		mkdirSync(STATS_DIR, { recursive: true });
 		writeFileSync(todosFile, JSON.stringify({ tasks }), "utf-8");
 	} catch {}
 }
@@ -142,7 +133,8 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
-		todosFile = getTodosFile(ctx.cwd);
+		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
 		reconstructState(ctx);
 	});
 	pi.on("session_switch", async (_e, ctx) => reconstructState(ctx));

@@ -5,24 +5,33 @@ description: Maintains project memory across sessions using markdown files. Trac
 
 # Context Memory
 
-Persistent project memory using plain markdown files — no external tools, no databases.
+Persistent project memory using JSON handoff files and a markdown decision log.
+
+## Session Directory
+
+All session state lives in `~/.pi/agent/sessions/<encoded-cwd>/`. Derive the path:
+
+```bash
+SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
+```
 
 ## Session Start
 
 At the beginning of every session, check for existing context:
 
 ```bash
-cat HANDOFF.md 2>/dev/null
+SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
+cat "$SESSION_DIR/handoff.json" 2>/dev/null
 cat .decisions.md 2>/dev/null
 ```
 
-If `HANDOFF.md` exists, read it fully before doing anything else. It contains the state from the previous session.
+If `handoff.json` exists, read it fully before doing anything else. It contains the state from the previous session.
 
 ## During Work
 
 ### Recording Decisions
 
-When making a non-trivial decision (architecture, library choice, approach, tradeoff), append it to `.decisions.md`:
+When making a non-trivial decision (architecture, library choice, approach, tradeoff), append it to `.decisions.md` in the project root:
 
 ```markdown
 ## YYYY-MM-DD: <short title>
@@ -49,71 +58,49 @@ Decision: <key choice made, if any>
 
 Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
 
-Example:
-```
-feat: add JWT auth middleware
-
-Using httpOnly cookies instead of localStorage for token storage.
-Stateless validation lets us scale horizontally without session store.
-
-Decision: JWT over server sessions — avoids shared state across instances
-```
-
 ## Before Ending a Session
 
-Before the session ends (or when asked to hand off), write `HANDOFF.md` in the project root:
+Before the session ends (or when asked to hand off), write `handoff.json` in the session directory:
 
-```markdown
-# Handoff
-
-## Status
-Brief summary of where things stand.
-
-## Done
-- [x] Completed item with enough detail to verify
-- [x] Another completed item
-
-## Remaining
-- [ ] Specific next task
-- [ ] Another pending task (with any notes on approach)
-
-## Blocked
-- Anything waiting on external input or unresolved questions
-
-## Key Decisions This Session
-- **<decision>**: <rationale> (also logged in .decisions.md)
-
-## Open Questions
-- Questions that need human input or further investigation
-- Uncertainties about approach
-
-## Files Changed
-- `path/to/file.ts` — what changed and why
-- `path/to/other.ts` — what changed and why
-
-## Context for Next Session
-Any critical context that would be lost — error messages seen,
-edge cases discovered, patterns to follow, things already tried
-that didn't work.
+```bash
+SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
 ```
 
-`HANDOFF.md` is **overwritten** each session (it's current state, not a log).
+```json
+{
+  "status": "Brief summary of where things stand",
+  "done": [
+    "Completed item with enough detail to verify",
+    "Another completed item"
+  ],
+  "remaining": [
+    "Specific next task",
+    "Another pending task (with any notes on approach)"
+  ],
+  "blocked": [
+    "Anything waiting on external input or unresolved questions"
+  ],
+  "decisions": [
+    { "decision": "short title", "rationale": "why" }
+  ],
+  "openQuestions": [
+    "Questions that need human input or further investigation"
+  ],
+  "filesChanged": [
+    { "path": "path/to/file.ts", "what": "what changed and why" }
+  ],
+  "context": "Critical context that would be lost — error messages seen, edge cases discovered, patterns to follow, things already tried that didn't work."
+}
+```
+
+`handoff.json` is **overwritten** each session (it's current state, not a log).
 `.decisions.md` is **appended** each session (it's a permanent record).
 
 ## Rules
 
-1. **Always check for HANDOFF.md at session start** — it's your memory from last time
-2. **Always write HANDOFF.md before ending** — even for small sessions
+1. **Always check for handoff.json at session start** — it's your memory from last time
+2. **Always write handoff.json before ending** — even for small sessions
 3. **Log decisions as you make them** — don't batch at the end when you've forgotten rationale
 4. **Be specific** — "implemented auth" is useless; "added JWT middleware in src/auth/middleware.ts with RS256 validation" is useful
 5. **Record what didn't work** — failed approaches are valuable context that prevents re-trying them
-6. **Keep HANDOFF.md under 100 lines** — if it's longer, you're including too much detail
-
-## Gitignore
-
-Add `HANDOFF.md` to `.gitignore` if you don't want it committed (it's working state).
-Keep `.decisions.md` tracked — it's documentation.
-
-```bash
-echo "HANDOFF.md" >> .gitignore
-```
+6. **Keep it concise** — handoff.json should capture essential state, not exhaustive detail

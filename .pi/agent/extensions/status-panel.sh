@@ -34,9 +34,8 @@ GRAY='\033[90m'
 SESSION_START=$(date +%s)
 DRAW_COUNT=0
 # Stats file scoped per project directory (matches notify.ts)
-SAFE_CWD=$(pwd | sed 's/[^a-zA-Z0-9]/-/g' | sed 's/--*/-/g')
 PI_PID="${PI_PID:-$$}"
-STATS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}-${PI_PID}.json"
+STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
 
 # Hide cursor during draws
 tput civis 2>/dev/null || true
@@ -135,7 +134,7 @@ draw() {
   p ""
 
   # ── Todos ────────────────────────────────────────────
-  local TODOS_FILE="${TMPDIR:-/tmp}/pi-status/${SAFE_CWD}-${PI_PID}-todos.json"
+  local TODOS_FILE="${PI_SESSION_DIR}/${PI_PID}-todos.json"
   if [[ -f "$TODOS_FILE" ]]; then
     local todos_json
     todos_json=$(cat "$TODOS_FILE" 2>/dev/null)
