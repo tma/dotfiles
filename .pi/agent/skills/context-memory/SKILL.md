@@ -1,6 +1,6 @@
 ---
 name: context-memory
-description: Maintains project memory across sessions using markdown files. Tracks decisions, work state, and open questions. Use at session start to resume context, and before ending to preserve it.
+description: Maintains project memory across sessions using JSON handoff files and a markdown decision log. Tracks decisions, work state, and open questions. Use at session start to resume context, and before ending to preserve it.
 ---
 
 # Context Memory
