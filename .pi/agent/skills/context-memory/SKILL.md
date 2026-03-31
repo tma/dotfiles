@@ -15,6 +15,8 @@ All session state lives in `~/.pi/agent/sessions/<encoded-cwd>/`. Derive the pat
 SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
 ```
 
+The encoding replaces `/` with `-` and wraps in `--`. Verify the directory exists before reading — if it doesn't, there are no prior sessions for this project.
+
 ## Session Start
 
 At the beginning of every session, check for existing context:

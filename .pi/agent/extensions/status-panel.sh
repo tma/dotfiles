@@ -34,6 +34,10 @@ GRAY='\033[90m'
 SESSION_START=$(date +%s)
 DRAW_COUNT=0
 # Stats file scoped per project directory (matches notify.ts)
+if [[ -z "$PI_SESSION_DIR" ]]; then
+  echo "PI_SESSION_DIR not set"
+  exit 1
+fi
 PI_PID="${PI_PID:-$$}"
 STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
 

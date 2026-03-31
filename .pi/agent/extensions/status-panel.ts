@@ -82,7 +82,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Send cd + script to the new surface and press enter
 		setTimeout(() => {
-			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && PI_PID=${process.pid} PI_SESSION_DIR=${sessionDir.replace(/ /g, "\\ ")} ${scriptPath}`;
+			const cmd = `cd ${cwd.replace(/ /g, "\\ ")} && PI_PID=${process.pid} PI_SESSION_DIR='${sessionDir}' ${scriptPath}`;
 			execFile("cmux", ["send", "--surface", panelSurfaceId!, cmd], { timeout: 3000 }, () => {});
 			setTimeout(() => {
 				execFile("cmux", ["send-key", "--surface", panelSurfaceId!, "enter"], { timeout: 3000 }, () => {});

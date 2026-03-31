@@ -308,7 +308,9 @@ export default function (pi: ExtensionAPI) {
 		flushStats();
 	});
 
-	pi.on("session_switch", async (event) => {
+	pi.on("session_switch", async (event, ctx) => {
+		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
 		cmuxClearLog();
 		cmuxLog(`Switched session (${event.reason})`);
 	});

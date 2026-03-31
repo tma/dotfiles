@@ -15,7 +15,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
-import { writeFileSync, mkdirSync, accessSync } from "node:fs";
+import { writeFileSync, accessSync } from "node:fs";
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 
@@ -137,8 +137,16 @@ export default function (pi: ExtensionAPI) {
 		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
 		reconstructState(ctx);
 	});
-	pi.on("session_switch", async (_e, ctx) => reconstructState(ctx));
-	pi.on("session_fork", async (_e, ctx) => reconstructState(ctx));
+	pi.on("session_switch", async (_e, ctx) => {
+		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
+		reconstructState(ctx);
+	});
+	pi.on("session_fork", async (_e, ctx) => {
+		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
+		reconstructState(ctx);
+	});
 	pi.on("session_tree", async (_e, ctx) => reconstructState(ctx));
 
 	// Clear widget once the agent finishes and all tasks are done
