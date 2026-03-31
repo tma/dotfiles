@@ -309,10 +309,41 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_switch", async (event, ctx) => {
+		currentCtx = ctx;
 		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
 		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
+		currentModel = ctx.model?.name ?? "";
+		totalInputTokens = 0;
+		totalOutputTokens = 0;
+		totalCacheRead = 0;
+		totalCacheWrite = 0;
+		totalCost = 0;
+		totalTurns = 0;
+		filesEdited = new Set();
+		filesCreated = new Set();
+		commandsRun = 0;
+		errorsThisLoop = 0;
+		agentState = "idle";
+		subagentInfo = null;
+
+		// Bootstrap from existing session entries
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if ((entry as any).type === "message" && (entry as any).message?.role === "assistant") {
+				const u = (entry as any).message.usage;
+				if (u) {
+					totalInputTokens += u.input || 0;
+					totalOutputTokens += u.output || 0;
+					totalCacheRead += u.cacheRead || 0;
+					totalCacheWrite += u.cacheWrite || 0;
+					totalCost += u.cost?.total || 0;
+					totalTurns++;
+				}
+			}
+		}
+
 		cmuxClearLog();
 		cmuxLog(`Switched session (${event.reason})`);
+		flushStats();
 	});
 
 	// ── compaction ───────────────────────────────────────────────────────
