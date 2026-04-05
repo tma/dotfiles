@@ -1,5 +1,5 @@
 /**
- * /plan command — Create structured implementation plans at .pi/plan.md.
+ * /plan command — Create structured implementation plans at the current worktree's .pi/plan.md.
  *
  * With args:  /plan <task> — analyze codebase and plan for the task
  * Without:    /plan — formalize the plan discussed in conversation
@@ -35,7 +35,7 @@ export function getPlanPath(cwd: string): string {
 	return path.join(root, ".pi", "plan.md");
 }
 
-const PLAN_FORMAT = `\`\`\`markdown
+export const PLAN_FORMAT = `\`\`\`markdown
 # Plan: <descriptive title>
 
 ## Context
@@ -72,7 +72,7 @@ What we're trying to achieve and why.
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("plan", {
-		description: "Create an implementation plan: /plan [task] — writes .pi/plan.md",
+		description: "Create an implementation plan: /plan [task] — writes worktree-local .pi/plan.md",
 		handler: async (args, ctx) => {
 			const planPath = getPlanPath(ctx.cwd);
 			const task = args?.trim();

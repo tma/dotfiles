@@ -2,7 +2,7 @@
  * Subagent extension — lightweight multi-agent orchestration for pi.
  *
  * Based on pi's built-in subagent example, enhanced with:
- *   - /fleet command (à la Copilot CLI) — decomposes a task into parallel subtasks
+ *   - /dispatch command — decomposes a task into parallel subtasks or executes a plan
  *   - /run <agent> <task> — single agent dispatch
  *   - /chain agent1 -> agent2 -- <task> — sequential pipeline
  *   - Duration + cost tracking
@@ -1003,15 +1003,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ─── /fleet [task] ───────────────────────────────────────────────────
+	// ─── /dispatch [task] ────────────────────────────────────────────────
 	//
-	// Inspired by GitHub Copilot CLI's /fleet command.
-	// If .pi/plan.md exists, executes it. Otherwise decomposes the task
-	// into parallel subtasks or reads the plan from conversation.
+	// Executes work in the current worktree by decomposing a task into
+	// parallel subtasks, or by executing the current worktree's .pi/plan.md.
 	//
 
-	pi.registerCommand("fleet", {
-		description: "Execute work in parallel: /fleet [task]. No args = execute .pi/plan.md or the plan from this session.",
+	pi.registerCommand("dispatch", {
+		description: "Execute work in parallel: /dispatch [task]. No args = execute worktree-local .pi/plan.md or the plan from this session.",
 		handler: async (args, ctx) => {
 			const { agents } = discoverAgents(ctx.cwd, "both");
 			const agentList = agents.map((a) => `- ${a.name}: ${a.description}`).join("\n");
@@ -1019,7 +1018,7 @@ export default function (pi: ExtensionAPI) {
 
 			// With args: decompose and execute the given task
 			if (task) {
-				const fleetPrompt = `Break this task into independent subtasks that can run in parallel, then execute them using the subagent tool in parallel mode (tasks array).
+				const dispatchPrompt = `Break this task into independent subtasks that can run in parallel, then execute them using the subagent tool in parallel mode (tasks array).
 
 ## Available agents
 ${agentList}
@@ -1033,7 +1032,7 @@ ${agentList}
 
 ## Task
 ${task}`;
-				pi.sendUserMessage(fleetPrompt, { deliverAs: "followUp" });
+				pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
 				return;
 			}
 
@@ -1041,7 +1040,7 @@ ${task}`;
 			const planFile = findPlanFile(ctx.cwd);
 
 			if (planFile) {
-				const fleetPrompt = `Read the plan file at ${planFile} and execute it using the subagent tool.
+				const dispatchPrompt = `Read the plan file at ${planFile} and execute it using the subagent tool.
 
 ## Available agents
 ${agentList}
@@ -1055,12 +1054,12 @@ ${agentList}
 6. Include file paths, function names, patterns to follow, and verification steps in each task.
 7. Do NOT re-plan or discuss. Execute now.`;
 
-				pi.sendUserMessage(fleetPrompt, { deliverAs: "followUp" });
+				pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
 				return;
 			}
 
 			// No plan file: try to execute from conversation context
-			const fleetPrompt = `Look at the plan we've been discussing in this conversation. Execute it now using the subagent tool.
+			const dispatchPrompt = `Look at the plan we've been discussing in this conversation. Execute it now using the subagent tool.
 
 ## Available agents
 ${agentList}
@@ -1075,7 +1074,7 @@ ${agentList}
 
 Tip: Consider running /plan first to create a .pi/plan.md for more reliable execution.`;
 
-			pi.sendUserMessage(fleetPrompt, { deliverAs: "followUp" });
+			pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
 		},
 	});
 }
