@@ -59,3 +59,6 @@
 
 [github]
 	user = tma
+
+[credential]
+	helper = osxkeychain
