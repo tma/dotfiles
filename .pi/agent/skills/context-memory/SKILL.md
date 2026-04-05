@@ -1,108 +1,49 @@
 ---
 name: context-memory
-description: Maintains project memory across sessions using JSON handoff files and a markdown decision log. Tracks decisions, work state, and open questions. Use at session start to resume context, and before ending to preserve it.
+description: Uses Pi's built-in session history for lightweight cross-session context. Never writes HANDOFF.md, .decisions.md, handoff.json, or other memory bookkeeping files unless the user explicitly asks for them.
 ---
 
 # Context Memory
 
-Persistent project memory using JSON handoff files and a markdown decision log.
+Use Pi's native session history as the default source of continuity.
 
-## Session Directory
+Do **not** create project-root memory files, sidecar handoff files, or decision logs just to preserve context.
 
-All session state lives in `~/.pi/agent/sessions/<encoded-cwd>/`. Derive the path:
+## Default Policy
 
-```bash
-SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
-```
-
-The encoding replaces `/` with `-` and wraps in `--`. Verify the directory exists before reading — if it doesn't, there are no prior sessions for this project.
+- Never write `HANDOFF.md`, `.decisions.md`, `handoff.json`, or similar bookkeeping files by default.
+- Never add memory bookkeeping files to `.gitignore` by default.
+- Only create a handoff/decision file if the user explicitly asks for a file-based artifact.
+- Prefer keeping continuity in Pi sessions, session names, tree labels, plans, and todo state.
 
 ## Session Start
 
-At the beginning of every session, check for existing context:
+When resuming work:
 
-```bash
-SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
-cat "$SESSION_DIR/handoff.json" 2>/dev/null
-cat .decisions.md 2>/dev/null
-```
-
-If `handoff.json` exists, read it fully before doing anything else. It contains the state from the previous session.
+1. Use the current conversation context if it already contains enough information.
+2. If the user wants prior context and it is not present in the current thread, prefer Pi's built-in session mechanisms over writing or reading ad hoc files:
+   - `/resume` to find an older session
+   - `/tree` to navigate prior branches
+   - session naming / labels when available
+3. If the user asks for a summary of prior work, provide it inline in chat unless they explicitly request a file.
 
 ## During Work
 
-### Recording Decisions
+- Keep important decisions visible in the conversation itself.
+- Use todo tracking or plan files when they are part of the work, not as generic memory storage.
+- If durable documentation is needed for the project itself (ADR, design doc, README update, migration notes), create that documentation only when it is genuinely part of the task.
+- Do not invent persistent memory artifacts just for agent convenience.
 
-When making a non-trivial decision (architecture, library choice, approach, tradeoff), append it to `.decisions.md` in the project root:
+## Handoffs
 
-```markdown
-## YYYY-MM-DD: <short title>
-
-**Context**: What prompted this decision
-**Decision**: What we chose
-**Alternatives considered**: What else we looked at
-**Rationale**: Why this choice over others
-```
-
-Decisions are append-only. Never edit or remove previous entries. The file is a log.
-
-### Commit Messages
-
-Use structured commit messages that capture *why*, not just *what*:
-
-```
-<type>: <what changed>
-
-<why this approach was taken>
-
-Decision: <key choice made, if any>
-```
-
-Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
-
-## Before Ending a Session
-
-Before the session ends (or when asked to hand off), write `handoff.json` in the session directory:
-
-```bash
-SESSION_DIR="$HOME/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|/|-|g')--"
-```
-
-```json
-{
-  "status": "Brief summary of where things stand",
-  "done": [
-    "Completed item with enough detail to verify",
-    "Another completed item"
-  ],
-  "remaining": [
-    "Specific next task",
-    "Another pending task (with any notes on approach)"
-  ],
-  "blocked": [
-    "Anything waiting on external input or unresolved questions"
-  ],
-  "decisions": [
-    { "decision": "short title", "rationale": "why" }
-  ],
-  "openQuestions": [
-    "Questions that need human input or further investigation"
-  ],
-  "filesChanged": [
-    { "path": "path/to/file.ts", "what": "what changed and why" }
-  ],
-  "context": "Critical context that would be lost — error messages seen, edge cases discovered, patterns to follow, things already tried that didn't work."
-}
-```
-
-`handoff.json` is **overwritten** each session (it's current state, not a log).
-`.decisions.md` is **appended** each session (it's a permanent record).
+- Prefer inline handoff summaries in the conversation.
+- If the setup includes a `/handoff` command, prefer that over writing custom handoff files.
+- Only write a handoff file when the user explicitly requests a file-based handoff.
 
 ## Rules
 
-1. **Always check for handoff.json at session start** — it's your memory from last time
-2. **Always write handoff.json before ending** — even for small sessions
-3. **Log decisions as you make them** — don't batch at the end when you've forgotten rationale
-4. **Be specific** — "implemented auth" is useless; "added JWT middleware in src/auth/middleware.ts with RS256 validation" is useful
-5. **Record what didn't work** — failed approaches are valuable context that prevents re-trying them
-6. **Keep it concise** — handoff.json should capture essential state, not exhaustive detail
+1. **Default to zero memory files**.
+2. **Use Pi sessions as memory**.
+3. **Prefer inline summaries over file writes**.
+4. **Create documentation only when it serves the project, not bookkeeping**.
+5. **If unsure, do not persist anything extra**.
