@@ -171,27 +171,38 @@ print(sum(1 for t in tasks if t['status'] in ('completed','cancelled')))
       p " ${tbar} ${done_count}/${total_count}"
       p ""
 
-      # Task list
+      # Task list — wrap with hanging indent so multi-line titles stay aligned
       local task_lines
       task_lines=$(echo "$todos_json" | python3 -c "
-import sys,json
+import sys,json,textwrap
+width=max(10, int(sys.argv[1]))
 tasks=json.load(sys.stdin).get('tasks',[])
 icons={'pending':'○','in_progress':'▸','completed':'✓','cancelled':'✗'}
 colors={'pending':'\033[90m','in_progress':'\033[34m','completed':'\033[32m','cancelled':'\033[2m'}
 reset='\033[0m'
 dim='\033[2m'
-for t in tasks:
+for i, t in enumerate(tasks):
     s=t['status']
     ic=icons.get(s,'?')
     co=colors.get(s,'')
-    title=t['title']
+    title=' '.join(str(t.get('title','')).split())
+    prefix=f' {co}{ic}{reset} '
+    indent='   '
+    wrap_width=max(8, width - 3)
+    wrapped=textwrap.wrap(title, width=wrap_width, break_long_words=False, break_on_hyphens=False) or ['']
     if s in ('completed','cancelled'):
-        print(f' {co}{ic}{reset} {dim}{title}{reset}')
+        print(f'{prefix}{dim}{wrapped[0]}{reset}')
+        for line in wrapped[1:]:
+            print(f'{indent}{dim}{line}{reset}')
     else:
-        print(f' {co}{ic}{reset} {title}')
-" 2>/dev/null)
+        print(f'{prefix}{wrapped[0]}')
+        for line in wrapped[1:]:
+            print(f'{indent}{line}')
+    if i < len(tasks) - 1:
+        print('')
+" "$cols" 2>/dev/null)
       while IFS= read -r tline; do
-        [[ -n "$tline" ]] && p "$tline"
+        p "$tline"
       done <<< "$task_lines"
     fi
   fi
