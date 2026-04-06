@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { PLAN_FORMAT, findPlanFile, getPlanPath } from "./plan.js";
+import { PLAN_FORMAT, ensurePlanIgnored, findPlanFile, getPlanPath } from "./plan.js";
 
 function buildAutopilotPrompt(
 	cwd: string,
@@ -18,6 +18,7 @@ function buildAutopilotPrompt(
 - Working directory: ${cwd}
 - Plan file: ${planPath}
 - Treat the plan file as worktree-local state for this checkout.
+- The plan file must never be committed.
 - Stay in this worktree. Do NOT create, switch, or remove git worktrees unless the user explicitly asks.`;
 
 	const executionRules = `## Execution rules
@@ -92,6 +93,7 @@ export default function (pi: ExtensionAPI) {
 			const task = args?.trim() || undefined;
 			const planPath = getPlanPath(ctx.cwd);
 			const existingPlan = findPlanFile(ctx.cwd);
+			await ensurePlanIgnored(pi, ctx.cwd);
 			const prompt = buildAutopilotPrompt(ctx.cwd, planPath, task, existingPlan);
 
 			if (ctx.hasUI) {

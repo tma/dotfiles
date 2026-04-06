@@ -35,6 +35,29 @@ export function getPlanPath(cwd: string): string {
 	return path.join(root, ".pi", "plan.md");
 }
 
+export async function ensurePlanIgnored(pi: ExtensionAPI, cwd: string): Promise<void> {
+	if (!findGitRoot(cwd)) return;
+
+	try {
+		const excludeResult = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]);
+		if (excludeResult.code !== 0) return;
+
+		const excludePath = excludeResult.stdout.trim();
+		if (!excludePath) return;
+
+		const entry = ".pi/plan.md";
+		const content = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
+		const lines = content.split(/\r?\n/).map((line) => line.trim());
+		if (lines.includes(entry)) return;
+
+		fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+		const prefix = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+		fs.appendFileSync(excludePath, `${prefix}${entry}\n`, "utf8");
+	} catch {
+		return;
+	}
+}
+
 export const PLAN_FORMAT = `\`\`\`markdown
 # Plan: <descriptive title>
 
@@ -76,6 +99,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const planPath = getPlanPath(ctx.cwd);
 			const task = args?.trim();
+			await ensurePlanIgnored(pi, ctx.cwd);
 
 			const existingPlan = findPlanFile(ctx.cwd);
 			const existingNote = existingPlan
@@ -88,8 +112,9 @@ export default function (pi: ExtensionAPI) {
 ## Instructions
 1. First, explore the codebase to understand the architecture, patterns, and relevant code (use read, grep, find, ls directly — do NOT delegate this).
 2. Then write the plan file to ${planPath} using the exact format below.
-3. The plan must be detailed enough that any agent can execute a task from it without additional context.
-4. Record all considerations, trade-offs, and rejected alternatives — the plan is documentation.${existingNote}
+3. Treat ${planPath} as local working state only. It must never be committed.
+4. The plan must be detailed enough that any agent can execute a task from it without additional context.
+5. Record all considerations, trade-offs, and rejected alternatives — the plan is documentation.${existingNote}
 
 ## Plan format
 ${PLAN_FORMAT}
@@ -102,7 +127,8 @@ ${task}`
 1. Review our conversation and extract the plan we've been working on.
 2. If needed, explore the codebase for additional context (file paths, patterns, current behavior).
 3. Write the plan file to ${planPath} capturing ALL intentions, considerations, and decisions from our discussion.
-4. Each task must be self-contained — an agent should be able to implement it from the plan alone.${existingNote}
+4. Treat ${planPath} as local working state only. It must never be committed.
+5. Each task must be self-contained — an agent should be able to implement it from the plan alone.${existingNote}
 
 ## Plan format
 ${PLAN_FORMAT}
