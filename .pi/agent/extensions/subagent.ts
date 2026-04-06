@@ -363,13 +363,16 @@ async function runAgent(
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const inv = getPiCommand(args);
-			// Strip CMUX env vars and block socket fallback so subagents
-			// don't detect cmux and open their own status panels / sidebar entries
+			// Strip mux-specific env vars and add an explicit guard so subagents
+			// never auto-open cmux/tmux status panels or sidebar integrations.
 			const childEnv = {
 				...Object.fromEntries(
-					Object.entries(process.env).filter(([key]) => !key.startsWith("CMUX_"))
+					Object.entries(process.env).filter(
+						([key]) => !key.startsWith("CMUX_") && key !== "TMUX" && key !== "TMUX_PANE",
+					)
 				),
 				CMUX_SOCKET_PATH: "/dev/null/disabled",
+				PI_DISABLE_MUX_UI: "1",
 			};
 			const proc = spawn(inv.command, inv.args, {
 				cwd: opts.cwd ?? defaultCwd,
