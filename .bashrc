@@ -14,7 +14,7 @@ __git_prompt() {
   branch="$(git symbolic-ref --short HEAD 2>/dev/null)" || return
   local dirty=""
   git diff --quiet --ignore-submodules 2>/dev/null || dirty=" \033[31m[!]\033[0m"
-  printf ' on \033[35m %s\033[0m%s' "$branch" "$dirty"
+  printf ' on \033[35m%s\033[0m%s' "$branch" "$dirty"
 }
 PS1='\[\033[1;36m\]\W\[\033[0m\]$(__git_prompt)\n\[\033[1;32m\]❯\[\033[0m\] '
 
