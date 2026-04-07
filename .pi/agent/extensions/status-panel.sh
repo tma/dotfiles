@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pi status panel — runs in a cmux right split pane
 # Shows modified files, git status, and session stats
-# Auto-refreshes every 2 seconds, flicker-free
+# Rebuilds data every second and shows a single Session state indicator
 # Requires bash 4+ for associative arrays (brew install bash)
 
 if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
@@ -39,9 +39,15 @@ PALE_CYAN='\033[38;5;159m'
 PALE_AMBER='\033[38;5;223m'
 PALE_ROSE='\033[38;5;217m'
 
-# Track session start
+# Refresh cadence
 SESSION_START=$(date +%s)
-DRAW_COUNT=0
+FRAME_COUNT=0
+ANIMATION_INTERVAL=0.125
+REFRESH_EVERY_FRAMES=8
+SESSION_ANIM_TOKEN="__PI_SESSION_ANIM__"
+PANEL_TEMPLATE=""
+LAST_COLS=0
+LAST_ROWS=0
 # Stats file scoped per project directory (matches notify.ts)
 if [[ -z "$PI_SESSION_DIR" ]]; then
   echo "PI_SESSION_DIR not set"
@@ -54,9 +60,10 @@ STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
 tput civis 2>/dev/null || true
 trap 'tput cnorm 2>/dev/null; clear; exit 0' INT TERM EXIT
 
-draw() {
-  local cols=$(tput cols)
-  local rows=$(tput lines)
+build_panel_template() {
+  local session_anim="${1:-$SESSION_ANIM_TOKEN}"
+  local cols="${2:-$(tput cols)}"
+  local rows="${3:-$(tput lines)}"
   local buf=""
 
   # Append a line to buffer, clear rest of line
@@ -77,36 +84,31 @@ draw() {
   # Horizontal rule — match tmux pane border gray (#3b4252).
   hr() { local r; r=$(repeat_char "$cols" '─'); p "${BORDER_GRAY}${r}${RESET}"; }
 
-  # Pulse dot — cycles through brightness on each draw
-  local spin_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  local si=$((DRAW_COUNT % ${#spin_frames[@]}))
-  local pulse="${CYAN}${spin_frames[$si]}${RESET}"
-
   # ── Pi session info ─────────────────────────────────
   if [[ -f "$STATS_FILE" ]]; then
     local stats
     stats=$(cat "$STATS_FILE" 2>/dev/null)
     if [[ -n "$stats" ]]; then
-      p ""
-      hr
-      p " ${BOLD}Session${RESET} ${pulse}"
-      hr
-      p ""
-
-      local model state ctx_pct ctx_tokens ctx_window
+      local model state ctx_pct ctx_window
       model=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model',''))" 2>/dev/null || true)
       state=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))" 2>/dev/null || true)
       ctx_pct=$(echo "$stats" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d.get('contextPercent'); print(f'{p:.0f}' if p is not None else '')" 2>/dev/null || true)
       ctx_window=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contextWindow',0))" 2>/dev/null || true)
 
-      # Model + state
-      local state_icon state_color
+      local session_indicator
       case "$state" in
-        working) state_icon="●"; state_color="$PALE_AMBER" ;;
-        error)   state_icon="✗"; state_color="$PALE_ROSE" ;;
-        *)       state_icon="○"; state_color="$GRAY" ;;
+        working) session_indicator="$session_anim" ;;
+        error)   session_indicator="${PALE_ROSE}✗${RESET}" ;;
+        *)       session_indicator="${SOFT_GRAY}· · ·${RESET}" ;;
       esac
-      [[ -n "$model" ]] && p " ${BOLD}${model}${RESET} ${state_color}${state_icon}${RESET}"
+
+      p ""
+      hr
+      p " ${BOLD}Session${RESET} ${session_indicator}"
+      hr
+      p ""
+
+      [[ -n "$model" ]] && p " ${BOLD}${model}${RESET}"
 
       # Context window bar
       if [[ -n "$ctx_pct" && "$ctx_pct" != "0" ]]; then
@@ -351,8 +353,28 @@ for i, t in enumerate(tasks):
     p " ${GRAY}… +$((file_count - max_files)) more${RESET}"
   fi
 
-  # Cursor home + buffer + clear below
-  printf '\033[H%b\033[J' "$buf"
+  PANEL_TEMPLATE="$buf"
+}
+
+session_refresh_indicator() {
+  local idx=$((FRAME_COUNT % REFRESH_EVERY_FRAMES))
+  local frames=(
+    "${SOFT_GRAY}· · ·${RESET}"
+    "${PALE_CYAN}• · ·${RESET}"
+    "${PALE_CYAN}• • ·${RESET}"
+    "${BOLD}${CYAN}• • •${RESET}"
+    "${PALE_CYAN}• • ·${RESET}"
+    "${PALE_CYAN}• · ·${RESET}"
+    "${SOFT_GRAY}· · ·${RESET}"
+    "${SOFT_GRAY}· · ·${RESET}"
+  )
+  printf '%s' "${frames[$((idx % ${#frames[@]}))]}"
+}
+
+render_panel() {
+  local session_anim="$1"
+  local rendered="${PANEL_TEMPLATE//${SESSION_ANIM_TOKEN}/${session_anim}}"
+  printf '\033[H%b\033[J' "$rendered"
 }
 
 # ── Main loop ─────────────────────────────────────────
@@ -364,7 +386,17 @@ fi
 
 clear
 while true; do
-  draw
-  DRAW_COUNT=$((DRAW_COUNT + 1))
-  sleep 1
+  local_cols=$(tput cols)
+  local_rows=$(tput lines)
+
+  if [[ -z "$PANEL_TEMPLATE" || $((FRAME_COUNT % REFRESH_EVERY_FRAMES)) -eq 0 || "$local_cols" != "$LAST_COLS" || "$local_rows" != "$LAST_ROWS" ]]; then
+    build_panel_template "$SESSION_ANIM_TOKEN" "$local_cols" "$local_rows"
+    LAST_COLS="$local_cols"
+    LAST_ROWS="$local_rows"
+  fi
+
+  render_panel "$(session_refresh_indicator)"
+
+  FRAME_COUNT=$((FRAME_COUNT + 1))
+  sleep "$ANIMATION_INTERVAL"
 done
