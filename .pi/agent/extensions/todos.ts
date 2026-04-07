@@ -87,6 +87,7 @@ interface Task {
 
 interface TodoState {
 	tasks: Task[];
+	clearedTasks?: Task[];
 }
 
 // ── Schema ──────────────────────────────────────────────────────────
@@ -208,13 +209,15 @@ export default function (pi: ExtensionAPI) {
 			"Use todo_write proactively when a task has 3+ steps or involves multiple files.",
 			"Create the todo list at the start, update status as you work, mark tasks completed immediately after finishing each one.",
 			"Only have one task in_progress at a time. Complete it before starting the next.",
+			"When you finish work and clear the todo list, mention that cleanup with a brief summary of the completed/cancelled tasks in your user-facing response.",
 			"Do NOT use todo_write for single trivial tasks or purely conversational requests.",
 		],
 		parameters: TodoWriteParams,
 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const previousTasks = [...state.tasks];
 			// Detect changes for logging
-			const oldMap = new Map(state.tasks.map((t) => [t.id, t.status]));
+			const oldMap = new Map(previousTasks.map((t) => [t.id, t.status]));
 			state = { tasks: params.tasks };
 			for (const task of params.tasks) {
 				const prev = oldMap.get(task.id);
@@ -229,10 +232,13 @@ export default function (pi: ExtensionAPI) {
 				cmuxNotifyAllDone(state.tasks);
 			}
 
-			const summary = formatTaskList(state.tasks);
+			const clearedTasks = state.tasks.length === 0 ? previousTasks : undefined;
+			const summary = state.tasks.length === 0
+				? formatClearedTaskSummary(previousTasks)
+				: formatTaskList(state.tasks);
 			return {
 				content: [{ type: "text", text: summary }],
-				details: { tasks: [...state.tasks] } as TodoState,
+				details: { tasks: [...state.tasks], clearedTasks } as TodoState,
 			};
 		},
 
@@ -249,6 +255,27 @@ export default function (pi: ExtensionAPI) {
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as TodoState | undefined;
 			if (!details?.tasks?.length) {
+				if (details?.clearedTasks?.length) {
+					const cleared = details.clearedTasks;
+					const done = cleared.filter((t) => t.status === "completed").length;
+					const cancelled = cleared.filter((t) => t.status === "cancelled").length;
+					let line = theme.fg("success", "Todo list cleared")
+						+ theme.fg("muted", ` · ${done} completed`)
+						+ (cancelled ? theme.fg("dim", `, ${cancelled} cancelled`) : "");
+					if (expanded) {
+						for (const t of cleared) {
+							const icon = statusIcon(t.status);
+							const colored = t.status === "completed" ? theme.fg("success", icon)
+								: t.status === "cancelled" ? theme.fg("dim", icon)
+								: theme.fg("muted", icon);
+							const title = t.status === "completed" || t.status === "cancelled"
+								? theme.fg("dim", t.title)
+								: theme.fg("text", t.title);
+							line += `\n  ${colored} ${title}`;
+						}
+					}
+					return new Text(line, 0, 0);
+				}
 				return new Text(theme.fg("dim", "No tasks"), 0, 0);
 			}
 			const tasks = details.tasks;
@@ -355,6 +382,19 @@ function statusIcon(status: TaskStatus): string {
 
 function formatTaskList(tasks: Task[]): string {
 	return tasks.map((t) => `[${statusIcon(t.status)}] ${t.id}. ${t.title}`).join("\n");
+}
+
+function formatClearedTaskSummary(tasks: Task[]): string {
+	if (tasks.length === 0) {
+		return "Todo list cleared.";
+	}
+
+	const completed = tasks.filter((t) => t.status === "completed").length;
+	const cancelled = tasks.filter((t) => t.status === "cancelled").length;
+	let summary = `Todo list cleared. ${completed} completed`;
+	if (cancelled > 0) summary += `, ${cancelled} cancelled`;
+	summary += ". Mention this cleanup with a brief summary in your user-facing response.";
+	return `${summary}\n${formatTaskList(tasks)}`;
 }
 
 // ── Overlay component ───────────────────────────────────────────────
