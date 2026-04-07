@@ -30,6 +30,14 @@ CYAN='\033[36m'
 RED='\033[31m'
 GRAY='\033[90m'
 
+# Soft panel palette
+SAGE_GREEN='\033[38;5;114m'
+BUTTER_YELLOW='\033[38;5;228m'
+SOFT_GRAY='\033[38;5;245m'
+PALE_CYAN='\033[38;5;159m'
+PALE_AMBER='\033[38;5;223m'
+PALE_ROSE='\033[38;5;217m'
+
 # Track session start
 SESSION_START=$(date +%s)
 DRAW_COUNT=0
@@ -86,8 +94,8 @@ draw() {
       # Model + state
       local state_icon state_color
       case "$state" in
-        working) state_icon="●"; state_color="$YELLOW" ;;
-        error)   state_icon="✗"; state_color="$RED" ;;
+        working) state_icon="●"; state_color="$PALE_AMBER" ;;
+        error)   state_icon="✗"; state_color="$PALE_ROSE" ;;
         *)       state_icon="○"; state_color="$GRAY" ;;
       esac
       [[ -n "$model" ]] && p " ${BOLD}${model}${RESET} ${state_color}${state_icon}${RESET}"
@@ -98,10 +106,10 @@ draw() {
         local filled=$(( (${ctx_pct%.*} * bar_width) / 100 ))
         [[ $filled -gt $bar_width ]] && filled=$bar_width
         local empty=$((bar_width - filled))
-        local bar_color="$GREEN"
-        [[ ${ctx_pct%.*} -gt 70 ]] && bar_color="$YELLOW"
-        [[ ${ctx_pct%.*} -gt 90 ]] && bar_color="$RED"
-        local bar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+        local bar_color="$PALE_CYAN"
+        [[ ${ctx_pct%.*} -gt 70 ]] && bar_color="$PALE_AMBER"
+        [[ ${ctx_pct%.*} -gt 90 ]] && bar_color="$PALE_ROSE"
+        local bar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${SOFT_GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
         # Format context window size
         local win_label=""
         if [[ -n "$ctx_window" && "$ctx_window" != "0" ]]; then
@@ -151,23 +159,37 @@ draw() {
       hr
       p ""
 
-      local done_count total_count
+      local done_count active_count total_count
       done_count=$(echo "$todos_json" | python3 -c "
 import sys,json
 tasks=json.load(sys.stdin).get('tasks',[])
 print(sum(1 for t in tasks if t['status'] in ('completed','cancelled')))
 " 2>/dev/null || echo "0")
+      active_count=$(echo "$todos_json" | python3 -c "
+import sys,json
+tasks=json.load(sys.stdin).get('tasks',[])
+print(sum(1 for t in tasks if t['status'] == 'in_progress'))
+" 2>/dev/null || echo "0")
       total_count="$task_count"
 
-      # Progress bar
+      # Progress bar: done = sage green, in-progress = butter yellow, pending = soft gray
       local bar_width=$((cols - 12))
-      local filled=0
-      [[ "$total_count" -gt 0 ]] && filled=$(( (done_count * bar_width) / total_count ))
-      [[ $filled -gt $bar_width ]] && filled=$bar_width
-      local empty=$((bar_width - filled))
-      local bar_color="$BLUE"
-      [[ "$done_count" -eq "$total_count" ]] && bar_color="$GREEN"
-      local tbar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+      local done_width=0
+      local active_width=0
+      local done_end=0
+      local active_end=0
+      if [[ "$total_count" -gt 0 ]]; then
+        done_end=$(( (done_count * bar_width + total_count / 2) / total_count ))
+        active_end=$(( ((done_count + active_count) * bar_width + total_count / 2) / total_count ))
+      fi
+      [[ $done_end -gt $bar_width ]] && done_end=$bar_width
+      [[ $active_end -gt $bar_width ]] && active_end=$bar_width
+      done_width=$done_end
+      active_width=$((active_end - done_width))
+      [[ $active_width -lt 0 ]] && active_width=0
+      local empty=$((bar_width - done_width - active_width))
+      [[ $empty -lt 0 ]] && empty=0
+      local tbar="${SAGE_GREEN}$(printf '%*s' "$done_width" '' | tr ' ' '█')${BUTTER_YELLOW}$(printf '%*s' "$active_width" '' | tr ' ' '█')${SOFT_GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
       p " ${tbar} ${done_count}/${total_count}"
       p ""
       p ""
@@ -179,7 +201,7 @@ import sys,json,textwrap
 width=max(10, int(sys.argv[1]))
 tasks=json.load(sys.stdin).get('tasks',[])
 icons={'pending':'○','in_progress':'▸','completed':'✓','cancelled':'✗'}
-colors={'pending':'\033[90m','in_progress':'\033[34m','completed':'\033[32m','cancelled':'\033[2m'}
+colors={'pending':'\033[38;5;245m','in_progress':'\033[38;5;228m','completed':'\033[38;5;114m','cancelled':'\033[2m'}
 reset='\033[0m'
 dim='\033[2m'
 for i, t in enumerate(tasks):
@@ -195,6 +217,10 @@ for i, t in enumerate(tasks):
         print(f'{prefix}{dim}{wrapped[0]}{reset}')
         for line in wrapped[1:]:
             print(f'{indent}{dim}{line}{reset}')
+    elif s == 'in_progress':
+        print(f'{prefix}{co}{wrapped[0]}{reset}')
+        for line in wrapped[1:]:
+            print(f'{indent}{co}{line}{reset}')
     else:
         print(f'{prefix}{wrapped[0]}')
         for line in wrapped[1:]:
