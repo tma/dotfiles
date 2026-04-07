@@ -29,6 +29,7 @@ MAGENTA='\033[35m'
 CYAN='\033[36m'
 RED='\033[31m'
 GRAY='\033[90m'
+BORDER_GRAY='\033[38;2;59;66;82m'
 
 # Soft panel palette
 SAGE_GREEN='\033[38;5;114m'
@@ -65,9 +66,16 @@ draw() {
     local url="$1" text="$2"
     echo -ne "\033]8;;${url}\a${text}\033]8;;\a"
   }
+  # Repeat a Unicode character without relying on locale-sensitive tr(1).
+  repeat_char() {
+    local count="$1" char="$2" out=""
+    [[ -z "$count" || "$count" -le 0 ]] && return 0
+    printf -v out '%*s' "$count" ''
+    printf '%s' "${out// /$char}"
+  }
 
-  # Horizontal rule
-  hr() { local r; r=$(printf '%*s' "$cols" '' | tr ' ' '─'); p "${DIM}${r}${RESET}"; }
+  # Horizontal rule — match tmux pane border gray (#3b4252).
+  hr() { local r; r=$(repeat_char "$cols" '─'); p "${BORDER_GRAY}${r}${RESET}"; }
 
   # Pulse dot — cycles through brightness on each draw
   local spin_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
@@ -109,7 +117,7 @@ draw() {
         local bar_color="$PALE_CYAN"
         [[ ${ctx_pct%.*} -gt 70 ]] && bar_color="$PALE_AMBER"
         [[ ${ctx_pct%.*} -gt 90 ]] && bar_color="$PALE_ROSE"
-        local bar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${SOFT_GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+        local bar="${bar_color}$(repeat_char "$filled" '█')${SOFT_GRAY}$(repeat_char "$empty" '░')${RESET}"
         # Format context window size
         local win_label=""
         if [[ -n "$ctx_window" && "$ctx_window" != "0" ]]; then
@@ -189,7 +197,7 @@ print(sum(1 for t in tasks if t['status'] == 'in_progress'))
       [[ $active_width -lt 0 ]] && active_width=0
       local empty=$((bar_width - done_width - active_width))
       [[ $empty -lt 0 ]] && empty=0
-      local tbar="${SAGE_GREEN}$(printf '%*s' "$done_width" '' | tr ' ' '█')${BUTTER_YELLOW}$(printf '%*s' "$active_width" '' | tr ' ' '█')${SOFT_GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
+      local tbar="${SAGE_GREEN}$(repeat_char "$done_width" '█')${BUTTER_YELLOW}$(repeat_char "$active_width" '█')${SOFT_GRAY}$(repeat_char "$empty" '░')${RESET}"
       p " ${tbar} ${done_count}/${total_count}"
       p ""
       p ""

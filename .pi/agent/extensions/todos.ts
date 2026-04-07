@@ -17,11 +17,13 @@ import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
 import { writeFileSync, accessSync } from "node:fs";
 import { execFile } from "node:child_process";
+import * as os from "node:os";
 import * as path from "node:path";
 
 // ── Shared state file (read by status-panel.sh) ─────────────────────
 
 let todosFile = "";
+const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
 
 function flushTodos(tasks: Task[]): void {
 	if (!todosFile) return;
@@ -38,6 +40,20 @@ function isCmux(): boolean {
 		const sockPath = process.env.CMUX_SOCKET_PATH
 			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
 		accessSync(sockPath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isTmux(): boolean {
+	return !!process.env.TMUX && !!process.env.TMUX_PANE;
+}
+
+function isTmuxStatusPanelOpen(): boolean {
+	if (!isTmux()) return false;
+	try {
+		accessSync(panelStateFile);
 		return true;
 	} catch {
 		return false;
@@ -114,10 +130,29 @@ const TodoReadParams = Type.Object({});
 
 export default function (pi: ExtensionAPI) {
 	let state: TodoState = { tasks: [] };
+	let currentCtx: ExtensionContext | null = null;
+	let lastWidgetSuppressed: boolean | null = null;
+	let panelPoll: ReturnType<typeof setInterval> | null = null;
 
 	// ── State reconstruction from session ───────────────────────────
 
+	const shouldSuppressWidget = (): boolean => isCmux() || isTmuxStatusPanelOpen();
+
+	const ensurePanelPolling = () => {
+		if (panelPoll) return;
+		panelPoll = setInterval(() => {
+			if (!currentCtx) return;
+			const suppressed = shouldSuppressWidget();
+			if (suppressed !== lastWidgetSuppressed) {
+				updateWidget(currentCtx);
+			}
+		}, 500);
+		panelPoll.unref?.();
+	};
+
 	const reconstructState = (ctx: ExtensionContext) => {
+		currentCtx = ctx;
+		ensurePanelPolling();
 		state = { tasks: [] };
 
 		for (const entry of ctx.sessionManager.getBranch()) {
@@ -133,22 +168,26 @@ export default function (pi: ExtensionAPI) {
 		updateWidget(ctx);
 	};
 
-	pi.on("session_start", async (_e, ctx) => {
+	const loadSessionState = (ctx: ExtensionContext) => {
+		currentCtx = ctx;
 		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
 		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
 		reconstructState(ctx);
+	};
+
+	pi.on("session_start", async (_e, ctx) => {
+		loadSessionState(ctx);
 	});
 	pi.on("session_switch", async (_e, ctx) => {
-		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
-		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
-		reconstructState(ctx);
+		loadSessionState(ctx);
 	});
 	pi.on("session_fork", async (_e, ctx) => {
-		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
-		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
+		loadSessionState(ctx);
+	});
+	pi.on("session_tree", async (_e, ctx) => {
+		currentCtx = ctx;
 		reconstructState(ctx);
 	});
-	pi.on("session_tree", async (_e, ctx) => reconstructState(ctx));
 
 	// Clear widget once the agent finishes and all tasks are done
 	pi.on("agent_end", async (_e, ctx) => {
@@ -165,8 +204,12 @@ export default function (pi: ExtensionAPI) {
 		flushTodos(state.tasks);
 		cmuxSetTaskStatus(state.tasks);
 
-		// In cmux, todos are shown in the right status panel — skip the editor widget
-		if (isCmux()) {
+		const suppressWidget = shouldSuppressWidget();
+		lastWidgetSuppressed = suppressWidget;
+
+		// In cmux, and in tmux while the right status panel is open, tasks live in
+		// the side panel instead of the horizontal editor widget.
+		if (suppressWidget) {
 			ctx.ui.setWidget("todos", []);
 			return;
 		}

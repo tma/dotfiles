@@ -10,7 +10,8 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync } from "node:fs";
+import { accessSync, writeFileSync, unlinkSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -74,6 +75,28 @@ export default function (pi: ExtensionAPI) {
 	let sessionDir = "";
 	let panelHandle: PanelHandle | null = null;
 	const scriptPath = path.join(path.dirname(import.meta.url.replace("file://", "")), "status-panel.sh");
+	const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
+
+	function writePanelState(handle: PanelHandle | null): void {
+		try {
+			if (handle) {
+				writeFileSync(panelStateFile, JSON.stringify({
+					open: true,
+					backend: handle.backend,
+					ref: handle.ref,
+					updatedAt: Date.now(),
+				}), "utf-8");
+			} else {
+				unlinkSync(panelStateFile);
+			}
+		} catch {
+			if (!handle) {
+				try {
+					unlinkSync(panelStateFile);
+				} catch {}
+			}
+		}
+	}
 
 	function openCmuxPanel(cwd: string): PanelHandle | null {
 		if (!sessionDir) return null;
@@ -138,7 +161,7 @@ export default function (pi: ExtensionAPI) {
 			"-F",
 			"#{pane_id}",
 			"-l",
-			"25%",
+			"35%",
 			"-t",
 			targetPane,
 			"-c",
@@ -164,6 +187,7 @@ export default function (pi: ExtensionAPI) {
 		if (!sessionDir) return false;
 
 		panelHandle = backend === "cmux" ? openCmuxPanel(cwd) : openTmuxPanel(cwd);
+		writePanelState(panelHandle);
 		return !!panelHandle;
 	}
 
@@ -181,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		} catch {}
 
+		writePanelState(null);
 		return true;
 	}
 
@@ -203,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 		if (panelHandle) {
 			closePanel();
 		}
+		writePanelState(null);
 	});
 
 	// Fallback: catch process exit in case session_shutdown doesn't fire
@@ -210,6 +236,7 @@ export default function (pi: ExtensionAPI) {
 		if (panelHandle) {
 			closePanel();
 		}
+		writePanelState(null);
 	});
 
 	pi.registerCommand("status", {
