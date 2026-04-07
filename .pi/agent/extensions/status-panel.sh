@@ -170,6 +170,7 @@ print(sum(1 for t in tasks if t['status'] in ('completed','cancelled')))
       local tbar="${bar_color}$(printf '%*s' "$filled" '' | tr ' ' '█')${GRAY}$(printf '%*s' "$empty" '' | tr ' ' '░')${RESET}"
       p " ${tbar} ${done_count}/${total_count}"
       p ""
+      p ""
 
       # Task list — wrap with hanging indent so multi-line titles stay aligned
       local task_lines
@@ -204,6 +205,7 @@ for i, t in enumerate(tasks):
       while IFS= read -r tline; do
         p "$tline"
       done <<< "$task_lines"
+      p ""
     fi
   fi
   p ""
