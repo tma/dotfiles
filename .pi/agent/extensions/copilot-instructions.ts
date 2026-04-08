@@ -7,7 +7,7 @@
  * Files discovered from the current working directory up through the git repo
  * root (or filesystem root when not in a repo):
  * - .owner/repo
- * - .owner/repo/**/*.instructions.md
+ * - recursive .owner/repo/*.instructions.md files
  * - other top-level .owner/repo*.md files
  */
 
