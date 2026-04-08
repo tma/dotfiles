@@ -13,6 +13,7 @@ fi
 alias g="git"
 
 # In Codespaces, launch interactive Pi inside tmux automatically.
+# Reattach to the existing Pi tmux session when one already exists.
 # Run short-lived/non-interactive pi commands directly so tmux doesn't
 # briefly attach and leak terminal probe replies back into the parent shell.
 if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
@@ -34,13 +35,19 @@ if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
       return
     fi
 
+    local session_name="${PI_TMUX_SESSION_NAME:-pi-codespace}"
     local pi_command="exec pi"
     local arg
     for arg in "$@"; do
       pi_command="${pi_command} $(printf '%q' "$arg")"
     done
 
-    command tmux new-session -c "$PWD" "zsh -ic $(printf '%q' "$pi_command")"
+    if command tmux has-session -t "$session_name" 2>/dev/null; then
+      command tmux attach-session -t "$session_name"
+      return
+    fi
+
+    command tmux new-session -s "$session_name" -c "$PWD" "zsh -ic $(printf '%q' "$pi_command")"
   }
 fi
 
