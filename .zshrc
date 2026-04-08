@@ -12,6 +12,25 @@ fi
 
 alias g="git"
 
+# In Codespaces, launch Pi inside tmux automatically unless we're already
+# in tmux or not attached to a terminal.
+if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
+  pi() {
+    if [ -n "${TMUX:-}" ] || ! command -v tmux >/dev/null 2>&1 || [ ! -t 0 ] || [ ! -t 1 ]; then
+      command pi "$@"
+      return
+    fi
+
+    local tmux_command="exec pi"
+    local arg
+    for arg in "$@"; do
+      tmux_command="${tmux_command} $(printf '%q' "$arg")"
+    done
+
+    command tmux new-session -c "$PWD" "$tmux_command"
+  }
+fi
+
 autoload -Uz add-zsh-hook vcs_info
 zstyle ':vcs_info:*' enable git
 zstyle ':vcs_info:*' check-for-changes true
