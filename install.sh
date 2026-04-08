@@ -2,7 +2,7 @@
 set -u
 
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PATH="$HOME/.opencode/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 
 log() {
   printf '%s\n' "$*"
@@ -136,6 +136,8 @@ install_or_update_opencode() {
 }
 
 install_or_update_pi() {
+  local npm_prefix="${NPM_CONFIG_PREFIX:-$HOME/.local}"
+
   if ! is_codespaces; then
     if command -v pi >/dev/null 2>&1; then
       log "pi already available outside Codespaces; leaving existing install untouched"
@@ -152,13 +154,19 @@ install_or_update_pi() {
     fi
   fi
 
+  if ! mkdir -p "$npm_prefix/bin" "$npm_prefix/lib"; then
+    warn "Failed to prepare npm prefix $npm_prefix; skipping pi install"
+    return 0
+  fi
+
   if command -v pi >/dev/null 2>&1; then
     log "Updating pi..."
   else
     log "Installing pi..."
   fi
 
-  if npm install -g @mariozechner/pi-coding-agent; then
+  if NPM_CONFIG_PREFIX="$npm_prefix" npm install -g @mariozechner/pi-coding-agent; then
+    hash -r
     return 0
   fi
 

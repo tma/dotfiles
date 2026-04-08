@@ -2,7 +2,7 @@ export LANG=en_US.UTF-8
 export LC_CTYPE=en_US.UTF-8
 
 export EDITOR="zed"
-export PATH="$HOME/.opencode/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 
 # pi coding agent — extended prompt cache (Anthropic: 1h, OpenAI: 24h)
 export PI_CACHE_RETENTION=long
@@ -12,22 +12,35 @@ fi
 
 alias g="git"
 
-# In Codespaces, launch Pi inside tmux automatically unless we're already
-# in tmux or not attached to a terminal.
+# In Codespaces, launch interactive Pi inside tmux automatically.
+# Run short-lived/non-interactive pi commands directly so tmux doesn't
+# briefly attach and leak terminal probe replies back into the parent shell.
 if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
+  export NPM_CONFIG_PREFIX="$HOME/.local"
+
+  __pi_should_run_directly() {
+    case "${1:-}" in
+      -h|--help|-v|--version|-p|--print|--export|--list-models|config|install|remove|uninstall|update|list)
+        return 0
+        ;;
+    esac
+
+    return 1
+  }
+
   pi() {
-    if [ -n "${TMUX:-}" ] || ! command -v tmux >/dev/null 2>&1 || [ ! -t 0 ] || [ ! -t 1 ]; then
+    if [ -n "${TMUX:-}" ] || ! command -v tmux >/dev/null 2>&1 || [ ! -t 0 ] || [ ! -t 1 ] || __pi_should_run_directly "${1:-}"; then
       command pi "$@"
       return
     fi
 
-    local tmux_command="exec pi"
+    local pi_command="exec pi"
     local arg
     for arg in "$@"; do
-      tmux_command="${tmux_command} $(printf '%q' "$arg")"
+      pi_command="${pi_command} $(printf '%q' "$arg")"
     done
 
-    command tmux new-session -c "$PWD" "$tmux_command"
+    command tmux new-session -c "$PWD" "zsh -ic $(printf '%q' "$pi_command")"
   }
 fi
 
