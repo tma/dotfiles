@@ -15,7 +15,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
-import { writeFileSync, accessSync } from "node:fs";
+import { writeFileSync, accessSync, mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -24,6 +24,18 @@ import * as path from "node:path";
 
 let todosFile = "";
 const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
+
+function getStateDir(sessionFile: string | undefined): string {
+	if (sessionFile) {
+		return path.dirname(sessionFile);
+	}
+
+	const ephemeralDir = path.join(os.tmpdir(), `pi-session-${process.pid}`);
+	try {
+		mkdirSync(ephemeralDir, { recursive: true });
+	} catch {}
+	return ephemeralDir;
+}
 
 function flushTodos(tasks: Task[]): void {
 	if (!todosFile) return;
@@ -170,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 
 	const loadSessionState = (ctx: ExtensionContext) => {
 		currentCtx = ctx;
-		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		const sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		todosFile = path.join(sessionDir, `${process.pid}-todos.json`);
 		reconstructState(ctx);
 	};

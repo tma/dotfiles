@@ -10,7 +10,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, writeFileSync, unlinkSync } from "node:fs";
+import { accessSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -69,6 +69,18 @@ function tmuxSync(args: string[]): string | null {
 	} catch {
 		return null;
 	}
+}
+
+function getStateDir(sessionFile: string | undefined): string {
+	if (sessionFile) {
+		return path.dirname(sessionFile);
+	}
+
+	const ephemeralDir = path.join(os.tmpdir(), `pi-session-${process.pid}`);
+	try {
+		mkdirSync(ephemeralDir, { recursive: true });
+	} catch {}
+	return ephemeralDir;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -218,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		if (getMuxBackend() && !panelHandle) {
 			togglePanel(ctx.cwd);
 		}

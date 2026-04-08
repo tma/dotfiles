@@ -11,7 +11,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { accessSync, writeFileSync } from "node:fs";
+import { accessSync, mkdirSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -44,6 +45,18 @@ function resetCmuxDetection(): void {
 // ── stats file for status panel ──────────────────────────────────────────────
 
 let statsFile = "";
+
+function getStateDir(sessionFile: string | undefined): string {
+	if (sessionFile) {
+		return path.dirname(sessionFile);
+	}
+
+	const ephemeralDir = path.join(os.tmpdir(), `pi-session-${process.pid}`);
+	try {
+		mkdirSync(ephemeralDir, { recursive: true });
+	} catch {}
+	return ephemeralDir;
+}
 
 interface SessionStats {
 	model: string;
@@ -263,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		resetCmuxDetection();
 		currentCtx = ctx;
-		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		const sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
 		cmuxClearLog();
 		currentModel = ctx.model?.name ?? "";
@@ -310,7 +323,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_switch", async (event, ctx) => {
 		currentCtx = ctx;
-		const sessionDir = path.dirname(ctx.sessionManager.getSessionFile());
+		const sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
 		currentModel = ctx.model?.name ?? "";
 		totalInputTokens = 0;
