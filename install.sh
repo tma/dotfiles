@@ -12,6 +12,40 @@ warn() {
   printf 'Warning: %s\n' "$*" >&2
 }
 
+is_codespaces() {
+  [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]
+}
+
+ensure_codespaces_node() {
+  if command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! is_codespaces; then
+    return 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl not available; cannot install Node.js for Codespaces"
+    return 1
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
+    warn "sudo or apt-get not available; cannot install Node.js for Codespaces"
+    return 1
+  fi
+
+  log "Installing Node.js LTS for Codespaces..."
+  if curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - \
+    && sudo apt-get install -y nodejs; then
+    hash -r
+    return 0
+  fi
+
+  warn "Node.js install failed in Codespaces"
+  return 1
+}
+
 link_dotfile() {
   local source_path="$1"
   local target_path="$2"
@@ -68,6 +102,15 @@ ensure_local_shell_file() {
 }
 
 install_or_update_opencode() {
+  if ! is_codespaces; then
+    if command -v opencode >/dev/null 2>&1; then
+      log "OpenCode already available outside Codespaces; leaving existing install untouched"
+    else
+      log "Skipping OpenCode install outside Codespaces; manage OpenCode via Homebrew or manually"
+    fi
+    return 0
+  fi
+
   if ! command -v curl >/dev/null 2>&1; then
     warn "curl not available; skipping OpenCode install"
     return 0
@@ -93,9 +136,20 @@ install_or_update_opencode() {
 }
 
 install_or_update_pi() {
-  if ! command -v npm >/dev/null 2>&1; then
-    warn "npm not available; skipping pi install"
+  if ! is_codespaces; then
+    if command -v pi >/dev/null 2>&1; then
+      log "pi already available outside Codespaces; leaving existing install untouched"
+    else
+      log "Skipping pi install outside Codespaces; manage pi via Homebrew or manually"
+    fi
     return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    if ! ensure_codespaces_node; then
+      warn "npm not available; skipping pi install"
+      return 0
+    fi
   fi
 
   if command -v pi >/dev/null 2>&1; then
@@ -104,7 +158,7 @@ install_or_update_pi() {
     log "Installing pi..."
   fi
 
-  if npm install -g @mariozechner/pi-coding-agent 2>/dev/null; then
+  if npm install -g @mariozechner/pi-coding-agent; then
     return 0
   fi
 
