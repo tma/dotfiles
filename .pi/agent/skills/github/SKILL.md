@@ -53,6 +53,38 @@ gh api repos/owner/repo/pulls/123/comments \
 gh pr merge 123 --squash --delete-branch
 ```
 
+### Copilot PR reviews
+
+When the user asks for a GitHub Copilot review on a PR, use the requested-reviewer flow — not a PR comment.
+
+```bash
+# Check whether Copilot is already requested
+gh api repos/owner/repo/pulls/123/requested_reviewers \
+  --jq '{users: [.users[]?.login], teams: [.teams[]?.slug]}'
+
+# Check whether Copilot has already reviewed
+gh api repos/owner/repo/pulls/123/reviews \
+  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {user: .user.login, state: .state, submitted_at: .submitted_at}'
+
+# Request the real Copilot reviewer bot
+gh pr edit 123 --repo owner/repo --add-reviewer "copilot-pull-request-reviewer[bot]"
+
+# If the user wants you to wait for/process the review, poll until it arrives
+for i in $(seq 1 18); do
+  sleep 10
+  REVIEW=$(gh api repos/owner/repo/pulls/123/reviews \
+    --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot"))))] | length')
+  [ "$REVIEW" -gt 0 ] && echo "Copilot review arrived" && break
+  echo "Waiting for Copilot review... (${i}/18)"
+done
+
+# Then fetch Copilot's inline comments
+gh api repos/owner/repo/pulls/123/comments \
+  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, path: .path, line: .original_line, body: .body}'
+```
+
+Never try to trigger Copilot review by posting `@copilot` in a PR or issue comment. That does not create the requested-reviewer review flow.
+
 ### Repository
 
 ```bash
@@ -154,3 +186,4 @@ gh search prs "review:approved" --repo owner/repo
 5. **Paginate with `--paginate`** when listing — default page size is 30
 6. **Don't create tokens** — `gh` manages auth automatically
 7. **Never use web_search or web_read** for GitHub data — `gh` has it all: issues, PRs, code search, Actions, API. Don't scrape github.com.
+8. **Use requested reviewers for review requests** — when the user asks for a GitHub Copilot review, add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer. Never ask for review by posting an `@copilot` PR or issue comment.

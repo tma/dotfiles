@@ -98,12 +98,14 @@ Review the PR description, all comments, and linked issues alongside the diff. C
 
 ### Copilot review
 
+If the user asks for a GitHub Copilot review, use the requested-reviewer flow. Do not post a PR comment or issue comment like `@copilot review this` — that does not trigger the proper Copilot code review.
+
 Check for an existing Copilot review:
 
 ```bash
-# List reviews, look for Copilot
+# List reviews, look for the Copilot reviewer bot
 gh api "repos/$REPO/pulls/$PR_NUM/reviews" \
-  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or .user.login == "github-actions[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, state: .state, submitted_at: .submitted_at}'
+  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, user: .user.login, state: .state, submitted_at: .submitted_at}'
 ```
 
 **If a Copilot review exists:**
@@ -111,7 +113,7 @@ gh api "repos/$REPO/pulls/$PR_NUM/reviews" \
 1. Fetch all its review comments:
    ```bash
    gh api "repos/$REPO/pulls/$PR_NUM/comments" \
-     --jq '.[] | select(.user.login | test("copilot|github-actions")) | {id: .id, path: .path, line: .original_line, body: .body, in_reply_to_id: .in_reply_to_id}'
+     --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, path: .path, line: .original_line, body: .body, in_reply_to_id: .in_reply_to_id}'
    ```
 
 2. For each Copilot comment:
@@ -125,24 +127,31 @@ gh api "repos/$REPO/pulls/$PR_NUM/reviews" \
        --method POST -f body="<your reply>"
      ```
 
-3. After addressing all comments, re-request a review:
+3. After addressing all comments, request another Copilot review by re-adding the Copilot reviewer bot:
    ```bash
-   gh pr review "$PR_NUM" --repo "$REPO" --request-changes=false 2>/dev/null || true
+   gh pr edit "$PR_NUM" --repo "$REPO" --add-reviewer "copilot-pull-request-reviewer[bot]" 2>/dev/null || true
    ```
+   Do not use `gh pr review` here — that submits your own review, it does not request a Copilot review.
 
 **If no Copilot review exists:**
 
-1. Request one:
+1. Request one by adding the Copilot reviewer bot as a requested reviewer:
    ```bash
    gh pr edit "$PR_NUM" --repo "$REPO" --add-reviewer "copilot-pull-request-reviewer[bot]" 2>/dev/null || true
    ```
 
-2. Wait for it to arrive (poll up to 3 minutes):
+2. Confirm the current requested reviewers:
+   ```bash
+   gh api "repos/$REPO/pulls/$PR_NUM/requested_reviewers" \
+     --jq '{users: [.users[]?.login], teams: [.teams[]?.slug]}'
+   ```
+
+3. Wait for it to arrive (poll up to 3 minutes):
    ```bash
    for i in $(seq 1 18); do
      sleep 10
      REVIEW=$(gh api "repos/$REPO/pulls/$PR_NUM/reviews" \
-       --jq '[.[] | select(.user.login | test("copilot"))] | length')
+       --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot"))))] | length')
      if [ "$REVIEW" -gt 0 ]; then
        echo "Copilot review arrived after $((i * 10))s"
        break
@@ -151,8 +160,8 @@ gh api "repos/$REPO/pulls/$PR_NUM/reviews" \
    done
    ```
 
-3. If the review arrives, process its comments using the same procedure above.
-4. If it doesn't arrive after 3 minutes, continue with the manual review below.
+4. If the review arrives, process its comments using the same procedure above.
+5. If it doesn't arrive after 3 minutes, continue with the manual review below.
 
 ## 2. Review checklist
 
