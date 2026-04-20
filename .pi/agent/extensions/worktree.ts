@@ -3,7 +3,9 @@
  *
  * This is intentionally conservative: it provisions the worktree and keeps the
  * current Pi session intact. When running inside cmux, it launches a new Pi
- * session in a new workspace for the new worktree.
+ * session in a new workspace for the new worktree. By default that session
+ * starts as a normal chat with the task as the initial prompt; pass
+ * --autopilot to opt into autonomous execution.
  */
 
 import * as fs from "node:fs";
@@ -46,8 +48,26 @@ function getWorktreesRoot(gitRoot: string): string {
 	return path.join(path.dirname(gitRoot), `${repoName}-worktrees`);
 }
 
-function formatLaunchCommand(worktreePath: string, task: string): string {
-	return `cd ${shellQuote(worktreePath)} && pi ${shellQuote(`/autopilot ${task}`)}`;
+type LaunchMode = "chat" | "autopilot";
+
+function formatPiCommand(task: string, launchMode: LaunchMode): string {
+	return launchMode === "autopilot"
+		? `pi ${shellQuote(`/autopilot ${task}`)}`
+		: `pi ${shellQuote(task)}`;
+}
+
+function formatLaunchCommand(worktreePath: string, task: string, launchMode: LaunchMode): string {
+	return `cd ${shellQuote(worktreePath)} && ${formatPiCommand(task, launchMode)}`;
+}
+
+function parseWorktreeArgs(rawArgs?: string): { task: string; launchMode: LaunchMode } {
+	const args = rawArgs?.trim() || "";
+	if (!args) return { task: "", launchMode: "chat" };
+	if (args === "--autopilot") return { task: "", launchMode: "autopilot" };
+	if (args.startsWith("--autopilot ")) {
+		return { task: args.slice("--autopilot".length).trim(), launchMode: "autopilot" };
+	}
+	return { task: args, launchMode: "chat" };
 }
 
 function extractWorkspaceRef(output: string): string | null {
@@ -91,10 +111,10 @@ export default function (pi: ExtensionAPI) {
 		return { slug, branchName, worktreePath };
 	}
 
-	async function launchPiInCmuxWorkspace(worktreePath: string, task: string): Promise<{ launched: boolean; workspaceRef?: string; workspaceTitle?: string; error?: string }> {
+	async function launchPiInCmuxWorkspace(worktreePath: string, task: string, launchMode: LaunchMode): Promise<{ launched: boolean; workspaceRef?: string; workspaceTitle?: string; error?: string }> {
 		if (!isCmux()) return { launched: false };
 
-		const piCommand = `pi ${shellQuote(`/autopilot ${task}`)}`;
+		const piCommand = formatPiCommand(task, launchMode);
 		const createResult = await pi.exec("cmux", [
 			"new-workspace",
 			"--cwd",
@@ -121,15 +141,17 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("worktree", {
 		description:
-			"Create a new git worktree for a task and launch Pi there when possible: /worktree [task]",
+			"Create a new git worktree for a task and launch Pi there when possible: /worktree [--autopilot] <task>",
 		handler: async (args, ctx) => {
-			let task = args?.trim() || "";
+			const parsedArgs = parseWorktreeArgs(args);
+			let task = parsedArgs.task;
+			const launchMode = parsedArgs.launchMode;
 			if (!task && ctx.hasUI) {
 				task = (await ctx.ui.input("New worktree task", "add oauth login"))?.trim() || "";
 			}
 
 			if (!task) {
-				ctx.ui.notify("Usage: /worktree <task>", "warning");
+				ctx.ui.notify("Usage: /worktree [--autopilot] <task>", "warning");
 				return;
 			}
 
@@ -168,14 +190,18 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const launchCommand = formatLaunchCommand(worktreePath, task);
-			const launchResult = await launchPiInCmuxWorkspace(worktreePath, task);
+			const launchCommand = formatLaunchCommand(worktreePath, task, launchMode);
+			const autopilotCommand = launchMode === "chat"
+				? formatLaunchCommand(worktreePath, task, "autopilot")
+				: undefined;
+			const launchResult = await launchPiInCmuxWorkspace(worktreePath, task, launchMode);
 			const launchedInCmux = launchResult.launched;
 			const message = [
 				`🌱 Created worktree \`${worktreePath}\``,
 				"",
 				`- Branch: \`${branchName}\``,
 				`- Base: \`${baseRef}\``,
+				`- Launch mode: \`${launchMode}\``,
 				isDirty ? "- Note: uncommitted changes in the current checkout were not copied" : "",
 				launchedInCmux
 					? `- Launched: new Pi session in ${launchResult.workspaceTitle ?? "a new workspace"}${launchResult.workspaceRef ? ` (${launchResult.workspaceRef})` : ""}`
@@ -186,6 +212,10 @@ export default function (pi: ExtensionAPI) {
 				"```bash",
 				launchCommand,
 				"```",
+				autopilotCommand ? "Optional autopilot launch:" : "",
+				autopilotCommand ? "```bash" : "",
+				autopilotCommand ?? "",
+				autopilotCommand ? "```" : "",
 			].filter(Boolean).join("\n");
 
 			pi.sendMessage({
