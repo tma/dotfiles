@@ -15,6 +15,12 @@ const shellCommands = new Set(["bash", "sh", "zsh", "fish", "dash", "ksh"]);
 const commandSeparators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"]);
 const syntaxPrefixes = new Set(["if", "then", "do", "else", "elif", "while", "until", "!"]);
 const redirectionTokens = new Set([">", ">>", "<", "<<", "<<<", "<>", ">&", "<&", "|&"]);
+const attentionNotificationEvent = "notify:attention";
+
+function summarizeCommand(command: string, maxLength = 120): string {
+	const singleLine = command.replace(/\s+/g, " ").trim();
+	return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength - 1)}…` : singleLine;
+}
 
 function tokenizeShell(command: string): string[] {
 	const tokens: string[] = [];
@@ -247,9 +253,19 @@ export default function (pi: ExtensionAPI) {
 				return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
 			}
 
-			const choice = await ctx.ui.select(`⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`, ["Yes", "No"]);
+			const preview = summarizeCommand(command);
+			ctx.ui.notify("Dangerous bash command needs approval", "warning");
+			pi.events.emit(attentionNotificationEvent, {
+				title: "Pi waiting for confirmation",
+				body: "Dangerous bash command needs Yes/No approval in Pi",
+				subtitle: preview,
+				logMessage: `Waiting for dangerous command approval: ${preview}`,
+				level: "warning",
+			});
 
-			if (choice !== "Yes") {
+			const allowed = await ctx.ui.confirm("⚠️ Dangerous command", `${command}\n\nAllow this command?`);
+
+			if (!allowed) {
 				return { block: true, reason: "Blocked by user" };
 			}
 		}

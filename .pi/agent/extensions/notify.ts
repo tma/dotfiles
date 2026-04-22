@@ -16,6 +16,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
+const attentionNotificationEvent = "notify:attention";
+
+interface AttentionNotification {
+	title: string;
+	body: string;
+	subtitle?: string;
+	logMessage?: string;
+	level?: string;
+}
+
 // ── cmux detection ───────────────────────────────────────────────────────────
 
 let _cmuxAvailable: boolean | null = null;
@@ -197,6 +207,13 @@ function listFiles(files: Set<string>, limit: number = 3): string {
 // ── extension ────────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	pi.events.on(attentionNotificationEvent, (event: AttentionNotification) => {
+		notify(event.title, event.body, event.subtitle);
+		if (event.logMessage) {
+			cmuxLog(event.logMessage, event.level ?? "warning");
+		}
+	});
+
 	let turnCount = 0;
 	let toolsThisTurn = 0;
 	let errorsThisLoop = 0;
