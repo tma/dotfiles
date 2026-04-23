@@ -5,7 +5,7 @@
   "editorPaddingX": 2,
   "hideThinkingBlock": true,
   "collapseChangelog": true,
-  "quietStartup": false,
+  "quietStartup": true,
   "enableInstallTelemetry": false,
   "theme": "dark",
   "steeringMode": "all",
