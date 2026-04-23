@@ -307,28 +307,17 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, _options, theme) {
 			const details = result.details as TodoState | undefined;
 			if (!details?.tasks?.length) {
 				if (details?.clearedTasks?.length) {
 					const cleared = details.clearedTasks;
 					const done = cleared.filter((t) => t.status === "completed").length;
 					const cancelled = cleared.filter((t) => t.status === "cancelled").length;
-					let line = theme.fg("success", "Todo list cleared")
+					const line = theme.fg("success", "Todo list cleared")
 						+ theme.fg("muted", ` · ${done} completed`)
-						+ (cancelled ? theme.fg("dim", `, ${cancelled} cancelled`) : "");
-					if (expanded) {
-						for (const t of cleared) {
-							const icon = statusIcon(t.status);
-							const colored = t.status === "completed" ? theme.fg("success", icon)
-								: t.status === "cancelled" ? theme.fg("dim", icon)
-								: theme.fg("muted", icon);
-							const title = t.status === "completed" || t.status === "cancelled"
-								? theme.fg("dim", t.title)
-								: theme.fg("text", t.title);
-							line += `\n  ${colored} ${title}`;
-						}
-					}
+						+ (cancelled ? theme.fg("dim", `, ${cancelled} cancelled`) : "")
+						+ formatTaskListForRender(cleared, theme);
 					return new Text(line, 0, 0);
 				}
 				return new Text(theme.fg("dim", "No tasks"), 0, 0);
@@ -338,23 +327,10 @@ export default function (pi: ExtensionAPI) {
 			const cancelled = tasks.filter((t) => t.status === "cancelled").length;
 			const total = tasks.length;
 
-			let line = theme.fg("success", `${done} done`)
+			const line = theme.fg("success", `${done} done`)
 				+ (cancelled ? theme.fg("dim", `, ${cancelled} cancelled`) : "")
-				+ theme.fg("muted", ` / ${total} total`);
-
-			if (expanded) {
-				for (const t of tasks) {
-					const icon = statusIcon(t.status);
-					const colored = t.status === "completed" ? theme.fg("success", icon)
-						: t.status === "in_progress" ? theme.fg("accent", icon)
-						: t.status === "cancelled" ? theme.fg("dim", icon)
-						: theme.fg("muted", icon);
-					const title = t.status === "completed" || t.status === "cancelled"
-						? theme.fg("dim", t.title)
-						: theme.fg("text", t.title);
-					line += `\n  ${colored} ${title}`;
-				}
-			}
+				+ theme.fg("muted", ` / ${total} total`)
+				+ formatTaskListForRender(tasks, theme);
 			return new Text(line, 0, 0);
 		},
 	});
@@ -383,20 +359,14 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, _options, theme) {
 			const details = result.details as TodoState | undefined;
 			if (!details?.tasks?.length) {
 				return new Text(theme.fg("dim", "No tasks"), 0, 0);
 			}
 			const done = details.tasks.filter((t) => t.status === "completed").length;
-			let line = theme.fg("muted", `${done}/${details.tasks.length} completed`);
-			if (expanded) {
-				for (const t of details.tasks) {
-					const icon = statusIcon(t.status);
-					const colored = t.status === "in_progress" ? theme.fg("accent", icon) : theme.fg("muted", icon);
-					line += `\n  ${colored} ${t.title}`;
-				}
-			}
+			const line = theme.fg("muted", `${done}/${details.tasks.length} completed`)
+				+ formatTaskListForRender(details.tasks, theme);
 			return new Text(line, 0, 0);
 		},
 	});
@@ -437,6 +407,27 @@ function statusIcon(status: TaskStatus): string {
 
 function formatTaskList(tasks: Task[]): string {
 	return tasks.map((t) => `[${statusIcon(t.status)}] ${t.id}. ${t.title}`).join("\n");
+}
+
+function formatTaskListForRender(tasks: Task[], theme: {
+	fg: (color: string, text: string) => string;
+}): string {
+	let text = "";
+	for (const task of tasks) {
+		const icon = statusIcon(task.status);
+		const colored = task.status === "completed" ? theme.fg("success", icon)
+			: task.status === "in_progress" ? theme.fg("accent", icon)
+			: task.status === "cancelled" ? theme.fg("dim", icon)
+			: theme.fg("muted", icon);
+		const id = theme.fg("muted", `${task.id}.`);
+		const title = task.status === "completed" || task.status === "cancelled"
+			? theme.fg("dim", task.title)
+			: task.status === "in_progress"
+			? theme.fg("accent", task.title)
+			: theme.fg("text", task.title);
+		text += `\n  ${colored} ${id} ${title}`;
+	}
+	return text;
 }
 
 function formatClearedTaskSummary(tasks: Task[]): string {
