@@ -12,8 +12,8 @@
       },
       "models": [
         {
-          "id": "qwen3.6:35b-a3b-coding-mxfp8",
-          "name": "Qwen 3.6 35B Coding MoE FP8 (Local)",
+          "id": "qwen3.6:35b",
+          "name": "Qwen 3.6 35B MoE Q4_K_M (Local)",
           "reasoning": true,
           "input": ["text"],
           "contextWindow": 262144,
