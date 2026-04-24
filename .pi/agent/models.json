@@ -12,8 +12,8 @@
       },
       "models": [
         {
-          "id": "qwen3.6-27b",
-          "name": "Qwen 3.6 27B 8bit MLX (LM Studio)",
+          "id": "qwen3.6-27b-iq4xs",
+          "name": "Qwen 3.6 27B IQ4_XS (LM Studio)",
           "reasoning": true,
           "input": ["text"],
           "contextWindow": 131072,
