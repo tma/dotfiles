@@ -60,3 +60,8 @@ PS1='\[\033[1;36m\]\W\[\033[0m\]$(__git_prompt)\n\[\033[1;32m\]❯\[\033[0m\] '
 if [ -f "$HOME/.bashrc.local" ]; then
   . "$HOME/.bashrc.local"
 fi
+
+# Added by LM Studio CLI (lms)
+export PATH="$PATH:$HOME/.lmstudio/bin"
+# End of LM Studio CLI section
+

@@ -1,9 +1,9 @@
 {
   "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434/v1",
+    "lmstudio": {
+      "baseUrl": "http://localhost:1234/v1",
       "api": "openai-completions",
-      "apiKey": "ollama",
+      "apiKey": "lm-studio",
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
@@ -12,17 +12,8 @@
       },
       "models": [
         {
-          "id": "qwen3.6:35b",
-          "name": "Qwen 3.6 35B (Local)",
-          "reasoning": true,
-          "input": ["text"],
-          "contextWindow": 262144,
-          "maxTokens": 32768,
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
-        },
-        {
-          "id": "qwen3.6:27b",
-          "name": "Qwen 3.6 27B (Local)",
+          "id": "qwen3.6-27b",
+          "name": "Qwen 3.6 27B 8bit MLX (LM Studio)",
           "reasoning": true,
           "input": ["text"],
           "contextWindow": 262144,

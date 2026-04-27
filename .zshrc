@@ -64,3 +64,8 @@ PROMPT='%B%F{cyan}%1~%f${vcs_info_msg_0_}
 if [ -f "$HOME/.zshrc.local" ]; then
   . "$HOME/.zshrc.local"
 fi
+
+# Added by LM Studio CLI (lms)
+export PATH="$PATH:$HOME/.lmstudio/bin"
+# End of LM Studio CLI section
+
