@@ -4,7 +4,7 @@
 - https://rubygems.org
 :update_sources: true
 :bulk_threshold: 1000
-:ssl_verify_mode: 0
+:ssl_verify_mode: 1
 :verbose: true
 :backtrace: false
 install: --no-rdoc --no-ri
