@@ -1,0 +1,68 @@
+export LANG=en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
+
+export EDITOR="zed"
+export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+
+# pi coding agent — extended prompt cache (Anthropic: 1h, OpenAI: 24h)
+export PI_CACHE_RETENTION=long
+
+if command -v gh >/dev/null 2>&1; then
+  __github_token="$(gh auth token 2>/dev/null)"
+  if [ -n "$__github_token" ]; then
+    export GITHUB_TOKEN="$__github_token"
+  fi
+  unset __github_token
+fi
+
+alias g="git"
+
+# In Codespaces, launch interactive Pi inside tmux automatically.
+# Reattach to the existing Pi tmux session when one already exists.
+# Run short-lived/non-interactive pi commands directly so tmux doesn't
+# briefly attach and leak terminal probe replies back into the parent shell.
+if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
+  export NPM_CONFIG_PREFIX="$HOME/.local"
+
+  __pi_should_run_directly() {
+    case "${1:-}" in
+      -h|--help|-v|--version|-p|--print|--export|--list-models|config|install|remove|uninstall|update|list)
+        return 0
+        ;;
+    esac
+
+    return 1
+  }
+
+  pi() {
+    if [ -n "${TMUX:-}" ] || ! command -v tmux >/dev/null 2>&1 || [ ! -t 0 ] || [ ! -t 1 ] || __pi_should_run_directly "${1:-}"; then
+      command pi "$@"
+      return
+    fi
+
+    local session_name="${PI_TMUX_SESSION_NAME:-pi-codespace}"
+    local pi_command="exec pi"
+    local arg
+    for arg in "$@"; do
+      pi_command="${pi_command} $(printf '%q' "$arg")"
+    done
+
+    if command tmux has-session -t "$session_name" 2>/dev/null; then
+      command tmux attach-session -t "$session_name"
+      return
+    fi
+
+    local interactive_shell="sh"
+    if [ -n "${ZSH_VERSION:-}" ]; then
+      interactive_shell="zsh"
+    elif [ -n "${BASH_VERSION:-}" ]; then
+      interactive_shell="bash"
+    fi
+
+    command tmux new-session -s "$session_name" -c "$PWD" "$interactive_shell -ic $(printf '%q' "$pi_command")"
+  }
+fi
+
+# Added by LM Studio CLI (lms)
+export PATH="$PATH:$HOME/.lmstudio/bin"
+# End of LM Studio CLI section
