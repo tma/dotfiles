@@ -5,7 +5,11 @@ export EDITOR="zed"
 export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 
 if command -v gh >/dev/null 2>&1; then
-  export GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
+  __github_token="$(gh auth token 2>/dev/null)"
+  if [ -n "$__github_token" ]; then
+    export GITHUB_TOKEN="$__github_token"
+  fi
+  unset __github_token
 fi
 
 alias g='git'

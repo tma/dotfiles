@@ -46,7 +46,7 @@
     },
     "github": {
       "type": "local",
-      "command": ["sh", "-c", "docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token) ghcr.io/owner/repo"],
+      "command": ["sh", "-c", "GITHUB_PERSONAL_ACCESS_TOKEN=\"$GITHUB_TOKEN\" exec docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/owner/repo"],
       "enabled": true
     }
   }
