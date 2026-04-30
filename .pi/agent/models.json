@@ -16,7 +16,16 @@
           "name": "Qwen 3.6 27B 8bit MLX (LM Studio)",
           "reasoning": true,
           "input": ["text"],
-          "contextWindow": 262144,
+          "contextWindow": 131072,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        },
+        {
+          "id": "qwen3.6-35b-a3b",
+          "name": "Qwen 3.6 35B-A3B 8bit MLX (LM Studio)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 131072,
           "maxTokens": 32768,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }
