@@ -1,11 +1,11 @@
 ---
 name: writing-voice
 description: >
-  Write in the user's natural voice and avoid AI-sounding text. Samples real writing
-  from GitHub activity or provided text to build a voice profile, then applies style
-  rules that make drafts sound human. Use when writing anything personal — reflections,
-  updates, emails, docs, reviews, proposals, or any text that should sound like the
-  user wrote it themselves.
+  Write in the user's natural voice and avoid AI-sounding text. Use before drafting
+  or publishing any prose on the user's behalf, especially GitHub PR bodies, issue
+  bodies/comments, PR comments, PR review comments, release notes, git commit
+  messages, emails, Slack drafts, docs, reviews, proposals, status updates, or any
+  text that should sound like the user wrote it themselves.
 ---
 
 # Writing Voice — Sound Like a Human, Not a Model
@@ -20,10 +20,28 @@ should think the user wrote it themselves.
 
 ---
 
+## Skill-Local Curated Profile
+
+For tma, first read `references/tma-curated-voice.md` from this skill directory.
+That file is the committed, sanitized baseline voice profile. Use it as the
+stable target before sampling recent writing or reading generated cache files.
+
+The curated profile should contain style guidance only: no raw writing samples,
+internal links, teammate names, private project details, or copied private text.
+Never overwrite it with automatically sampled content. Update it by hand when the
+user wants to change the standing voice guidance.
+
+Use generated or sampled profiles as supplemental signal, not as a replacement
+for the curated profile.
+
+---
+
 ## Voice Sampling
 
-Before writing on someone's behalf, sample their real writing to build a voice
-profile. The more samples, the better the match.
+When no curated or cached profile exists, sample the user's real writing to build
+a voice profile. The more samples, the better the match. For tma, use the
+skill-local curated profile first, then sample only when additional signal is
+needed.
 
 ### Source 1: GitHub activity (automatic)
 
@@ -276,11 +294,13 @@ Varying your narrative structure makes writing feel human. Not everything needs 
 
 When generating text for someone:
 
-1. **If a voice profile exists**: match their patterns. If they use short sentences, you use short sentences. If they never use emoji, you don't either. The style rules still apply (no "delve"), but the voice profile overrides defaults on structure, tone, and formality.
+1. **If a skill-local curated profile exists**: read it first and match that stable guidance. For tma, use `references/tma-curated-voice.md` as the baseline.
 
-2. **If no voice profile exists**: default to direct, specific, and confident without being arrogant. Mix short and long sentences. Use contractions. Write like you'd explain something to a smart colleague over coffee.
+2. **If a generated or sampled voice profile exists**: use it as supplemental signal. Match reliable patterns from the samples, but do not let generated analysis override the curated profile.
 
-3. **After generating**: scan the output for kill-list words and AI patterns. Fix any that slipped through. Read it out loud in your head — if any sentence sounds like it came from a chatbot, rewrite it.
+3. **If no voice profile exists**: default to direct, specific, and confident without being arrogant. Mix short and long sentences. Use contractions. Write like you'd explain something to a smart colleague over coffee.
+
+4. **After generating**: scan the output for kill-list words and AI patterns. Fix any that slipped through. Read it out loud in your head — if any sentence sounds like it came from a chatbot, rewrite it.
 
 ### The coffee test
 
@@ -322,15 +342,20 @@ fi
 
 Regenerate if the user says the voice doesn't match, or if the profile is > 90 days old.
 
+Generated cache files are for sampled analysis only. Do not use them to store the
+skill-local curated profile, and do not write raw samples into the skill folder.
+
 ---
 
 ## Rules
 
-1. **Sample before writing** — if writing for someone and no voice profile exists, try to pull samples first. Even 3-5 samples help.
-2. **Never show the profile unprompted** — just use it silently. Only share if the user asks.
-3. **Kill-list words are absolute** — never use them regardless of voice profile. Even if the user uses "leverage" themselves, find a better word.
-4. **Style rules override voice for bad patterns** — if the user writes in AI-sounding patterns naturally, don't copy those patterns. Copy their good habits.
-5. **Specifics beat polish** — a rough sentence with a real detail beats a smooth sentence with none.
-6. **When in doubt, shorter** — most AI text is too long. Cut aggressively. Every sentence should earn its place.
-7. **Cache voice profiles** — don't re-sample every session. Build once, reuse, refresh quarterly.
-8. **Multiple sources are better** — PR descriptions show technical voice, comments show conversational voice, reviews show evaluative voice. Sample all three.
+1. **Use the curated profile first** — for tma, read `references/tma-curated-voice.md` before drafting.
+2. **Sample before writing when no profile exists** — if writing for someone and no curated or cached voice profile exists, try to pull samples first. Even 3-5 samples help.
+3. **Never show the profile unprompted** — just use it silently. Only share if the user asks.
+4. **Kill-list words are absolute** — never use them regardless of voice profile. Even if the user uses "leverage" themselves, find a better word.
+5. **Style rules override voice for bad patterns** — if the user writes in AI-sounding patterns naturally, don't copy those patterns. Copy their good habits.
+6. **Specifics beat polish** — a rough sentence with a real detail beats a smooth sentence with none.
+7. **When in doubt, shorter** — most AI text is too long. Cut aggressively. Every sentence should earn its place.
+8. **Cache sampled voice profiles** — don't re-sample every session. Build once, reuse, refresh quarterly.
+9. **Keep curated and sampled profiles separate** — curated profiles live in the skill folder; generated sampled profiles live in `~/.pi/voice-profiles`.
+10. **Multiple sources are better** — PR descriptions show technical voice, comments show conversational voice, reviews show evaluative voice. Sample all three.

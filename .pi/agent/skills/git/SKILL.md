@@ -32,7 +32,20 @@ Use `git add -p` when a single file contains changes belonging to different topi
 
 ### Commit messages
 
+Before writing a commit message on tma's behalf, apply the `writing-voice` skill
+and its curated profile. The git skill owns the commit format; the writing-voice
+skill owns the tone: plainspoken, specific, and focused on intent/context rather
+than résumé language.
+
 Write messages that encode **intent and context**, not just what changed. Someone reading the log should understand *why* without opening the diff.
+
+For multi-line messages, draft the message first and use:
+
+```bash
+git commit -F /tmp/commit-message
+```
+
+Avoid composing non-trivial commit messages directly inside `git commit -m`.
 
 **Format:**
 ```

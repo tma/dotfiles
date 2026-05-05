@@ -7,6 +7,23 @@ description: Interact with GitHub — issues, PRs, repos, Actions, Codespaces, a
 
 Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library — `gh` handles authentication, pagination, and API versioning automatically.
 
+## Writing on GitHub
+
+Before creating or updating GitHub prose on tma's behalf, load and apply the
+`writing-voice` skill and its curated profile.
+
+This includes:
+
+- PR bodies
+- issue bodies
+- PR comments
+- issue comments
+- PR review comments
+- release notes
+
+Draft the text first, apply the writing-voice checklist, then publish with `gh`.
+Prefer `--body-file` over inline `--body` for anything longer than one sentence.
+
 ## Authentication
 
 Already configured. `gh auth status` to verify. Do not ask for tokens.
