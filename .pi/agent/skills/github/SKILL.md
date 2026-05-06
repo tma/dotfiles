@@ -28,6 +28,29 @@ Prefer `--body-file` over inline `--body` for anything longer than one sentence.
 
 Already configured. `gh auth status` to verify. Do not ask for tokens.
 
+## Large API Bodies
+
+For large POST/PATCH bodies, use `gh api --input -` with JSON on stdin instead of `-f body=...`; shell argument limits are easy to hit.
+
+```bash
+echo '{"body":"..."}' | gh api --method POST repos/OWNER/REPO/issues/123/comments --input -
+echo '{"body":"..."}' | gh api --method PATCH repos/OWNER/REPO/issues/123 --input -
+```
+
+## Repository Access
+
+Use `gh` with the repository and owner provided by the user or detected from the
+current repository. Do not assume access to private repositories, organization
+repositories, runbooks, or service-specific documentation unless the user provides
+that context.
+
+```bash
+gh pr diff 123 --repo owner/repo
+gh api repos/owner/repo/contents/path/to/file --jq .content | base64 -d
+gh search code "ErrorName" --repo owner/repo
+```
+
+
 ## Common Operations
 
 ### Issues
