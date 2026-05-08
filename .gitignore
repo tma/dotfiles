@@ -1,2 +1,6 @@
 .bashrc.local
 .zshrc.local
+
+# Python bytecode/cache files
+__pycache__/
+*.py[cod]
