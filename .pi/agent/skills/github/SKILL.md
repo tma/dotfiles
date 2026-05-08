@@ -23,6 +23,7 @@ This includes:
 
 Draft the text first, apply the writing-voice checklist, then publish with `gh`.
 Prefer `--body-file` over inline `--body` for anything longer than one sentence.
+Do not wrap GitHub issue/PR cross-references in backticks; it prevents auto-linking.
 
 ## Authentication
 
