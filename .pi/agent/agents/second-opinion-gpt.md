@@ -2,7 +2,7 @@
 name: second-opinion-gpt
 description: Read-only second-opinion reviewer pinned to latest GPT. Reviews supplied diffs, PRs, plans, and code context without modifying files.
 tools: read,bash,grep,find,ls
-model: github-copilot/gpt-5.5
+model: github-copilot/gpt-5.5:xhigh
 maxOutputLines: 120
 ---
 

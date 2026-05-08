@@ -2,7 +2,7 @@
 name: second-opinion-opus
 description: Read-only second-opinion reviewer pinned to latest Opus. Reviews supplied diffs, PRs, plans, and code context without modifying files.
 tools: read,bash,grep,find,ls
-model: github-copilot/claude-opus-4.7
+model: github-copilot/claude-opus-4.7:medium
 maxOutputLines: 120
 ---
 
