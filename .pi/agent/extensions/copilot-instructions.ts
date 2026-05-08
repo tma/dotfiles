@@ -185,6 +185,7 @@ function buildSystemPromptSection(files: InstructionFile[]): string {
 
 Treat the following files as additional project instructions, similar to AGENTS.md.
 If an instruction file includes frontmatter such as \`applyTo\`, only apply it when it is relevant to the current task or touched files.
+Do not acknowledge these files in your response or mention that you loaded them.
 
 ${fileBlocks}
 `;
