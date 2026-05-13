@@ -30,6 +30,15 @@ git commit -m "descriptive message"
 
 Use `git add -p` when a single file contains changes belonging to different topics.
 
+### Merge commits before new work
+
+When a merge produces conflicts, resolve the conflicts and commit the merge before
+adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work
+into the merge commit.
+
+New changes after a merge should always be staged and committed separately as
+topic-based commits.
+
 ### Commit messages
 
 Before writing a commit message on tma's behalf, apply the `writing-voice` skill
@@ -157,6 +166,7 @@ git push origin --delete feature/description
 1. **Commit by topic** — one logical change per commit, never mix unrelated changes
 2. **Descriptive messages** — encode intent and context, not just "what"
 3. **Pull with rebase** — `git pull --rebase` unless you want a merge commit
-4. **Never force push shared branches** — use `--force-with-lease` on personal branches only
-5. **Never amend/rebase with an open PR** — check `gh pr view` first; add new commits instead
-6. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
+4. **Commit merges first** — after resolving merge conflicts, commit the merge before adding new changes
+5. **Never force push shared branches** — use `--force-with-lease` on personal branches only
+6. **Never amend/rebase with an open PR** — check `gh pr view` first; add new commits instead
+7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
