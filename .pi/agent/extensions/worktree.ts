@@ -4,8 +4,8 @@
  * This is intentionally conservative: it provisions the worktree and keeps the
  * current Pi session intact. When running inside cmux, it launches a new Pi
  * session in a new workspace for the new worktree. By default that session
- * starts as a normal chat with the task as the initial prompt; pass
- * --autopilot to opt into autonomous execution.
+ * opens idle without sending the task to the model; pass --autopilot to opt
+ * into autonomous execution.
  */
 
 import * as fs from "node:fs";
@@ -53,7 +53,7 @@ type LaunchMode = "chat" | "autopilot";
 function formatPiCommand(task: string, launchMode: LaunchMode): string {
 	return launchMode === "autopilot"
 		? `pi ${shellQuote(`/autopilot ${task}`)}`
-		: `pi ${shellQuote(task)}`;
+		: "pi";
 }
 
 function formatLaunchCommand(worktreePath: string, task: string, launchMode: LaunchMode): string {
@@ -141,7 +141,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("worktree", {
 		description:
-			"Create a new git worktree for a task and launch Pi there when possible: /worktree [--autopilot] <task>",
+			"Create a new git worktree for a task and launch idle Pi there; use --autopilot to start work: /worktree [--autopilot] <task>",
 		handler: async (args, ctx) => {
 			const parsedArgs = parseWorktreeArgs(args);
 			let task = parsedArgs.task;
