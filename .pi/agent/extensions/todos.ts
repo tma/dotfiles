@@ -264,32 +264,39 @@ export default function (pi: ExtensionAPI) {
 			"Use todo_write proactively when a task has 3+ steps or involves multiple files.",
 			"Create the todo list at the start, update status as you work, mark tasks completed immediately after finishing each one.",
 			"Only have one task in_progress at a time. Complete it before starting the next.",
-			"When you finish work and clear the todo list, mention that cleanup with a brief summary of the completed/cancelled tasks in your user-facing response.",
+			"When all work is finished, call todo_write once with the full list marked completed/cancelled; the list is cleared automatically.",
 			"Do NOT use todo_write for single trivial tasks or purely conversational requests.",
 		],
 		parameters: TodoWriteParams,
 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const previousTasks = [...state.tasks];
+			const submittedTasks = [...params.tasks];
+			const allSubmittedTasksDone = submittedTasks.length > 0
+				&& submittedTasks.every((t) => t.status === "completed" || t.status === "cancelled");
+
 			// Detect changes for logging
 			const oldMap = new Map(previousTasks.map((t) => [t.id, t.status]));
-			state = { tasks: params.tasks };
-			for (const task of params.tasks) {
+			for (const task of submittedTasks) {
 				const prev = oldMap.get(task.id);
 				if (prev !== task.status && (task.status === "completed" || task.status === "in_progress" || task.status === "cancelled")) {
 					cmuxLogTask(task);
 				}
 			}
+
+			if (allSubmittedTasksDone) {
+				cmuxNotifyAllDone(submittedTasks);
+				state = { tasks: [] };
+			} else {
+				state = { tasks: submittedTasks };
+			}
 			updateWidget(ctx);
 
-			// Notify when all tasks are done
-			if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "completed" || t.status === "cancelled")) {
-				cmuxNotifyAllDone(state.tasks);
-			}
-
-			const clearedTasks = state.tasks.length === 0 ? previousTasks : undefined;
-			const summary = state.tasks.length === 0
-				? formatClearedTaskSummary(previousTasks)
+			const clearedTasks = allSubmittedTasksDone ? submittedTasks
+				: state.tasks.length === 0 ? previousTasks
+				: undefined;
+			const summary = clearedTasks
+				? formatClearedTaskSummary(clearedTasks)
 				: formatTaskList(state.tasks);
 			return {
 				content: [{ type: "text", text: summary }],
@@ -439,7 +446,7 @@ function formatClearedTaskSummary(tasks: Task[]): string {
 	const cancelled = tasks.filter((t) => t.status === "cancelled").length;
 	let summary = `Todo list cleared. ${completed} completed`;
 	if (cancelled > 0) summary += `, ${cancelled} cancelled`;
-	summary += ". Mention this cleanup with a brief summary in your user-facing response.";
+	summary += ".";
 	return `${summary}\n${formatTaskList(tasks)}`;
 }
 

@@ -2,16 +2,19 @@
 
 ## Response style
 
-Be concise by default.
+Be brief and skimmable by default.
 
-When changing files, clearly list:
+Use the shortest answer that is still useful:
 
-- what changed
-- which files changed
-- any tests or checks run
-- anything I need to do next
-
-Do not over-explain unless I ask for details.
+- **Simple questions:** 1-3 sentences.
+- **Code changes:** 4 short bullets max:
+  - **Changed:** what changed
+  - **Files:** paths changed
+  - **Checks:** tests/checks run
+  - **Next:** anything I need to do
+- **Avoid:** background, rationale, caveats, and detailed explanations unless I ask.
+- **Do not:** restate obvious context or quote long command output.
+- **Prefer:** bullets, bold labels, short sections, and whitespace.
 
 ## Work style
 
