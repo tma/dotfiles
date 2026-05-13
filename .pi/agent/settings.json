@@ -9,7 +9,7 @@
   "enableInstallTelemetry": false,
   "theme": "dark",
   "steeringMode": "all",
-  "followUpMode": "all",
+  "followUpMode": "one-at-a-time",
   "treeFilterMode": "default",
   "enableSkillCommands": true,
   "compaction": {
@@ -18,6 +18,7 @@
   },
   "enabledModels": [
     "claude-*-4.6",
+    "claude-*-4.7",
     "gpt-5.5",
     "gemini-3.1*"
   ],
