@@ -25,6 +25,15 @@ For multi-step or multi-file tasks:
 - complete one step at a time
 - update the todo list as work finishes
 
+For longer tasks, do not go silent for minutes at a time. Send brief one-line progress updates when:
+
+- starting a longer investigation or code change
+- moving between major steps
+- waiting on slow commands, tests, or tool calls
+- retrying after an error or changing approach
+
+Keep progress updates short and factual. Do not expose private chain-of-thought; summarize what you are doing instead.
+
 For small tasks, just do the work.
 
 ## Writing on my behalf
