@@ -192,13 +192,6 @@ ${fileBlocks}
 }
 
 export default function copilotInstructionsExtension(pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		const files = loadInstructionFiles(ctx.cwd);
-		if (files.length > 0 && ctx.hasUI) {
-			ctx.ui.notify(`Loaded ${files.length} GitHub Copilot instruction file(s)`, "info");
-		}
-	});
-
 	pi.on("before_agent_start", async (event, ctx) => {
 		const files = loadInstructionFiles(ctx.cwd);
 		if (files.length === 0) {
