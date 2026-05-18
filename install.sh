@@ -191,6 +191,17 @@ link_pi_agent() {
     return 1
   fi
 
+  if [ -L "$pi_dest/skills" ]; then
+    local old_skills_target
+    old_skills_target="$(readlink "$pi_dest/skills" 2>/dev/null || true)"
+    case "$old_skills_target" in
+      "$DOTFILES_DIR/.pi/agent/skills"|"$DOTFILES_DIR/.agents/skills")
+        rm "$pi_dest/skills"
+        log "Removed stale $pi_dest/skills"
+        ;;
+    esac
+  fi
+
   for item in "$pi_src"/*; do
     [ -e "$item" ] || continue
     local name
@@ -202,6 +213,18 @@ link_pi_agent() {
       failures=$((failures + 1))
     fi
   done
+
+  local agents_md="$DOTFILES_DIR/.agents/AGENTS.md"
+  if [ -f "$agents_md" ]; then
+    if [ -e "$pi_dest/AGENTS.md" ] && [ ! -L "$pi_dest/AGENTS.md" ]; then
+      warn "Skipping $pi_dest/AGENTS.md; exists and is not a symlink"
+    elif ln -sfn "$agents_md" "$pi_dest/AGENTS.md"; then
+      log "Linked $pi_dest/AGENTS.md -> $agents_md"
+    else
+      warn "Failed to link $pi_dest/AGENTS.md"
+      failures=$((failures + 1))
+    fi
+  fi
 
   return "$failures"
 }

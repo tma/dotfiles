@@ -40,8 +40,8 @@ For small tasks, just do the work.
 
 Before drafting or publishing user-visible prose on my behalf, load and apply:
 
-- `$HOME/.pi/agent/skills/writing-voice/SKILL.md`
-- `$HOME/.pi/agent/skills/writing-voice/references/tma-curated-voice.md`
+- `$HOME/.agents/skills/writing-voice/SKILL.md`
+- `$HOME/.agents/skills/writing-voice/references/tma-curated-voice.md`
 
 This applies to:
 

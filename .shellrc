@@ -7,6 +7,17 @@ export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 # pi coding agent — extended prompt cache (Anthropic: 1h, OpenAI: 24h)
 export PI_CACHE_RETENTION=long
 
+# Share AGENTS.md with GitHub Copilot CLI.
+# Copilot discovers ~/.agents/skills automatically; AGENTS.md needs this path.
+__agent_instructions_dir="$HOME/.agents"
+if [ -f "$__agent_instructions_dir/AGENTS.md" ]; then
+  case ",${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:-}," in
+    *,"$__agent_instructions_dir",*) ;;
+    *) export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$__agent_instructions_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}" ;;
+  esac
+fi
+unset __agent_instructions_dir
+
 if command -v gh >/dev/null 2>&1; then
   __github_token="$(gh auth token 2>/dev/null)"
   if [ -n "$__github_token" ]; then
