@@ -48,6 +48,8 @@ SESSION_ANIM_TOKEN="__PI_SESSION_ANIM__"
 PANEL_TEMPLATE=""
 LAST_COLS=0
 LAST_ROWS=0
+PANEL_PAD_X="${PI_STATUS_PANEL_PAD_X:-1}"
+PANEL_BG="${PI_STATUS_PANEL_BG:-#171a21}"
 # Stats file scoped per project directory (matches notify.ts)
 if [[ -z "$PI_SESSION_DIR" ]]; then
   echo "PI_SESSION_DIR not set"
@@ -55,6 +57,12 @@ if [[ -z "$PI_SESSION_DIR" ]]; then
 fi
 PI_PID="${PI_PID:-$$}"
 STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
+
+# Style this tmux pane directly so reopened panels get the same background even
+# before the Pi extension runtime has been reloaded.
+if [[ -n "$TMUX" && -n "$TMUX_PANE" ]]; then
+  tmux set-option -pt "$TMUX_PANE" window-style "bg=${PANEL_BG}" 2>/dev/null || true
+fi
 
 # Hide cursor during draws
 tput civis 2>/dev/null || true
@@ -65,9 +73,15 @@ build_panel_template() {
   local cols="${2:-$(tput cols)}"
   local rows="${3:-$(tput lines)}"
   local buf=""
+  local pad_x="$PANEL_PAD_X"
+  [[ "$pad_x" =~ ^[0-9]+$ ]] || pad_x=1
+  local content_cols=$((cols - (pad_x * 2)))
+  [[ $content_cols -lt 20 ]] && content_cols=$cols
+  local pad=""
+  printf -v pad '%*s' "$pad_x" ''
 
-  # Append a line to buffer, clear rest of line
-  p() { buf+="$*"$'\033[K\n'; }
+  # Append a padded line to buffer, clear rest of line.
+  p() { buf+="${pad}$*"$'\033[K\n'; }
   # Helper: wrap text in OSC 8 clickable link
   link() {
     local url="$1" text="$2"
@@ -82,7 +96,7 @@ build_panel_template() {
   }
 
   # Horizontal rule — match tmux pane border gray (#3b4252).
-  hr() { local r; r=$(repeat_char "$cols" '─'); p "${BORDER_GRAY}${r}${RESET}"; }
+  hr() { local r; r=$(repeat_char "$content_cols" '─'); p "${BORDER_GRAY}${r}${RESET}"; }
 
   # ── Pi session info ─────────────────────────────────
   if [[ -f "$STATS_FILE" ]]; then
@@ -112,7 +126,8 @@ build_panel_template() {
 
       # Context window bar
       if [[ -n "$ctx_pct" && "$ctx_pct" != "0" ]]; then
-        local bar_width=$((cols - 16))
+        local bar_width=$((content_cols - 16))
+        [[ $bar_width -lt 4 ]] && bar_width=4
         local filled=$(( (${ctx_pct%.*} * bar_width) / 100 ))
         [[ $filled -gt $bar_width ]] && filled=$bar_width
         local empty=$((bar_width - filled))
@@ -183,7 +198,8 @@ print(sum(1 for t in tasks if t['status'] == 'in_progress'))
       total_count="$task_count"
 
       # Progress bar: done = sage green, in-progress = butter yellow, pending = soft gray
-      local bar_width=$((cols - 12))
+      local bar_width=$((content_cols - 12))
+      [[ $bar_width -lt 4 ]] && bar_width=4
       local done_width=0
       local active_width=0
       local done_end=0
@@ -237,7 +253,7 @@ for i, t in enumerate(tasks):
             print(f'{indent}{line}')
     if i < len(tasks) - 1:
         print('')
-" "$cols" 2>/dev/null)
+" "$content_cols" 2>/dev/null)
       while IFS= read -r tline; do
         p "$tline"
       done <<< "$task_lines"
@@ -275,7 +291,8 @@ for i, t in enumerate(tasks):
   local file_count=0
   local max_files=$((rows - 30))
   [[ $max_files -lt 5 ]] && max_files=5
-  local maxpath=$((cols - 16))
+  local maxpath=$((content_cols - 16))
+  [[ $maxpath -lt 8 ]] && maxpath=8
 
   short() {
     local f="$1"

@@ -88,6 +88,7 @@ export default function (pi: ExtensionAPI) {
 	let panelHandle: PanelHandle | null = null;
 	const scriptPath = path.join(path.dirname(import.meta.url.replace("file://", "")), "status-panel.sh");
 	const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
+	const tmuxStatusPaneStyle = "bg=#171a21";
 
 	function writePanelState(handle: PanelHandle | null): void {
 		try {
@@ -188,6 +189,7 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			execFileSync("tmux", ["select-pane", "-t", paneId, "-T", "Status"], { timeout: 2000 });
+			execFileSync("tmux", ["set-option", "-pt", paneId, "window-style", tmuxStatusPaneStyle], { timeout: 2000 });
 		} catch {}
 
 		return { backend: "tmux", ref: paneId };
