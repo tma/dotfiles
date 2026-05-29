@@ -5,6 +5,36 @@ description: Use git workflow conventions for commits, pulls, pushes, and branch
 
 # Git
 
+## Starting development work
+
+Always start a new development task from the latest default branch, not from the
+current local `HEAD` branch. Treat the checked-out branch as incidental unless the
+user explicitly asks to continue that branch.
+
+Before creating a task branch or making task-specific edits:
+
+1. Identify the default branch, preferably from `origin/HEAD`
+2. Fetch the latest refs from the remote
+3. Switch to the default branch
+4. Update it from the remote
+5. Create the task branch from that updated default branch
+
+```bash
+# Detect default branch from origin/HEAD
+DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')
+
+# Fall back to gh when origin/HEAD is unavailable
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)}
+
+git fetch origin
+git switch "$DEFAULT_BRANCH"
+git pull --rebase origin "$DEFAULT_BRANCH"
+git switch -c feature/description
+```
+
+If the current branch has uncommitted work, do not build new task work on top of
+it. Stash or commit the work first, or ask the user how to proceed.
+
 ## Commits
 
 ### Commit by topic

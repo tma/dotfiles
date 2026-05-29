@@ -51,6 +51,23 @@ gh api repos/owner/repo/contents/path/to/file --jq .content | base64 -d
 gh search code "ErrorName" --repo owner/repo
 ```
 
+## Starting development work
+
+When a GitHub issue, PR follow-up, or other development task requires local code
+changes, start from the latest default branch. Do not base new task work on the
+currently checked-out local branch unless the user explicitly asks to continue it.
+
+Use `gh` to identify the repository default branch when needed, then fetch and
+update it before creating the task branch:
+
+```bash
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+git fetch origin
+git switch "$DEFAULT_BRANCH"
+git pull --rebase origin "$DEFAULT_BRANCH"
+git switch -c feature/description
+```
+
 
 ## Common Operations
 
