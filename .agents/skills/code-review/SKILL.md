@@ -16,6 +16,25 @@ If posting prose on GitHub, load and apply the `writing-voice` skill first.
 
 First determine which mode applies.
 
+Also determine review depth:
+
+- `normal` — default: one primary review by the root agent.
+- `deep` — triggered by words like "deep", "thorough", "comprehensive", or
+  "extra careful". Run the primary review, then use the `second-opinion` skill
+  for multiple read-only reviewers.
+
+For deep reviews, gather the normal review context first, then invoke
+`second-opinion` with two reviewers by default, or three when the user asks for a
+very thorough review or explicitly asks for three. Split reviewer focus across:
+
+1. correctness, security, and data-loss risks
+2. edge cases, reliability, error handling, and tests
+3. maintainability, performance, operational risk, and design fit
+
+Use distinct model families/routes when available. Same-family reviewers are OK
+when needed to reach the requested count; label the route/focus clearly. Do not
+post comments or change repository state unless the user explicitly asks.
+
 ### Mode A — PR URL provided
 
 If the user provided a GitHub PR URL, review that remote PR only. The PR may be

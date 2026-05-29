@@ -20,7 +20,7 @@ This skill is harness-agnostic: prepare a review packet, then delegate it throug
 
 For a single review, never choose the same model family as the current/root agent unless the user explicitly confirms that override.
 
-For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests or confirms it.
+For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests it, confirms it, or this skill was invoked by a deep/thorough review workflow that needs more reviewer routes.
 
 ## Relationship to the Primary Review Workflow
 
@@ -126,6 +126,7 @@ For multiple reviews:
 1. Prefer distinct non-current reviewer routes.
 2. If only one non-current route is configured, reuse that route with separate tasks and different reviewer focuses.
 3. If the user explicitly requests a current-family reviewer, ask for confirmation unless their wording already makes the override clear.
+4. If invoked by the `code-review` skill for a deep/thorough review, same-family reviewers are allowed when needed to reach the requested count; label the route/focus clearly.
 
 Suggested focus split when reusing one route:
 
@@ -259,7 +260,7 @@ If multiple tasks reused the same route, mention that plainly.
 |-------|--------|
 | Current/root model unknown | Ask which route(s) to use if needed |
 | Requested reviewer unavailable | Tell the user what routed child agent is missing; do not use model CLIs |
-| Same-family reviewer requested | Ask for confirmation unless explicitly requested |
+| Same-family reviewer requested | Ask for confirmation unless explicitly requested or invoked by a deep/thorough review workflow |
 | Count > 3 | Explain the cap and use three unless narrowed |
 | Empty diff/input | Tell user there is nothing to review |
 | Review packet too large | Ask the user to narrow scope or confirm proceeding |
