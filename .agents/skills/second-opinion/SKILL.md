@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Gets an independent review by delegating to a child/subagent running a model family different from the current agent. If current model is GPT/OpenAI, choose latest Opus; if current model is Opus/Anthropic, choose latest GPT. Supports local code changes, PRs, commits, branches, and plans.
+description: Get 1–3 independent reviews of changes, PRs, commits, branches, or plans.
 ---
 
 # Second Opinion

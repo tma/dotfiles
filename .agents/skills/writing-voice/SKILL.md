@@ -1,11 +1,6 @@
 ---
 name: writing-voice
-description: >
-  Write in the user's natural voice and avoid AI-sounding text. Use before drafting
-  or publishing any prose on the user's behalf, especially GitHub PR bodies, issue
-  bodies/comments, PR comments, PR review comments, release notes, git commit
-  messages, emails, Slack drafts, docs, reviews, proposals, status updates, or any
-  text that should sound like the user wrote it themselves.
+description: Write drafts in the user's voice for comments, docs, messages, reviews, and release notes.
 ---
 
 # Writing Voice — Sound Like a Human, Not a Model

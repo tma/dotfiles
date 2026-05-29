@@ -1,11 +1,6 @@
 ---
 name: code-review
-description: >
-  Review code changes in local diffs, staged changes, the current branch PR, or a
-  specific GitHub PR URL. Use when asked to review a PR, review local changes,
-  inspect a diff, check Copilot review comments, or decide whether changes are
-  ready to merge. Gathers PR context, comments, linked issues, and changed files;
-  checks correctness, security, reliability, docs, and tests.
+description: Review diffs, branches, commits, PRs, Copilot comments, and merge readiness.
 ---
 
 # Code Review

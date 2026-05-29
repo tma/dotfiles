@@ -1,6 +1,6 @@
 ---
 name: kusto
-description: Query Azure Data Explorer / Kusto clusters with user-provided cluster, database, and table context. Use for KQL-based log, metric, and event analysis.
+description: Query Azure Data Explorer/Kusto logs, metrics, and events.
 ---
 
 # Kusto / Azure Data Explorer

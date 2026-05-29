@@ -1,6 +1,6 @@
 ---
 name: git
-description: Git workflow conventions — commit organization, message style, pull strategy, and branch hygiene. Use when committing, pulling, pushing, or managing git history.
+description: Use git workflow conventions for commits, pulls, pushes, and branch hygiene.
 ---
 
 # Git

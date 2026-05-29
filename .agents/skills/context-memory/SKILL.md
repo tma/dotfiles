@@ -1,6 +1,6 @@
 ---
 name: context-memory
-description: Uses Pi's built-in session history for lightweight cross-session context. Never writes HANDOFF.md, .decisions.md, handoff.json, or other memory bookkeeping files unless the user explicitly asks for them.
+description: Use Pi session history for cross-session context; do not create memory files.
 ---
 
 # Context Memory

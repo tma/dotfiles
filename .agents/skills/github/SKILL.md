@@ -1,6 +1,6 @@
 ---
 name: github
-description: Interact with GitHub — issues, PRs, repos, Actions, Codespaces, and API. Use when the task involves anything on GitHub. Always use the gh CLI, never raw API calls or curl.
+description: Use gh for GitHub issues, PRs, repos, Actions, and Codespaces.
 ---
 
 # GitHub

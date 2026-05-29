@@ -1,6 +1,6 @@
 ---
 name: workiq
-description: Search, summarize, and ask questions about Microsoft 365 content through a configured WorkIQ CLI or connector. Use when the user needs help finding or understanding workplace documents, mail, meetings, chats, or files.
+description: Search and summarize Microsoft 365 mail, meetings, chats, files, and docs.
 ---
 
 # WorkIQ / Microsoft 365 Content Search

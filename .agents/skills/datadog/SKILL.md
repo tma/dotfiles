@@ -1,6 +1,6 @@
 ---
 name: datadog
-description: Query Datadog metrics, logs, traces, monitors, events, dashboards, and SLOs. Use when investigating application or infrastructure health with user-provided Datadog context.
+description: Query Datadog metrics, logs, traces, monitors, events, dashboards, and SLOs.
 ---
 
 # Datadog

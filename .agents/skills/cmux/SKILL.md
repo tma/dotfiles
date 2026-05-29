@@ -1,6 +1,6 @@
 ---
 name: cmux
-description: Control cmux terminal multiplexer — manage splits, surfaces, panes, send commands, read screen output, sidebar metadata, browser panels, and notifications. Use when interacting with cmux workspaces, terminal panes, or the status panel.
+description: Control cmux workspaces, panes, surfaces, status/sidebar, browser panels, and notifications.
 ---
 
 # cmux
