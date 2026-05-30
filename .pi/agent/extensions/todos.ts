@@ -37,10 +37,13 @@ function getStateDir(sessionFile: string | undefined): string {
 	return ephemeralDir;
 }
 
-function flushTodos(tasks: Task[]): void {
+function flushTodos(state: TodoState): void {
 	if (!todosFile) return;
 	try {
-		writeFileSync(todosFile, JSON.stringify({ tasks }), "utf-8");
+		writeFileSync(todosFile, JSON.stringify({
+			goal: state.goal ?? null,
+			tasks: state.tasks,
+		}), "utf-8");
 	} catch {}
 }
 
@@ -106,6 +109,7 @@ function cmuxNotifyAllDone(tasks: Task[]): void {
 // ── Types ───────────────────────────────────────────────────────────
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
+type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
 interface Task {
 	id: string;
@@ -113,7 +117,16 @@ interface Task {
 	status: TaskStatus;
 }
 
+interface Goal {
+	objective: string;
+	status: GoalStatus;
+	createdAt: number;
+	updatedAt: number;
+	note?: string;
+}
+
 interface TodoState {
+	goal?: Goal | null;
 	tasks: Task[];
 	clearedTasks?: Task[];
 }
@@ -137,6 +150,24 @@ const TodoWriteParams = Type.Object({
 });
 
 const TodoReadParams = Type.Object({});
+
+const GoalSetParams = Type.Object({
+	objective: Type.String({ description: "Durable objective / north star for the current work" }),
+	status: Type.Optional(StringEnum(["active", "paused", "blocked", "complete"] as const, {
+		description: "Goal status. Defaults to active.",
+	})),
+	note: Type.Optional(Type.String({ description: "Optional short note about constraints, acceptance criteria, or blocker" })),
+});
+
+const GoalUpdateParams = Type.Object({
+	status: Type.Optional(StringEnum(["active", "paused", "blocked", "complete"] as const, {
+		description: "New goal status",
+	})),
+	objective: Type.Optional(Type.String({ description: "Updated durable objective" })),
+	note: Type.Optional(Type.String({ description: "Optional short note about constraints, acceptance criteria, or blocker" })),
+});
+
+const GoalReadParams = Type.Object({});
 
 // ── Extension ───────────────────────────────────────────────────────
 
@@ -162,19 +193,28 @@ export default function (pi: ExtensionAPI) {
 		panelPoll.unref?.();
 	};
 
+	const applyStateSnapshot = (snapshot: TodoState | undefined) => {
+		if (!snapshot) return;
+		if (Array.isArray(snapshot.tasks)) state.tasks = snapshot.tasks;
+		if ("goal" in snapshot) state.goal = snapshot.goal ?? undefined;
+	};
+
 	const reconstructState = (ctx: ExtensionContext) => {
 		currentCtx = ctx;
 		ensurePanelPolling();
 		state = { tasks: [] };
 
 		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === "todos-state") {
+				applyStateSnapshot(entry.data as TodoState | undefined);
+				continue;
+			}
+
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
-			if (msg.role !== "toolResult" || msg.toolName !== "todo_write") continue;
-			const details = msg.details as TodoState | undefined;
-			if (details?.tasks) {
-				state = { tasks: details.tasks };
-			}
+			if (msg.role !== "toolResult") continue;
+			if (!["todo_write", "goal_set", "goal_update", "goal_read"].includes(msg.toolName)) continue;
+			applyStateSnapshot(msg.details as TodoState | undefined);
 		}
 
 		updateWidget(ctx);
@@ -204,42 +244,47 @@ export default function (pi: ExtensionAPI) {
 	// Clear widget once the agent finishes and all tasks are done
 	pi.on("agent_end", async (_e, ctx) => {
 		if (state.tasks.length > 0 && state.tasks.every((t) => t.status === "completed" || t.status === "cancelled")) {
-			ctx.ui.setWidget("todos", []);
-			flushTodos([]);
-			cmuxSetTaskStatus([]);
+			state = { ...state, tasks: [] };
+			updateWidget(ctx);
 		}
 	});
 
 	// ── Widget ──────────────────────────────────────────────────────
 
 	const updateWidget = (ctx: ExtensionContext) => {
-		flushTodos(state.tasks);
+		flushTodos(state);
 		cmuxSetTaskStatus(state.tasks);
 
 		const suppressWidget = shouldSuppressWidget();
 		lastWidgetSuppressed = suppressWidget;
 
-		// In cmux, and in tmux while the right status panel is open, tasks live in
-		// the side panel instead of the horizontal editor widget.
+		// In cmux, and in tmux while the right status panel is open, work state lives
+		// in the side panel instead of the horizontal editor widget.
 		if (suppressWidget) {
 			ctx.ui.setWidget("todos", []);
 			return;
 		}
 
-		if (state.tasks.length === 0) {
+		if (!state.goal && state.tasks.length === 0) {
 			ctx.ui.setWidget("todos", []);
 			return;
 		}
 
-		const completed = state.tasks.filter((t) => t.status === "completed").length;
-		const cancelled = state.tasks.filter((t) => t.status === "cancelled").length;
-		const total = state.tasks.length;
-		const active = state.tasks.find((t) => t.status === "in_progress");
-		const done = completed + cancelled;
-
-		const bar = progressBar(done, total, 20);
 		const lines: string[] = [];
-		lines.push(`${bar} ${done}/${total}${active ? ` │ ▸ ${active.title}` : ""}`);
+		if (state.goal) {
+			lines.push(formatGoalLine(state.goal));
+		}
+
+		if (state.tasks.length > 0) {
+			const completed = state.tasks.filter((t) => t.status === "completed").length;
+			const cancelled = state.tasks.filter((t) => t.status === "cancelled").length;
+			const total = state.tasks.length;
+			const active = state.tasks.find((t) => t.status === "in_progress");
+			const done = completed + cancelled;
+
+			const bar = progressBar(done, total, 20);
+			lines.push(`${bar} ${done}/${total}${active ? ` │ ▸ ${active.title}` : ""}`);
+		}
 
 		ctx.ui.setWidget("todos", lines);
 	};
@@ -286,9 +331,9 @@ export default function (pi: ExtensionAPI) {
 
 			if (allSubmittedTasksDone) {
 				cmuxNotifyAllDone(submittedTasks);
-				state = { tasks: [] };
+				state = { ...state, tasks: [] };
 			} else {
-				state = { tasks: submittedTasks };
+				state = { ...state, tasks: submittedTasks };
 			}
 			updateWidget(ctx);
 
@@ -300,7 +345,7 @@ export default function (pi: ExtensionAPI) {
 				: formatTaskList(state.tasks);
 			return {
 				content: [{ type: "text", text: summary }],
-				details: { tasks: [...state.tasks], clearedTasks } as TodoState,
+				details: { goal: state.goal ?? null, tasks: [...state.tasks], clearedTasks } as TodoState,
 			};
 		},
 
@@ -362,7 +407,7 @@ export default function (pi: ExtensionAPI) {
 			const summary = formatTaskList(state.tasks);
 			return {
 				content: [{ type: "text", text: summary }],
-				details: { tasks: [...state.tasks] } as TodoState,
+				details: { goal: state.goal ?? null, tasks: [...state.tasks] } as TodoState,
 			};
 		},
 
@@ -375,6 +420,208 @@ export default function (pi: ExtensionAPI) {
 			const line = theme.fg("muted", `${done}/${details.tasks.length} completed`)
 				+ formatTaskListForRender(details.tasks, theme);
 			return new Text(line, 0, 0);
+		},
+	});
+
+	// ── Goal tools ──────────────────────────────────────────────────
+
+	const persistState = () => {
+		pi.appendEntry("todos-state", { goal: state.goal ?? null, tasks: [...state.tasks] });
+	};
+
+	const setGoal = (objective: string, status: GoalStatus = "active", note?: string): Goal => {
+		const now = Date.now();
+		const existing = state.goal;
+		const goal: Goal = {
+			objective: objective.trim(),
+			status,
+			createdAt: existing?.createdAt ?? now,
+			updatedAt: now,
+			...(note?.trim() ? { note: note.trim() } : existing?.note ? { note: existing.note } : {}),
+		};
+		state = { ...state, goal };
+		return goal;
+	};
+
+	pi.registerTool({
+		name: "goal_set",
+		label: "Goal Set",
+		description: "Set the durable objective / north star for the current work. Use for long-running, autonomous, or multi-turn work; use todos for the current execution plan.",
+		promptSnippet: "Set durable work goal / north star",
+		promptGuidelines: [
+			"Use goal_set when work has a durable objective that may span multiple turns, todo batches, compaction, or handoff.",
+			"Do not use goal_set for trivial, one-shot, or purely conversational tasks.",
+			"Use todos for the current execution plan; use the goal for the stable outcome/why.",
+			"If a goal already exists, read it and continue under it; do not replace it unless the prior goal is complete or clearly obsolete.",
+		],
+		parameters: GoalSetParams,
+
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const objective = params.objective.trim();
+			if (!objective) {
+				return { content: [{ type: "text", text: "Goal objective cannot be empty." }], details: { goal: state.goal ?? null, tasks: [...state.tasks] } as TodoState };
+			}
+			const goal = setGoal(objective, params.status ?? "active", params.note);
+			updateWidget(ctx);
+			return {
+				content: [{ type: "text", text: formatGoalSummary(goal) }],
+				details: { goal, tasks: [...state.tasks] } as TodoState,
+			};
+		},
+
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("goal_set "));
+			text += theme.fg("accent", args.objective ?? "");
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const details = result.details as TodoState | undefined;
+			if (!details?.goal) return new Text(theme.fg("dim", "No goal"), 0, 0);
+			return new Text(renderGoal(details.goal, theme), 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "goal_update",
+		label: "Goal Update",
+		description: "Update the current goal objective, note, or status. Mark complete only when the durable objective is actually achieved.",
+		promptSnippet: "Update current goal objective or status",
+		promptGuidelines: [
+			"Use goal_update to mark a goal complete only when the user's durable objective is actually achieved.",
+			"Use goal_update with status blocked when the goal cannot proceed without a user decision, missing dependency, or external unblock.",
+		],
+		parameters: GoalUpdateParams,
+
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (!state.goal) {
+				return { content: [{ type: "text", text: "No goal is currently set." }], details: { goal: null, tasks: [...state.tasks] } as TodoState };
+			}
+			const objective = params.objective?.trim() || state.goal.objective;
+			const goal: Goal = {
+				...state.goal,
+				objective,
+				status: params.status ?? state.goal.status,
+				updatedAt: Date.now(),
+				...(params.note !== undefined ? (params.note.trim() ? { note: params.note.trim() } : { note: undefined }) : {}),
+			};
+			state = { ...state, goal };
+			updateWidget(ctx);
+			return {
+				content: [{ type: "text", text: formatGoalSummary(goal) }],
+				details: { goal, tasks: [...state.tasks] } as TodoState,
+			};
+		},
+
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("goal_update "));
+			text += theme.fg("muted", args.status ?? "goal");
+			if (args.objective) text += theme.fg("dim", ` │ ${args.objective}`);
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const details = result.details as TodoState | undefined;
+			if (!details?.goal) return new Text(theme.fg("dim", "No goal"), 0, 0);
+			return new Text(renderGoal(details.goal, theme), 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "goal_read",
+		label: "Goal Read",
+		description: "Read the current durable goal and task list context.",
+		promptSnippet: "Read current durable goal",
+		parameters: GoalReadParams,
+
+		async execute() {
+			if (!state.goal) {
+				return {
+					content: [{ type: "text", text: "No goal is currently set." }],
+					details: { goal: null, tasks: [...state.tasks] } as TodoState,
+				};
+			}
+			return {
+				content: [{ type: "text", text: formatGoalSummary(state.goal) }],
+				details: { goal: state.goal, tasks: [...state.tasks] } as TodoState,
+			};
+		},
+
+		renderResult(result, _options, theme) {
+			const details = result.details as TodoState | undefined;
+			if (!details?.goal) return new Text(theme.fg("dim", "No goal"), 0, 0);
+			return new Text(renderGoal(details.goal, theme), 0, 0);
+		},
+	});
+
+	// ── /goal command ────────────────────────────────────────────────
+
+	pi.registerCommand("goal", {
+		description: "Set, view, update, or clear the current work goal",
+		handler: async (args, ctx) => {
+			const input = (args ?? "").trim();
+			const command = input.toLowerCase();
+
+			if (!input) {
+				ctx.ui.notify(state.goal ? formatGoalSummary(state.goal) : "No goal set. Usage: /goal <objective>", "info");
+				return;
+			}
+
+			if (command === "clear") {
+				state = { ...state, goal: undefined };
+				persistState();
+				updateWidget(ctx);
+				ctx.ui.notify("Goal cleared", "info");
+				return;
+			}
+
+			if (command === "edit") {
+				if (!state.goal) {
+					ctx.ui.notify("No goal set. Usage: /goal <objective>", "info");
+					return;
+				}
+				const edited = await ctx.ui.editor("Edit goal", state.goal.objective);
+				if (edited === undefined) return;
+				const objective = edited.trim();
+				if (!objective) {
+					ctx.ui.notify("Goal objective cannot be empty", "warning");
+					return;
+				}
+				setGoal(objective, state.goal.status, state.goal.note);
+				persistState();
+				updateWidget(ctx);
+				ctx.ui.notify(formatGoalSummary(state.goal!), "info");
+				return;
+			}
+
+			const statusAliases: Record<string, GoalStatus> = {
+				active: "active",
+				resume: "active",
+				paused: "paused",
+				pause: "paused",
+				blocked: "blocked",
+				block: "blocked",
+				complete: "complete",
+				done: "complete",
+			};
+
+			const nextStatus = statusAliases[command];
+			if (nextStatus) {
+				if (!state.goal) {
+					ctx.ui.notify("No goal set. Usage: /goal <objective>", "info");
+					return;
+				}
+				state = { ...state, goal: { ...state.goal, status: nextStatus, updatedAt: Date.now() } };
+				persistState();
+				updateWidget(ctx);
+				ctx.ui.notify(formatGoalSummary(state.goal!), "info");
+				return;
+			}
+
+			setGoal(input);
+			persistState();
+			updateWidget(ctx);
+			ctx.ui.notify(formatGoalSummary(state.goal!), "info");
 		},
 	});
 
@@ -402,6 +649,37 @@ export default function (pi: ExtensionAPI) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+function goalStatusIcon(status: GoalStatus): string {
+	switch (status) {
+		case "active": return "🎯";
+		case "paused": return "⏸";
+		case "blocked": return "⚠";
+		case "complete": return "✓";
+	}
+}
+
+function formatGoalLine(goal: Goal): string {
+	const note = goal.note ? ` │ ${goal.note}` : "";
+	return `${goalStatusIcon(goal.status)} ${goal.objective} (${goal.status})${note}`;
+}
+
+function formatGoalSummary(goal: Goal): string {
+	const note = goal.note ? `\nNote: ${goal.note}` : "";
+	return `Goal ${goal.status}: ${goal.objective}${note}`;
+}
+
+function renderGoal(goal: Goal, theme: { fg: (color: string, text: string) => string }): string {
+	const color = goal.status === "complete" ? "success"
+		: goal.status === "blocked" ? "warning"
+		: goal.status === "paused" ? "dim"
+		: "accent";
+	let text = theme.fg(color, `${goalStatusIcon(goal.status)} `);
+	text += theme.fg("text", goal.objective);
+	text += theme.fg("muted", ` · ${goal.status}`);
+	if (goal.note) text += theme.fg("dim", ` · ${goal.note}`);
+	return text;
+}
 
 function statusIcon(status: TaskStatus): string {
 	switch (status) {

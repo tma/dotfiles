@@ -170,11 +170,53 @@ build_panel_template() {
   fi
   p ""
 
-  # ── Todos ────────────────────────────────────────────
+  # ── Goal + Todos ─────────────────────────────────────
   local TODOS_FILE="${PI_SESSION_DIR}/${PI_PID}-todos.json"
   if [[ -f "$TODOS_FILE" ]]; then
     local todos_json
     todos_json=$(cat "$TODOS_FILE" 2>/dev/null)
+
+    local has_goal
+    has_goal=$(echo "$todos_json" | python3 -c "import sys,json; print(1 if json.load(sys.stdin).get('goal') else 0)" 2>/dev/null || echo "0")
+    if [[ "$has_goal" -gt 0 ]]; then
+      hr
+      p " ${BOLD}Goal${RESET}"
+      hr
+      p ""
+
+      local goal_lines
+      goal_lines=$(echo "$todos_json" | python3 -c "
+import sys,json,textwrap
+width=max(10, int(sys.argv[1]))
+d=json.load(sys.stdin)
+g=d.get('goal') or {}
+status=str(g.get('status','active'))
+objective=' '.join(str(g.get('objective','')).split())
+note=' '.join(str(g.get('note','')).split())
+icons={'active':'🎯','paused':'⏸','blocked':'⚠','complete':'✓'}
+colors={'active':'\033[38;5;159m','paused':'\033[2m','blocked':'\033[38;5;223m','complete':'\033[38;5;114m'}
+reset='\033[0m'
+dim='\033[2m'
+co=colors.get(status,'')
+ic=icons.get(status,'🎯')
+wrap_width=max(8, width - 3)
+wrapped=textwrap.wrap(objective, width=wrap_width, break_long_words=False, break_on_hyphens=False) or ['']
+print(f' {co}{ic}{reset} {co}{wrapped[0]}{reset}')
+for line in wrapped[1:]:
+    print(f'   {co}{line}{reset}')
+print(f'   {dim}{status}{reset}')
+if note:
+    note_wrapped=textwrap.wrap(note, width=wrap_width, break_long_words=False, break_on_hyphens=False) or ['']
+    print(f'   {dim}{note_wrapped[0]}{reset}')
+    for line in note_wrapped[1:]:
+        print(f'   {dim}{line}{reset}')
+" "$content_cols" 2>/dev/null)
+      while IFS= read -r gline; do
+        p "$gline"
+      done <<< "$goal_lines"
+      p ""
+    fi
+
     local task_count
     task_count=$(echo "$todos_json" | python3 -c "import sys,json; t=json.load(sys.stdin).get('tasks',[]); print(len(t))" 2>/dev/null || echo "0")
 
