@@ -652,16 +652,16 @@ export default function (pi: ExtensionAPI) {
 
 function goalStatusIcon(status: GoalStatus): string {
 	switch (status) {
-		case "active": return "🎯";
-		case "paused": return "⏸";
-		case "blocked": return "⚠";
+		case "active": return "●";
+		case "paused": return "◌";
+		case "blocked": return "▲";
 		case "complete": return "✓";
 	}
 }
 
 function formatGoalLine(goal: Goal): string {
 	const note = goal.note ? ` │ ${goal.note}` : "";
-	return `${goalStatusIcon(goal.status)} ${goal.objective} (${goal.status})${note}`;
+	return `${goalStatusIcon(goal.status)} ${goal.objective}${note}`;
 }
 
 function formatGoalSummary(goal: Goal): string {
@@ -676,7 +676,6 @@ function renderGoal(goal: Goal, theme: { fg: (color: string, text: string) => st
 		: "accent";
 	let text = theme.fg(color, `${goalStatusIcon(goal.status)} `);
 	text += theme.fg("text", goal.objective);
-	text += theme.fg("muted", ` · ${goal.status}`);
 	if (goal.note) text += theme.fg("dim", ` · ${goal.note}`);
 	return text;
 }

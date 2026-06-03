@@ -193,20 +193,20 @@ g=d.get('goal') or {}
 status=str(g.get('status','active'))
 objective=' '.join(str(g.get('objective','')).split())
 note=' '.join(str(g.get('note','')).split())
-icons={'active':'🎯','paused':'⏸','blocked':'⚠','complete':'✓'}
-colors={'active':'\033[38;5;159m','paused':'\033[2m','blocked':'\033[38;5;223m','complete':'\033[38;5;114m'}
+icons={'active':'●','paused':'◌','blocked':'▲','complete':'✓'}
+colors={'active':'\033[38;5;159m','paused':'\033[38;5;245m','blocked':'\033[38;5;223m','complete':'\033[38;5;114m'}
 reset='\033[0m'
 dim='\033[2m'
 co=colors.get(status,'')
-ic=icons.get(status,'🎯')
-wrap_width=max(8, width - 3)
-wrapped=textwrap.wrap(objective, width=wrap_width, break_long_words=False, break_on_hyphens=False) or ['']
-print(f' {co}{ic}{reset} {co}{wrapped[0]}{reset}')
+ic=icons.get(status,'●')
+wrap_width=max(8, width - 4)
+wrapped=textwrap.wrap(objective, width=wrap_width, break_long_words=True, break_on_hyphens=False) or ['']
+print(f' {co}{ic}{reset} {wrapped[0]}')
 for line in wrapped[1:]:
-    print(f'   {co}{line}{reset}')
-print(f'   {dim}{status}{reset}')
+    print(f'   {line}')
 if note:
-    note_wrapped=textwrap.wrap(note, width=wrap_width, break_long_words=False, break_on_hyphens=False) or ['']
+    print('')
+    note_wrapped=textwrap.wrap(note, width=wrap_width, break_long_words=True, break_on_hyphens=False) or ['']
     print(f'   {dim}{note_wrapped[0]}{reset}')
     for line in note_wrapped[1:]:
         print(f'   {dim}{line}{reset}')
@@ -304,14 +304,17 @@ for i, t in enumerate(tasks):
   fi
   p ""
 
-  # ── Changes (branch + files) ────────────────────────
+  # ── Git (worktree, branch + files) ───────────────────
   hr
-  p " ${BOLD}Changes${RESET}"
+  p " ${BOLD}Git${RESET}"
   hr
   p ""
 
+  local git_root
+  git_root=$(git rev-parse --show-toplevel 2>/dev/null)
   local branch
-  branch=$(git branch --show-current 2>/dev/null || echo "detached")
+  branch=$(git branch --show-current 2>/dev/null)
+  [[ -z "$branch" ]] && branch="detached"
   local ahead=0 behind=0
   local ab
   ab=$(git rev-list --left-right --count "origin/${branch}...HEAD" 2>/dev/null) && {
@@ -323,10 +326,17 @@ for i, t in enumerate(tasks):
   [[ "$ahead" != "0" ]] && bi+=" ↑${ahead}"
   [[ "$behind" != "0" ]] && bi+=" ↓${behind}"
   p " ${CYAN}⎇${RESET} ${BOLD}${bi}${RESET}"
+
+  local worktree_label="${git_root}"
+  [[ -n "$HOME" && "$worktree_label" == "$HOME"* ]] && worktree_label="~${worktree_label#$HOME}"
+  local worktree_max=$((content_cols - 4))
+  [[ $worktree_max -lt 8 ]] && worktree_max=8
+  if [[ ${#worktree_label} -gt $worktree_max ]]; then
+    worktree_label="…${worktree_label: -$((worktree_max - 1))}"
+  fi
+  p " ${GRAY}⌂ ${worktree_label}${RESET}"
   p ""
 
-  local git_root
-  git_root=$(git rev-parse --show-toplevel 2>/dev/null)
   local diff_files=""
   local diff_args=""
 
