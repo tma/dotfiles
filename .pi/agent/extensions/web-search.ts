@@ -13,6 +13,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const UA_BOT = "pi-coding-agent/1.0"; // DDG lite blocks browser UAs, wants bot-like agents
@@ -21,6 +23,21 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
 const JINA_PREFIX = "https://r.jina.ai/";
 const MIN_CONTENT_LENGTH = 200; // below this, content is probably garbage
+const BLOCKED_HOSTNAMES = new Set([
+	"localhost",
+	"localhost.localdomain",
+	"ip6-localhost",
+	"ip6-loopback",
+	"broadcasthost",
+	"host.docker.internal",
+]);
+
+class UnsafeUrlError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UnsafeUrlError";
+	}
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -79,6 +96,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Web Read",
 		description:
 			"Fetch a URL and extract its text content, stripping HTML tags. Supports multiple URLs. " +
+			"Only http(s) public web URLs are allowed; localhost, private IPs, and unsafe redirects are blocked. " +
 			"Automatically detects GitHub file URLs (serves raw content) and falls back to Jina Reader for JS-heavy or blocked pages.",
 		promptSnippet: "Fetch and read a web page as plain text",
 		parameters: Type.Object({
@@ -119,11 +137,15 @@ export default function (pi: ExtensionAPI) {
 type ReadResult = { text: string; source: "direct" | "jina" | "github-raw" };
 
 async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadResult> {
+	const inputUrl = assertSafeWebUrl(url).toString();
+
 	// GitHub file URLs → raw content
-	const rawUrl = githubToRaw(url);
+	const rawUrl = githubToRaw(inputUrl);
 	if (rawUrl) {
 		try {
-			const res = await fetchWithTimeout(rawUrl, {
+			const safeRawUrl = assertSafeWebUrl(rawUrl, "GitHub raw URL");
+			await assertPublicDns(safeRawUrl, "GitHub raw URL");
+			const res = await fetchWithTimeout(safeRawUrl.toString(), {
 				headers: { "User-Agent": UA },
 				signal,
 			});
@@ -132,14 +154,15 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 				text = truncate(text);
 				return { text, source: "github-raw" };
 			}
-		} catch {
+		} catch (error) {
+			if (error instanceof UnsafeUrlError) throw error;
 			// Fall through to normal fetch
 		}
 	}
 
 	// Direct fetch
 	try {
-		const res = await fetchSafe(url, signal);
+		const res = await fetchSafe(inputUrl, signal);
 		if (res.ok) {
 			const contentType = res.headers.get("content-type") ?? "";
 			const body = await res.text();
@@ -161,14 +184,16 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 			}
 			// Otherwise fall through to Jina
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof UnsafeUrlError) throw error;
 		// Fall through to Jina
 	}
 
 	// Jina Reader fallback — handles JS-rendered, anti-bot, SPAs
 	try {
-		const jinaUrl = JINA_PREFIX + url;
-		const res = await fetchWithTimeout(jinaUrl, {
+		const jinaUrl = assertSafeWebUrl(JINA_PREFIX + inputUrl, "Jina Reader URL");
+		await assertPublicDns(jinaUrl, "Jina Reader URL");
+		const res = await fetchWithTimeout(jinaUrl.toString(), {
 			headers: {
 				"User-Agent": UA,
 				Accept: "text/markdown",
@@ -182,11 +207,123 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 				return { text, source: "jina" };
 			}
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof UnsafeUrlError) throw error;
 		// Nothing worked
 	}
 
-	throw new Error(`Failed to fetch content from ${url} (tried direct + Jina Reader)`);
+	throw new Error(`Failed to fetch content from ${inputUrl} (tried direct + Jina Reader)`);
+}
+
+// ── URL safety ──────────────────────────────────────────────────────
+
+function assertSafeWebUrl(url: string, context = "URL"): URL {
+	let parsed: URL;
+	try {
+		parsed = new URL(url.trim());
+	} catch {
+		throw new UnsafeUrlError(`${context} is invalid`);
+	}
+
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new UnsafeUrlError(`${context} is not allowed: only http(s) URLs are supported`);
+	}
+
+	if (parsed.username || parsed.password) {
+		throw new UnsafeUrlError(`${context} is not allowed: embedded credentials are blocked`);
+	}
+
+	const hostname = normalizeHostname(parsed.hostname);
+	if (!hostname) {
+		throw new UnsafeUrlError(`${context} is not allowed: missing hostname`);
+	}
+
+	if (isBlockedHostname(hostname)) {
+		throw new UnsafeUrlError(`${context} is not allowed: local hostnames are blocked`);
+	}
+
+	if (isBlockedIpLiteral(hostname)) {
+		throw new UnsafeUrlError(`${context} is not allowed: private, local, or reserved IP addresses are blocked`);
+	}
+
+	return parsed;
+}
+
+function normalizeHostname(hostname: string): string {
+	return hostname.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "").toLowerCase();
+}
+
+function isBlockedHostname(hostname: string): boolean {
+	if (BLOCKED_HOSTNAMES.has(hostname)) return true;
+	if (hostname.endsWith(".localhost")) return true;
+	if (hostname.endsWith(".local")) return true;
+	if (hostname.endsWith(".home.arpa")) return true;
+
+	// Single-label names are almost always local/intranet hosts, not public web URLs.
+	if (!hostname.includes(".") && isIP(hostname) === 0) return true;
+
+	return false;
+}
+
+function isBlockedIpLiteral(hostname: string): boolean {
+	const version = isIP(hostname);
+	if (version === 4) return isBlockedIpv4(hostname);
+	if (version === 6) return isBlockedIpv6(hostname);
+	return false;
+}
+
+async function assertPublicDns(url: URL, context = "URL"): Promise<void> {
+	const hostname = normalizeHostname(url.hostname);
+	if (isIP(hostname) !== 0) return;
+
+	const addresses = await lookup(hostname, { all: true, verbatim: true });
+	const blocked = addresses.find((entry) => isBlockedIpLiteral(normalizeHostname(entry.address)));
+	if (blocked) {
+		throw new UnsafeUrlError(`${context} is not allowed: ${hostname} resolves to blocked IP ${blocked.address}`);
+	}
+}
+
+function isBlockedIpv4(hostname: string): boolean {
+	const octets = hostname.split(".").map((part) => Number(part));
+	if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+		return true;
+	}
+
+	const [a, b] = octets;
+	return (
+		a === 0 || // current network
+		a === 10 || // RFC1918
+		a === 127 || // loopback
+		(a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+		(a === 169 && b === 254) || // link-local
+		(a === 172 && b >= 16 && b <= 31) || // RFC1918
+		(a === 192 && b === 168) || // RFC1918
+		(a === 192 && b === 0) || // IETF protocol assignments
+		(a === 198 && (b === 18 || b === 19)) || // benchmarking
+		a >= 224 // multicast/reserved/broadcast
+	);
+}
+
+function isBlockedIpv6(hostname: string): boolean {
+	const lower = hostname.toLowerCase();
+	const embeddedIpv4 = lower.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
+	if (embeddedIpv4 && isBlockedIpv4(embeddedIpv4)) return true;
+
+	return (
+		lower === "::" ||
+		lower === "::1" ||
+		lower.startsWith("fc") || // unique local fc00::/7
+		lower.startsWith("fd") || // unique local fc00::/7
+		lower.startsWith("fe8") || // link-local fe80::/10
+		lower.startsWith("fe9") ||
+		lower.startsWith("fea") ||
+		lower.startsWith("feb") ||
+		lower.startsWith("fec") || // deprecated site-local fec0::/10
+		lower.startsWith("fed") ||
+		lower.startsWith("fee") ||
+		lower.startsWith("fef") ||
+		lower.startsWith("ff") // multicast
+	);
 }
 
 // ── GitHub URL handling ─────────────────────────────────────────────
@@ -232,18 +369,25 @@ async function fetchWithTimeout(
 	const timer = setTimeout(() => controller.abort(new Error("Fetch timeout")), FETCH_TIMEOUT_MS);
 
 	try {
-		return await fetch(url, { ...init, signal: controller.signal, redirect: "follow" });
+		const { signal: _externalSignal, ...fetchInit } = init ?? {};
+		return await fetch(url, {
+			...fetchInit,
+			signal: controller.signal,
+			redirect: init?.redirect ?? "follow",
+		});
 	} finally {
 		clearTimeout(timer);
 	}
 }
 
 async function fetchSafe(url: string, signal?: AbortSignal | null): Promise<Response> {
-	let currentUrl = url;
+	let currentUrl = assertSafeWebUrl(url).toString();
 	let redirects = 0;
 
-	while (redirects < MAX_REDIRECTS) {
-		const res = await fetchWithTimeout(currentUrl, {
+	while (redirects <= MAX_REDIRECTS) {
+		const safeUrl = assertSafeWebUrl(currentUrl, redirects === 0 ? "URL" : "redirect URL");
+		await assertPublicDns(safeUrl, redirects === 0 ? "URL" : "redirect URL");
+		const res = await fetchWithTimeout(safeUrl.toString(), {
 			headers: { "User-Agent": UA },
 			signal,
 			redirect: "manual",
@@ -251,8 +395,8 @@ async function fetchSafe(url: string, signal?: AbortSignal | null): Promise<Resp
 
 		if (res.status >= 300 && res.status < 400) {
 			const location = res.headers.get("location");
-			if (!location) break;
-			currentUrl = new URL(location, currentUrl).toString();
+			if (!location) return res;
+			currentUrl = assertSafeWebUrl(new URL(location, safeUrl).toString(), "redirect URL").toString();
 			redirects++;
 			continue;
 		}
@@ -260,11 +404,7 @@ async function fetchSafe(url: string, signal?: AbortSignal | null): Promise<Resp
 		return res;
 	}
 
-	// Final attempt with auto-redirect as last resort
-	return fetchWithTimeout(currentUrl, {
-		headers: { "User-Agent": UA },
-		signal,
-	});
+	throw new Error(`Too many redirects while fetching ${url}`);
 }
 
 // ── HTML extraction ─────────────────────────────────────────────────
