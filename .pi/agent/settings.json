@@ -1,7 +1,7 @@
 {
   "defaultProvider": "github-copilot",
-  "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "high",
+  "defaultModel": "claude-opus-4.8",
+  "defaultThinkingLevel": "xhigh",
   "editorPaddingX": 2,
   "hideThinkingBlock": true,
   "collapseChangelog": true,
@@ -19,6 +19,7 @@
   "enabledModels": [
     "claude-*-4.6",
     "claude-*-4.7",
+    "claude-*-4.8",
     "gpt-5.5",
     "gemini-3.1*"
   ],

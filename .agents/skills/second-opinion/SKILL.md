@@ -20,7 +20,7 @@ This skill is harness-agnostic: prepare a review packet, then delegate it throug
 
 For a single review, never choose the same model family as the current/root agent unless the user explicitly confirms that override.
 
-For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests it, confirms it, or this skill was invoked by a deep/thorough review workflow that needs more reviewer routes.
+For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests it, confirms it, or this skill was invoked by a deep/thorough code-review workflow that requires both GPT and Opus routes.
 
 ## Relationship to the Primary Review Workflow
 
@@ -49,8 +49,8 @@ Use the host harness's native child-agent primitive.
 
 Use the `subagent` tool with configured reviewer agents:
 
-- `second-opinion-opus` — latest available Opus model.
-- `second-opinion-gpt` — latest available GPT model.
+- `second-opinion-opus` — latest available Opus model at max thinking (`xhigh`).
+- `second-opinion-gpt` — latest available GPT model at max thinking (`xhigh`).
 
 For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its reviewer label and focus.
 
@@ -99,8 +99,8 @@ If the user asks for more than three, explain the cap and proceed with three unl
 **Reviewer selection**:
 
 - `auto` — prefer model families different from the current/root agent
-- `opus` — latest Opus child reviewer
-- `gpt` — latest GPT child reviewer
+- `opus` — latest Opus child reviewer at max thinking (`xhigh`)
+- `gpt` — latest GPT child reviewer at max thinking (`xhigh`)
 - `mixed` — use multiple routed reviewers when available
 
 **Focus**:
@@ -123,10 +123,11 @@ For a single review, use the opposite family when the current/root family is kno
 
 For multiple reviews:
 
-1. Prefer distinct non-current reviewer routes.
-2. If only one non-current route is configured, reuse that route with separate tasks and different reviewer focuses.
-3. If the user explicitly requests a current-family reviewer, ask for confirmation unless their wording already makes the override clear.
-4. If invoked by the `code-review` skill for a deep/thorough review, same-family reviewers are allowed when needed to reach the requested count; label the route/focus clearly.
+1. If invoked by the `code-review` skill for a deep/thorough review, always include both `second-opinion-gpt` and `second-opinion-opus` when available, even if one matches the current/root model family.
+2. Otherwise, prefer distinct non-current reviewer routes.
+3. If only one non-current route is configured, reuse that route with separate tasks and different reviewer focuses.
+4. If the user explicitly requests a current-family reviewer, ask for confirmation unless their wording already makes the override clear.
+5. Same-family reviewers are allowed when needed to reach the requested count for deep/thorough reviews; label the route/focus clearly.
 
 Suggested focus split when reusing one route:
 
@@ -187,7 +188,7 @@ Each child task must be self-contained and include:
 Template:
 
 ```markdown
-You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on <latest Opus|latest GPT|configured route>.
+You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on <latest Opus|latest GPT|configured route> at max thinking when supported.
 The root agent is running on <current model family or unknown>.
 
 Review scope: <scope>
@@ -220,6 +221,7 @@ Single review:
 
 - Current/root GPT/OpenAI → `agent: "second-opinion-opus"`.
 - Current/root Opus/Anthropic → `agent: "second-opinion-gpt"`.
+- Deep/thorough code-review workflow → include both `agent: "second-opinion-gpt"` and `agent: "second-opinion-opus"`.
 
 Multiple reviews:
 
