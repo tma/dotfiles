@@ -1,8 +1,6 @@
 # Curated voice profile for tma
 
-This is the stable, hand-curated voice target for writing on tma's behalf. It should live with the `writing-voice` skill so the skill has a default voice even before sampling recent writing.
-
-This file intentionally avoids raw writing samples, private links, teammate names, and direct quotes from internal content. Treat it as style guidance, not as a memory dump.
+Stable, hand-curated voice target for writing on tma's behalf — the default before sampling recent writing. Style guidance only: no raw samples, private links, teammate names, or internal quotes.
 
 ## Core voice
 
@@ -19,7 +17,16 @@ This file intentionally avoids raw writing samples, private links, teammate name
 - Prefer short, direct sentences for conclusions and asks.
 - Use longer sentences when they carry real context or a tradeoff.
 - Cut filler before polishing prose.
-- Avoid corporate verbs and AI tells: use, led, built, fixed, changed, found, wrote, shipped.
+- Prefer plain verbs over corporate ones: use, led, built, fixed, changed, found, wrote, shipped.
+
+## Words and abbreviations
+
+- Spell words out. Do not shorten them. Write "repository" not "repo", "configuration" not "config", "documentation" not "docs", "directory" not "dir", "environment" not "env".
+- Use abbreviations and acronyms only where they are the normal way to refer to the thing, not as a shortcut for a full word. Standard ones are fine: `API`, `URL`, `PR`, `CI`, `SLO`, `p95`, `CPU`.
+- Rule of thumb: expand to the full word when a plain English word exists ("database" not "DB"); keep acronyms that aren't words (`JSON`, `API`, `ID`).
+- When unsure, write it out. A spelled-out word is never wrong; an abbreviation can be.
+- Reference code in backticks: identifiers, function and variable names, commands, flags, file paths, env vars, and literal values. Write `git rebase`, `--no-verify`, `src/index.ts`, `null`, not the bare words.
+- Do not put plain English in backticks. Backticks are for things you would type or run, not for emphasis.
 
 ## Paragraph style
 
@@ -30,21 +37,10 @@ This file intentionally avoids raw writing samples, private links, teammate name
 
 ## Common structures
 
-### Context → Decision → Tradeoff
-
-Use for technical explanations and design docs. Start with why the choice mattered, explain the decision, then name the tradeoff.
-
-### Observation → Evidence → Ask
-
-Use for feedback, proposals, and reviews. State what I noticed, include a concrete example, then make the ask clear.
-
-### Shipped → Impact → What changed
-
-Use for updates and self-review. Lead with what changed for users, operators, or developers; then explain the work that made it happen.
-
-### What happened → Why → What changed
-
-Use for incident writeups and debugging notes. Stay factual. Separate timeline, causes, and follow-up work.
+- **Context → Decision → Tradeoff** — technical explanations, design docs.
+- **Observation → Evidence → Ask** — feedback, proposals, reviews.
+- **Shipped → Impact → What changed** — updates, self-review.
+- **What happened → Why → What changed** — incident writeups, debugging notes; stay factual, separate timeline/causes/follow-up.
 
 ## Technical explanation style
 
@@ -148,6 +144,6 @@ Before returning prose, check:
 - Does this sound like something I would actually say to a colleague?
 - Is the ask or point clear in the first few lines?
 - Are the important details preserved?
-- Did any AI-tell words or structures slip in?
+- Did any AI-tell words, structures, or em-dash overuse slip in?
 - Is it too polished for the context?
 - Can any sentence be cut without losing meaning?
