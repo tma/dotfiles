@@ -1,5 +1,23 @@
-export LANG=en_US.UTF-8
-export LC_CTYPE=en_US.UTF-8
+# Pick a UTF-8 locale that actually exists on this machine. Hardcoding
+# en_US.UTF-8 silently falls back to POSIX/C in minimal containers (e.g.
+# Docker images that only ship C.UTF-8), which breaks UTF-8 rendering in
+# tmux (non-ASCII glyphs show up as `_`).
+__pick_utf8_locale() {
+  if command -v locale >/dev/null 2>&1; then
+    __avail=$(locale -a 2>/dev/null)
+    for __cand in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+      case "$__avail" in
+        *"$__cand"*) printf '%s' "$__cand"; return 0 ;;
+      esac
+    done
+  fi
+  printf '%s' C.UTF-8
+}
+__utf8_locale=$(__pick_utf8_locale)
+export LANG="$__utf8_locale"
+export LC_CTYPE="$__utf8_locale"
+unset __utf8_locale
+unset -f __pick_utf8_locale 2>/dev/null || true
 
 export EDITOR="zed"
 export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
@@ -74,6 +92,12 @@ docker-pi() {
     docker build "$@" -t "$image" - <<'PI_DOCKERFILE'
 # syntax=docker/dockerfile:1
 FROM ubuntu:26.04
+# UTF-8 locale must live on the image: pi-entry runs tmux as PID 1, and tmux
+# locks its UTF-8 detection from the environment at startup. Nothing inside
+# the container (shell rc, .tmux.conf, /etc/environment) can change it after
+# the fact, so without this every non-ASCII glyph renders as `_`. C.UTF-8
+# ships with glibc, so no `locales` package is needed.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -90,7 +114,7 @@ if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
   exec pi "$@"
 fi
 # tmux execs the command argv directly (no shell), so pass args through as-is.
-exec tmux new-session -s pi pi "$@"
+exec tmux -u new-session -s pi pi "$@"
 PI_ENTRY
 RUN chmod +x /usr/local/bin/pi-entry
 WORKDIR /workspace
@@ -167,6 +191,7 @@ PI_DOCKERFILE
     __pi_container_status_on
     docker run --rm -i "${tty_args[@]}" "${env_args[@]}" \
       -e PI_RUN_TMUX="$run_tmux" -e TERM \
+      -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
       -v "$PWD:$PWD" -w "$PWD" \
       -v "$agent_volume:/root/.pi/agent" \
       "${cfg_args[@]}" \
