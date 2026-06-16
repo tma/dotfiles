@@ -63,6 +63,7 @@ __pi_container_status_off() {
 #   PI_DOCKER_CONFIG_DIR    dotfiles repo to mount managed config from,
 #                           read-only (default: $HOME/.dotfiles; set empty to
 #                           skip and run with a bare config)
+# Set PI_NO_TMUX=1 to run pi directly in the container (no tmux/status panel).
 # To pass more secrets/env, override docker-pi in a *.local file.
 docker-pi() {
   local image="${PI_DOCKER_IMAGE:-pi-sandbox}"
@@ -71,14 +72,29 @@ docker-pi() {
   if [ "${1:-}" = "build" ]; then
     shift
     docker build "$@" -t "$image" - <<'PI_DOCKERFILE'
-FROM node:24-bookworm-slim
+# syntax=docker/dockerfile:1
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash ca-certificates curl git openssh-client ripgrep \
+       nodejs npm tmux python3 ncurses-bin ncurses-term procps \
   && rm -rf /var/lib/apt/lists/*
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Launcher: run pi inside tmux when interactive so the status-panel extension
+# can open a tmux split; otherwise exec pi directly.
+COPY <<'PI_ENTRY' /usr/local/bin/pi-entry
+#!/bin/sh
+[ -z "${TERM:-}" ] && export TERM=xterm-256color
+if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
+  exec pi "$@"
+fi
+# tmux execs the command argv directly (no shell), so pass args through as-is.
+exec tmux new-session -s pi pi "$@"
+PI_ENTRY
+RUN chmod +x /usr/local/bin/pi-entry
 WORKDIR /workspace
-ENTRYPOINT ["pi"]
+ENTRYPOINT ["/usr/local/bin/pi-entry"]
 PI_DOCKERFILE
     return
   fi
@@ -98,6 +114,16 @@ PI_DOCKERFILE
   local tty_args=()
   [ -t 0 ] && [ -t 1 ] && tty_args=(-t)
 
+  # Wrap pi in tmux inside the container (for the status panel) only when
+  # interactive and not a short-lived/non-UI subcommand.
+  local run_tmux=1
+  [ ${#tty_args[@]} -eq 0 ] && run_tmux=0
+  [ -n "${PI_NO_TMUX:-}" ] && run_tmux=0
+  case "${1:-}" in
+    -h|--help|-v|--version|-p|--print|--export|--list-models|config|install|remove|uninstall|update|list)
+      run_tmux=0 ;;
+  esac
+
   # Pass through only provider credentials / settings that are actually set.
   local env_args=()
   local var
@@ -110,9 +136,9 @@ PI_DOCKERFILE
   done
 
   # Mount managed config (skills, prompts, extensions, settings, agents,
-  # AGENTS.md) read-only from the dotfiles repo, layered over the named volume.
-  # Credentials/state (auth.json, sessions/, trust.json) are deliberately left
-  # in the named volume, not bind-mounted from the host.
+  # AGENTS.md, tmux.conf) read-only from the dotfiles repo, layered over the
+  # named volume. Credentials/state (auth.json, sessions/, trust.json) are
+  # deliberately left in the named volume, not bind-mounted from the host.
   local cfg="${PI_DOCKER_CONFIG_DIR-$HOME/.dotfiles}"
   local cfg_args=()
   if [ -n "$cfg" ] && [ -d "$cfg" ]; then
@@ -122,6 +148,7 @@ PI_DOCKERFILE
     [ -f "$cfg/.pi/agent/models.json" ]   && cfg_args+=(-v "$cfg/.pi/agent/models.json:/root/.pi/agent/models.json:ro")
     [ -f "$cfg/.pi/agent/settings.json" ] && cfg_args+=(-v "$cfg/.pi/agent/settings.json:/root/.pi/agent/settings.json:ro")
     [ -f "$cfg/.agents/AGENTS.md" ]       && cfg_args+=(-v "$cfg/.agents/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+    [ -f "$cfg/.tmux.conf" ]              && cfg_args+=(-v "$cfg/.tmux.conf:/root/.tmux.conf:ro")
     # Mount global skills only when cwd is NOT inside the config repo. Inside
     # the repo, pi already finds .agents/skills as project skills, so mounting
     # the same tree globally just triggers a duplicate-skill collision warning.
@@ -139,6 +166,7 @@ PI_DOCKERFILE
     trap '__pi_container_status_off' EXIT
     __pi_container_status_on
     docker run --rm -i "${tty_args[@]}" "${env_args[@]}" \
+      -e PI_RUN_TMUX="$run_tmux" -e TERM \
       -v "$PWD:$PWD" -w "$PWD" \
       -v "$agent_volume:/root/.pi/agent" \
       "${cfg_args[@]}" \
