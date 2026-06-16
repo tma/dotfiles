@@ -28,6 +28,124 @@ fi
 
 alias g="git"
 
+# --- Pi launcher -------------------------------------------------------------
+# Keep host credentials/files out of reach by default:
+#   * Codespaces is already a disposable container -> run pi natively (in tmux).
+#   * On the host -> run pi inside a throwaway Docker container via docker-pi.
+# Note: this file is sourced by both zsh and bash, so keep it portable
+# (use arrays, not unquoted word-splitting, which zsh does not do).
+
+# Subtle "you are sandboxed" indicator: cmux sidebar pill + tmux status var.
+__pi_container_status_on() {
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] && command -v cmux >/dev/null 2>&1 \
+    && cmux set-status pi "container" --icon cpu --color "#ff9500" >/dev/null 2>&1
+  [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1 \
+    && tmux set -w @pi "pi:container" >/dev/null 2>&1
+  return 0
+}
+
+__pi_container_status_off() {
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] && command -v cmux >/dev/null 2>&1 \
+    && cmux clear-status pi >/dev/null 2>&1
+  [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1 \
+    && tmux set -wu @pi >/dev/null 2>&1
+  return 0
+}
+
+# docker-pi: run pi inside a throwaway container.
+#   docker-pi build [docker build args...]   (re)build the sandbox image
+#   docker-pi [pi args...]                    run pi in the container
+# Override in ~/.zshrc.local / ~/.bashrc.local if needed:
+#   PI_DOCKER_IMAGE         image tag                  (default: pi-sandbox)
+#   PI_DOCKER_AGENT_VOLUME  named volume mounted at     (default: pi-agent-home)
+#                           /root/.pi/agent (container-local auth + sessions;
+#                           run `/login` once on first use)
+#   PI_DOCKER_CONFIG_DIR    dotfiles repo to mount managed config from,
+#                           read-only (default: $HOME/.dotfiles; set empty to
+#                           skip and run with a bare config)
+# To pass more secrets/env, override docker-pi in a *.local file.
+docker-pi() {
+  local image="${PI_DOCKER_IMAGE:-pi-sandbox}"
+  local agent_volume="${PI_DOCKER_AGENT_VOLUME:-pi-agent-home}"
+
+  if [ "${1:-}" = "build" ]; then
+    shift
+    docker build "$@" -t "$image" - <<'PI_DOCKERFILE'
+FROM node:24-bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates curl git openssh-client ripgrep \
+  && rm -rf /var/lib/apt/lists/*
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+WORKDIR /workspace
+ENTRYPOINT ["pi"]
+PI_DOCKERFILE
+    return
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker-pi: docker not found on PATH" >&2
+    return 127
+  fi
+
+  # Build on first use so the initial run isn't a silent stall.
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "docker-pi: building image '$image' (first run)..." >&2
+    docker-pi build || return
+  fi
+
+  # Allocate a TTY only when interactive so `... | pi -p ...` stays pipeable.
+  local tty_args=()
+  [ -t 0 ] && [ -t 1 ] && tty_args=(-t)
+
+  # Pass through only provider credentials / settings that are actually set.
+  local env_args=()
+  local var
+  for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY \
+             GEMINI_API_KEY GOOGLE_API_KEY GROQ_API_KEY XAI_API_KEY \
+             PI_CACHE_RETENTION; do
+    if printenv "$var" >/dev/null 2>&1; then
+      env_args+=(-e "$var")
+    fi
+  done
+
+  # Mount managed config (skills, prompts, extensions, settings, agents,
+  # AGENTS.md) read-only from the dotfiles repo, layered over the named volume.
+  # Credentials/state (auth.json, sessions/, trust.json) are deliberately left
+  # in the named volume, not bind-mounted from the host.
+  local cfg="${PI_DOCKER_CONFIG_DIR-$HOME/.dotfiles}"
+  local cfg_args=()
+  if [ -n "$cfg" ] && [ -d "$cfg" ]; then
+    [ -d "$cfg/.pi/agent/agents" ]        && cfg_args+=(-v "$cfg/.pi/agent/agents:/root/.pi/agent/agents:ro")
+    [ -d "$cfg/.pi/agent/extensions" ]    && cfg_args+=(-v "$cfg/.pi/agent/extensions:/root/.pi/agent/extensions:ro")
+    [ -d "$cfg/.pi/agent/prompts" ]       && cfg_args+=(-v "$cfg/.pi/agent/prompts:/root/.pi/agent/prompts:ro")
+    [ -f "$cfg/.pi/agent/models.json" ]   && cfg_args+=(-v "$cfg/.pi/agent/models.json:/root/.pi/agent/models.json:ro")
+    [ -f "$cfg/.pi/agent/settings.json" ] && cfg_args+=(-v "$cfg/.pi/agent/settings.json:/root/.pi/agent/settings.json:ro")
+    [ -f "$cfg/.agents/AGENTS.md" ]       && cfg_args+=(-v "$cfg/.agents/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+    # Mount global skills only when cwd is NOT inside the config repo. Inside
+    # the repo, pi already finds .agents/skills as project skills, so mounting
+    # the same tree globally just triggers a duplicate-skill collision warning.
+    case "$PWD/" in
+      "$cfg"/*) : ;;
+      *) [ -d "$cfg/.agents/skills" ] && cfg_args+=(-v "$cfg/.agents/skills:/root/.agents/skills:ro") ;;
+    esac
+  fi
+
+  # Mount cwd at the SAME absolute path so pi prints host paths and resumes the
+  # matching session; keep agent home in a named volume (host auth stays out).
+  # Subshell-scoped EXIT trap clears the status indicator without leaking the
+  # trap into the interactive shell.
+  (
+    trap '__pi_container_status_off' EXIT
+    __pi_container_status_on
+    docker run --rm -i "${tty_args[@]}" "${env_args[@]}" \
+      -v "$PWD:$PWD" -w "$PWD" \
+      -v "$agent_volume:/root/.pi/agent" \
+      "${cfg_args[@]}" \
+      "$image" "$@"
+  )
+}
+
 # In Codespaces, launch interactive Pi inside tmux automatically.
 # Reattach to the existing Pi tmux session when one already exists.
 # Run short-lived/non-interactive pi commands directly so tmux doesn't
@@ -72,6 +190,10 @@ if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
 
     command tmux new-session -s "$session_name" -c "$PWD" "$interactive_shell -ic $(printf '%q' "$pi_command")"
   }
+elif command -v docker >/dev/null 2>&1; then
+  # Host (not Codespaces): route pi through the Docker sandbox.
+  # Use `command pi` to bypass and run the host binary directly.
+  pi() { docker-pi "$@"; }
 fi
 
 # Added by LM Studio CLI (lms)
