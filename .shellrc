@@ -134,7 +134,8 @@ __pi_global_skills_are_project_skills() {
 # not bind-mount ~/.pi/agent wholesale, so auth.json, sessions/, and trust.json
 # stay in the container-local named volume.
 # Set PI_NO_TMUX=1 to run pi directly in the container (no tmux/status panel).
-# To pass more secrets/env, override docker-pi in a *.local file.
+# GitHub auth stays container-local too: run `gh auth login` once inside
+# docker-pi. Other secrets still need a *.local override.
 docker-pi() {
   local image="${PI_DOCKER_IMAGE:-pi-sandbox}"
   local agent_volume="${PI_DOCKER_AGENT_VOLUME:-pi-agent-home}"
@@ -153,15 +154,43 @@ ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-       bash ca-certificates curl git openssh-client ripgrep \
+       bash ca-certificates curl git jq openssh-client ripgrep \
        nodejs npm tmux python3 ncurses-bin ncurses-term procps \
+       unzip \
   && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+RUN pup_version="1.2.2" \
+  && arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64) pup_arch="x86_64" ;; \
+       arm64) pup_arch="arm64" ;; \
+       *) echo "unsupported pup architecture: $arch" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSL "https://github.com/DataDog/pup/releases/download/v${pup_version}/pup_${pup_version}_Linux_${pup_arch}.tar.gz" \
+       | tar -xz -C /usr/local/bin pup \
+  && chmod +x /usr/local/bin/pup
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+ENV GH_CONFIG_DIR=/root/.pi/agent/gh
+ENV XDG_CONFIG_HOME=/root/.pi/agent/config
+ENV DD_TOKEN_STORAGE=file
 # Launcher: run pi inside tmux when interactive so the status-panel extension
 # can open a tmux split; otherwise exec pi directly.
 COPY <<'PI_ENTRY' /usr/local/bin/pi-entry
 #!/bin/sh
 [ -z "${TERM:-}" ] && export TERM=xterm-256color
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-/root/.pi/agent/gh}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/config}"
+export DD_TOKEN_STORAGE="${DD_TOKEN_STORAGE:-file}"
+git config --global credential.https://github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
+git config --global credential.https://gist.github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
 if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
   exec pi "$@"
 fi
