@@ -5,7 +5,7 @@
  * Without:    /autopilot — execute existing worktree-local .pi/plan.md, or derive one from conversation first
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PLAN_FORMAT, ensurePlanIgnored, findPlanFile, getPlanPath } from "./plan.js";
 
 function buildAutopilotPrompt(

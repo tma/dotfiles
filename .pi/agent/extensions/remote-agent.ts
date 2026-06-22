@@ -13,7 +13,7 @@
 
 import { spawn, execFileSync, execFile } from "node:child_process";
 import { accessSync } from "node:fs";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ── cmux helpers ─────────────────────────────────────────────────────────────
 
@@ -211,7 +211,7 @@ async function runRemoteAgent(
 		// If npm missing, install Node LTS via NodeSource
 		`command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs; } >&2`,
 		// If pi missing, install it
-		`command -v pi >/dev/null 2>&1 || npm install -g @mariozechner/pi-coding-agent >&2`,
+		`command -v pi >/dev/null 2>&1 || npm install -g @earendil-works/pi-coding-agent >&2`,
 		authSetup,
 		`pi ${piCmd}`,
 		`rm -f ~/.pi/agent/auth.json`,

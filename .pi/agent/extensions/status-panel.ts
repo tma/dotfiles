@@ -13,7 +13,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { accessSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type PanelHandle =
 	| { backend: "cmux"; ref: string }

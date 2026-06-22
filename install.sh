@@ -165,7 +165,7 @@ install_or_update_pi() {
     log "Installing pi..."
   fi
 
-  if NPM_CONFIG_PREFIX="$npm_prefix" npm install -g @mariozechner/pi-coding-agent; then
+  if NPM_CONFIG_PREFIX="$npm_prefix" npm install -g @earendil-works/pi-coding-agent; then
     hash -r
     return 0
   fi

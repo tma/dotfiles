@@ -9,7 +9,7 @@
  * loop so the resume instruction survives context compaction.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	let hasPendingSteering = false;

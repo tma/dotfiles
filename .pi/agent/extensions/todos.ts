@@ -11,9 +11,9 @@
  * - Stay on track after steering/compaction
  */
 
-import { StringEnum } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth, matchesKey } from "@mariozechner/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, matchesKey } from "@earendil-works/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
 import { writeFileSync, accessSync, mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";

@@ -7,7 +7,7 @@
  * invocations.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const dangerousPatterns = [/\brm\s+(-rf?|--recursive)/i, /\bsudo\b/i, /\b(chmod|chown)\b.*777/i];
 const dangerousRemoteCommands = new Set(["ssh", "scp", "sftp", "autossh", "slogin", "sshpass"]);
