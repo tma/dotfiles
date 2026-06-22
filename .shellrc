@@ -70,6 +70,46 @@ __pi_container_status_off() {
   return 0
 }
 
+__pi_realpath() {
+  [ -n "$1" ] || return 1
+
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$1" 2>/dev/null
+    return
+  fi
+
+  local dir base
+  if [ -d "$1" ]; then
+    (cd -P "$1" 2>/dev/null && pwd)
+  else
+    dir="$(dirname "$1")"
+    base="$(basename "$1")"
+    (cd -P "$dir" 2>/dev/null && printf '%s/%s\n' "$PWD" "$base")
+  fi
+}
+
+__pi_same_path() {
+  local a="" b=""
+  a="$(__pi_realpath "$1" 2>/dev/null)" || return 1
+  b="$(__pi_realpath "$2" 2>/dev/null)" || return 1
+  [ "$a" = "$b" ]
+}
+
+__pi_global_skills_are_project_skills() {
+  local global_skills="$1" root="" candidate=""
+  [ -d "$global_skills" ] || return 1
+
+  if command -v git >/dev/null 2>&1; then
+    root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+
+  for candidate in "$PWD/.agents/skills" "${root:+$root/.agents/skills}"; do
+    [ -d "$candidate" ] && __pi_same_path "$candidate" "$global_skills" && return 0
+  done
+
+  return 1
+}
+
 # docker-pi: run pi inside a throwaway container.
 #   docker-pi build [docker build args...]   (re)build the sandbox image
 #   docker-pi [pi args...]                    run pi in the container
@@ -78,9 +118,10 @@ __pi_container_status_off() {
 #   PI_DOCKER_AGENT_VOLUME  named volume mounted at     (default: pi-agent-home)
 #                           /root/.pi/agent (container-local auth + sessions;
 #                           run `/login` once on first use)
-#   PI_DOCKER_CONFIG_DIR    dotfiles repo to mount managed config from,
-#                           read-only (default: $HOME/.dotfiles; set empty to
-#                           skip and run with a bare config)
+# By default, docker-pi mounts selected host dotfiles read-only from their real
+# locations (~/.tmux.conf, ~/.pi/agent/*, ~/.agents/*). It deliberately does
+# not bind-mount ~/.pi/agent wholesale, so auth.json, sessions/, and trust.json
+# stay in the container-local named volume.
 # Set PI_NO_TMUX=1 to run pi directly in the container (no tmux/status panel).
 # To pass more secrets/env, override docker-pi in a *.local file.
 docker-pi() {
@@ -160,26 +201,25 @@ PI_DOCKERFILE
   done
 
   # Mount managed config (skills, prompts, extensions, settings, agents,
-  # AGENTS.md, tmux.conf) read-only from the dotfiles repo, layered over the
-  # named volume. Credentials/state (auth.json, sessions/, trust.json) are
-  # deliberately left in the named volume, not bind-mounted from the host.
-  local cfg="${PI_DOCKER_CONFIG_DIR-$HOME/.dotfiles}"
+  # AGENTS.md, tmux.conf) read-only, layered over the named volume.
+  # Credentials/state (auth.json, sessions/, trust.json) are deliberately left
+  # in the named volume, not bind-mounted from the host.
   local cfg_args=()
-  if [ -n "$cfg" ] && [ -d "$cfg" ]; then
-    [ -d "$cfg/.pi/agent/agents" ]        && cfg_args+=(-v "$cfg/.pi/agent/agents:/root/.pi/agent/agents:ro")
-    [ -d "$cfg/.pi/agent/extensions" ]    && cfg_args+=(-v "$cfg/.pi/agent/extensions:/root/.pi/agent/extensions:ro")
-    [ -d "$cfg/.pi/agent/prompts" ]       && cfg_args+=(-v "$cfg/.pi/agent/prompts:/root/.pi/agent/prompts:ro")
-    [ -f "$cfg/.pi/agent/models.json" ]   && cfg_args+=(-v "$cfg/.pi/agent/models.json:/root/.pi/agent/models.json:ro")
-    [ -f "$cfg/.pi/agent/settings.json" ] && cfg_args+=(-v "$cfg/.pi/agent/settings.json:/root/.pi/agent/settings.json:ro")
-    [ -f "$cfg/.agents/AGENTS.md" ]       && cfg_args+=(-v "$cfg/.agents/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
-    [ -f "$cfg/.tmux.conf" ]              && cfg_args+=(-v "$cfg/.tmux.conf:/root/.tmux.conf:ro")
-    # Mount global skills only when cwd is NOT inside the config repo. Inside
-    # the repo, pi already finds .agents/skills as project skills, so mounting
-    # the same tree globally just triggers a duplicate-skill collision warning.
-    case "$PWD/" in
-      "$cfg"/*) : ;;
-      *) [ -d "$cfg/.agents/skills" ] && cfg_args+=(-v "$cfg/.agents/skills:/root/.agents/skills:ro") ;;
-    esac
+  local home_pi="$HOME/.pi/agent"
+  local home_agents="$HOME/.agents"
+  [ -d "$home_pi/agents" ]        && cfg_args+=(-v "$home_pi/agents:/root/.pi/agent/agents:ro")
+  [ -d "$home_pi/extensions" ]    && cfg_args+=(-v "$home_pi/extensions:/root/.pi/agent/extensions:ro")
+  [ -d "$home_pi/prompts" ]       && cfg_args+=(-v "$home_pi/prompts:/root/.pi/agent/prompts:ro")
+  [ -f "$home_pi/models.json" ]   && cfg_args+=(-v "$home_pi/models.json:/root/.pi/agent/models.json:ro")
+  [ -f "$home_pi/settings.json" ] && cfg_args+=(-v "$home_pi/settings.json:/root/.pi/agent/settings.json:ro")
+  if [ -f "$home_pi/AGENTS.md" ]; then
+    cfg_args+=(-v "$home_pi/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+  elif [ -f "$home_agents/AGENTS.md" ]; then
+    cfg_args+=(-v "$home_agents/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+  fi
+  [ -f "$HOME/.tmux.conf" ] && cfg_args+=(-v "$HOME/.tmux.conf:/root/.tmux.conf:ro")
+  if [ -d "$home_agents/skills" ] && ! __pi_global_skills_are_project_skills "$home_agents/skills"; then
+    cfg_args+=(-v "$home_agents/skills:/root/.agents/skills:ro")
   fi
 
   # Mount cwd at the SAME absolute path so pi prints host paths and resumes the
