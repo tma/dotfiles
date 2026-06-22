@@ -29,11 +29,31 @@ DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(gh repo view --json defaultBranchRef --jq .de
 git fetch origin
 git switch "$DEFAULT_BRANCH"
 git pull --rebase origin "$DEFAULT_BRANCH"
-git switch -c feature/description
+git switch -c tma/feature/description
 ```
 
 If the current branch has uncommitted work, do not build new task work on top of
 it. Stash or commit the work first, or ask the user how to proceed.
+
+## Branch naming
+
+Use a `tma/` prefix for every branch created in a repository whose `origin` is
+on `github.com` and is not owned by the GitHub user `tma`.
+
+Examples for `github.com/owner/repo` where `owner != tma`:
+
+```bash
+git switch -c tma/feature/description
+git worktree add -b tma/feature/description ../repo-feature origin/main
+```
+
+Do **not** require the `tma/` prefix when:
+
+- `origin` is on `github.com` and the owner is `tma`
+- `origin` is not on `github.com`
+
+When creating branches for worktrees, apply the same rule to the `-b` branch
+name.
 
 ## Commits
 
@@ -183,12 +203,15 @@ Never force push a branch with an open (non-draft) PR.
 ## Branches
 
 ```bash
-# Create and switch
-git checkout -b feature/description
+# Create and switch, using tma/ when required by the branch naming rule
+git switch -c tma/feature/description
+
+# Create a worktree branch, using tma/ when required by the branch naming rule
+git worktree add -b tma/feature/description ../repo-feature origin/main
 
 # Delete after merge
-git branch -d feature/description
-git push origin --delete feature/description
+git branch -d tma/feature/description
+git push origin --delete tma/feature/description
 ```
 
 ## Rules
@@ -200,3 +223,4 @@ git push origin --delete feature/description
 5. **Never force push shared branches** — use `--force-with-lease` on personal branches only
 6. **Never amend/rebase with an open PR** — check `gh pr view` first; add new commits instead
 7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
+8. **Prefix branches when needed** — use `tma/` for branches on GitHub repos not owned by `tma`; use the same rule for worktree branch names
