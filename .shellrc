@@ -95,6 +95,17 @@ __pi_same_path() {
   [ "$a" = "$b" ]
 }
 
+__pi_path_is_under() {
+  local child="" parent=""
+  child="$(__pi_realpath "$1" 2>/dev/null)" || return 1
+  parent="$(__pi_realpath "$2" 2>/dev/null)" || return 1
+
+  case "$child" in
+    "$parent"|"$parent"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 __pi_global_skills_are_project_skills() {
   local global_skills="$1" root="" candidate=""
   [ -d "$global_skills" ] || return 1
@@ -222,17 +233,43 @@ PI_DOCKERFILE
     cfg_args+=(-v "$home_agents/skills:/root/.agents/skills:ro")
   fi
 
-  # Mount cwd at the SAME absolute path so pi prints host paths and resumes the
-  # matching session; keep agent home in a named volume (host auth stays out).
-  # Subshell-scoped EXIT trap clears the status indicator without leaking the
-  # trap into the interactive shell.
+  # Mount the git root at the SAME absolute path so pi prints host paths,
+  # resumes matching sessions, and can read .git even when launched from a
+  # subdirectory. Worktrees may keep git metadata outside the worktree, so mount
+  # those git dirs too.
+  local workdir="$PWD"
+  local mount_root="$PWD"
+  local git_root=""
+  if command -v git >/dev/null 2>&1; then
+    git_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$git_root" ] && [ -d "$git_root" ] && mount_root="$git_root"
+  fi
+
+  local project_args=(-v "$mount_root:$mount_root" -w "$workdir")
+  if command -v git >/dev/null 2>&1 && [ -n "$git_root" ]; then
+    local git_path=""
+    local git_paths=()
+    git_path="$(git -C "$PWD" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    [ -n "$git_path" ] && git_paths+=("$git_path")
+    git_path="$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [ -n "$git_path" ] && git_paths+=("$git_path")
+
+    for git_path in "${git_paths[@]}"; do
+      [ -e "$git_path" ] || continue
+      __pi_path_is_under "$git_path" "$mount_root" || project_args+=(-v "$git_path:$git_path")
+    done
+  fi
+
+  # Keep agent home in a named volume (host auth stays out). Subshell-scoped
+  # EXIT trap clears the status indicator without leaking the trap into the
+  # interactive shell.
   (
     trap '__pi_container_status_off' EXIT
     __pi_container_status_on
     docker run --rm -i "${tty_args[@]}" "${env_args[@]}" \
       -e PI_RUN_TMUX="$run_tmux" -e TERM \
       -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
-      -v "$PWD:$PWD" -w "$PWD" \
+      "${project_args[@]}" \
       -v "$agent_volume:/root/.pi/agent" \
       "${cfg_args[@]}" \
       "$image" "$@"

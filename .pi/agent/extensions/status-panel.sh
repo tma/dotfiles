@@ -66,7 +66,9 @@ fi
 
 # Hide cursor during draws
 tput civis 2>/dev/null || true
-trap 'tput cnorm 2>/dev/null; clear; exit 0' INT TERM EXIT
+cleanup() { tput cnorm 2>/dev/null || true; }
+trap cleanup EXIT
+trap 'cleanup; clear; exit 0' INT TERM
 
 build_panel_template() {
   local session_anim="${1:-$SESSION_ANIM_TOKEN}"

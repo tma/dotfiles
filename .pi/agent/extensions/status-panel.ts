@@ -13,6 +13,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { accessSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type PanelHandle =
@@ -83,10 +84,28 @@ function getStateDir(sessionFile: string | undefined): string {
 	return ephemeralDir;
 }
 
+function fileExists(filePath: string): boolean {
+	try {
+		accessSync(filePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveStatusPanelScript(): string {
+	const candidates = [
+		path.join(os.homedir(), ".pi", "agent", "extensions", "status-panel.sh"),
+		path.join(path.dirname(fileURLToPath(import.meta.url)), "status-panel.sh"),
+	];
+
+	return candidates.find(fileExists) ?? candidates[0];
+}
+
 export default function (pi: ExtensionAPI) {
 	let sessionDir = "";
 	let panelHandle: PanelHandle | null = null;
-	const scriptPath = path.join(path.dirname(import.meta.url.replace("file://", "")), "status-panel.sh");
+	const scriptPath = resolveStatusPanelScript();
 	const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
 	const tmuxStatusPaneStyle = "bg=#171a21";
 
@@ -199,6 +218,7 @@ export default function (pi: ExtensionAPI) {
 		const backend = getMuxBackend();
 		if (!backend) return false;
 		if (!sessionDir) return false;
+		if (!fileExists(scriptPath)) return false;
 
 		panelHandle = backend === "cmux" ? openCmuxPanel(cwd) : openTmuxPanel(cwd);
 		writePanelState(panelHandle);
@@ -261,8 +281,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const wasOpen = !!panelHandle;
-			togglePanel(ctx.cwd);
-			ctx.ui.notify(`Status panel ${wasOpen ? "closing" : "opening"}`, "info");
+			const changed = togglePanel(ctx.cwd);
+			ctx.ui.notify(
+				changed ? `Status panel ${wasOpen ? "closing" : "opening"}` : "Status panel unavailable",
+				changed ? "info" : "warning",
+			);
 		},
 	});
 
