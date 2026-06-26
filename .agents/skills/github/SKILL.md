@@ -1,16 +1,17 @@
 ---
 name: github
-description: Use gh for GitHub issues, PRs, repos, Actions, and Codespaces.
+description: Use gh for GitHub issues, PRs, reviews, Copilot reviewer requests, Actions, Codespaces, and code search.
 ---
 
 # GitHub
 
-Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library — `gh` handles authentication, pagination, and API versioning automatically.
+Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library; `gh` handles authentication, pagination, and API versioning.
+
+For command examples, read `references/command-reference.md`. For broad code searches and full-link requirements, read `workflows/code-search.md`.
 
 ## Writing on GitHub
 
-Before creating or updating GitHub prose on tma's behalf, load and apply the
-`writing-voice` skill and its curated profile.
+Before creating or updating GitHub prose on tma's behalf, load and apply the `writing-voice` skill and its curated profile.
 
 This includes:
 
@@ -21,227 +22,37 @@ This includes:
 - PR review comments
 - release notes
 
-Draft the text first, apply the writing-voice checklist, then publish with `gh`.
-Prefer `--body-file` over inline `--body` for anything longer than one sentence.
-Do not wrap GitHub issue/PR cross-references in backticks; it prevents auto-linking.
+Draft the text first, apply the writing-voice checklist, then publish with `gh`. Prefer `--body-file` over inline `--body` for anything longer than one sentence. Do not wrap GitHub issue or PR cross-references in backticks; it prevents auto-linking.
 
 ## Authentication
 
-Already configured. `gh auth status` to verify. Do not ask for tokens.
+Already configured. Use `gh auth status` to verify. Do not ask for tokens.
 
-## Large API Bodies
+## Repository access
 
-For large POST/PATCH bodies, use `gh api --input -` with JSON on stdin instead of `-f body=...`; shell argument limits are easy to hit.
+Use `gh` with the repository and owner provided by the user or detected from the current repository. Do not assume access to private repositories, organization repositories, runbooks, or service-specific documentation unless the user provides that context.
 
-```bash
-echo '{"body":"..."}' | gh api --method POST repos/OWNER/REPO/issues/123/comments --input -
-echo '{"body":"..."}' | gh api --method PATCH repos/OWNER/REPO/issues/123 --input -
-```
-
-## Repository Access
-
-Use `gh` with the repository and owner provided by the user or detected from the
-current repository. Do not assume access to private repositories, organization
-repositories, runbooks, or service-specific documentation unless the user provides
-that context.
-
-```bash
-gh pr diff 123 --repo owner/repo
-gh api repos/owner/repo/contents/path/to/file --jq .content | base64 -d
-gh search code "ErrorName" --repo owner/repo
-```
+Use `--repo owner/repo` when not in the target repository's directory.
 
 ## Starting development work
 
-When a GitHub issue, PR follow-up, or other development task requires local code
-changes, start from the latest default branch. Do not base new task work on the
-currently checked-out local branch unless the user explicitly asks to continue it.
+When a GitHub issue, PR follow-up, or other development task requires local code changes, load and apply the `git` skill. Start from the latest default branch and use the branch naming rules from that skill.
 
-Use `gh` to identify the repository default branch when needed, then fetch and
-update it before creating the task branch:
+Do not base new task work on the currently checked-out local branch unless the user explicitly asks to continue it.
 
-```bash
-DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-git fetch origin
-git switch "$DEFAULT_BRANCH"
-git pull --rebase origin "$DEFAULT_BRANCH"
-git switch -c feature/description
-```
+## Copilot PR reviews
 
+When the user asks for a GitHub Copilot review on a PR, use the requested-reviewer flow. Add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer.
 
-## Common Operations
-
-### Issues
-
-```bash
-# List open issues
-gh issue list --repo owner/repo
-
-# View issue details
-gh issue view 123 --repo owner/repo --json title,body,comments
-
-# Create an issue
-gh issue create --repo owner/repo --title "Title" --body "Body"
-
-# Close with comment
-gh issue close 123 --repo owner/repo --comment "Fixed in #456"
-
-# Assign
-gh issue edit 123 --repo owner/repo --add-assignee @me
-```
-
-### Pull Requests
-
-```bash
-# List PRs
-gh pr list --repo owner/repo
-
-# View PR with diff
-gh pr view 123 --repo owner/repo --json title,body,headRefName,baseRefName,files
-gh pr diff 123 --repo owner/repo
-
-# Create a PR
-gh pr create --title "Title" --body "Description" --base main
-
-# Review comments
-gh api repos/owner/repo/pulls/123/comments \
-  --jq '.[] | {user: .user.login, path: .path, line: .original_line, body: .body}'
-
-# Merge
-gh pr merge 123 --squash --delete-branch
-```
-
-### Copilot PR reviews
-
-When the user asks for a GitHub Copilot review on a PR, use the requested-reviewer flow — not a PR comment.
-
-```bash
-# Check whether Copilot is already requested
-gh api repos/owner/repo/pulls/123/requested_reviewers \
-  --jq '{users: [.users[]?.login], teams: [.teams[]?.slug]}'
-
-# Check whether Copilot has already reviewed
-gh api repos/owner/repo/pulls/123/reviews \
-  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {user: .user.login, state: .state, submitted_at: .submitted_at}'
-
-# Request the real Copilot reviewer bot
-gh pr edit 123 --repo owner/repo --add-reviewer "copilot-pull-request-reviewer[bot]"
-
-# If the user wants you to wait for/process the review, poll until it arrives
-for i in $(seq 1 18); do
-  sleep 10
-  REVIEW=$(gh api repos/owner/repo/pulls/123/reviews \
-    --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot"))))] | length')
-  [ "$REVIEW" -gt 0 ] && echo "Copilot review arrived" && break
-  echo "Waiting for Copilot review... (${i}/18)"
-done
-
-# Then fetch Copilot's inline comments
-gh api repos/owner/repo/pulls/123/comments \
-  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, path: .path, line: .original_line, body: .body}'
-```
-
-Never try to trigger Copilot review by posting `@copilot` in a PR or issue comment. That does not create the requested-reviewer review flow.
-
-### Repository
-
-```bash
-# Clone
-gh repo clone owner/repo
-
-# View repo info
-gh repo view owner/repo --json name,description,defaultBranchRef
-
-# List branches
-gh api repos/owner/repo/branches --jq '.[].name'
-
-# Create repo
-gh repo create my-repo --private --clone
-```
-
-### GitHub Actions
-
-```bash
-# List workflow runs
-gh run list --repo owner/repo --limit 10
-
-# View run details
-gh run view 12345 --repo owner/repo
-
-# View logs
-gh run view 12345 --repo owner/repo --log
-
-# Re-run failed
-gh run rerun 12345 --repo owner/repo --failed
-
-# Watch a running workflow
-gh run watch 12345 --repo owner/repo
-```
-
-### Codespaces
-
-```bash
-# List codespaces
-gh cs list --json name,repository,gitStatus,state
-
-# Find codespace by repo+branch
-gh cs list --repo owner/repo --json name,gitStatus,state \
-  | jq '.[] | select(.gitStatus.ref == "my-branch")'
-
-# Create
-gh cs create --repo owner/repo --branch my-branch --default-permissions
-
-# Start a stopped codespace
-gh cs start --codespace <name>
-
-# SSH into codespace
-gh cs ssh --codespace <name>
-
-# Run a command
-gh cs ssh --codespace <name> -- "cd /workspaces/repo && make test"
-
-# Stop
-gh cs stop --codespace <name>
-```
-
-### Advanced API
-
-For anything `gh` subcommands don't cover, use `gh api`:
-
-```bash
-# GET
-gh api repos/owner/repo/releases/latest --jq '.tag_name'
-
-# POST
-gh api repos/owner/repo/issues/123/comments -f body="Comment text"
-
-# With pagination
-gh api repos/owner/repo/issues --paginate --jq '.[].title'
-
-# GraphQL
-gh api graphql -f query='{ viewer { login } }'
-```
-
-### Search
-
-```bash
-# Search issues
-gh search issues "auth bug" --repo owner/repo --state open
-
-# Search code
-gh search code "func main" --repo owner/repo --extension go
-
-# Search PRs
-gh search prs "review:approved" --repo owner/repo
-```
+Never post `@copilot review this`; that does not create the requested-reviewer review flow. Use `references/command-reference.md` for the exact commands.
 
 ## Rules
 
-1. **Always use `gh` CLI** — never `curl`, `fetch`, or direct HTTP to `api.github.com`
-2. **Use `--repo owner/repo`** when not in the target repo's directory
-3. **Use `--json` + `--jq`** for structured output — don't parse human-readable text
-4. **Use `gh api`** for endpoints without a dedicated subcommand
-5. **Paginate with `--paginate`** when listing — default page size is 30
-6. **Don't create tokens** — `gh` manages auth automatically
-7. **Never use web_search or web_read** for GitHub data — `gh` has it all: issues, PRs, code search, Actions, API. Don't scrape github.com.
-8. **Use requested reviewers for review requests** — when the user asks for a GitHub Copilot review, add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer. Never ask for review by posting an `@copilot` PR or issue comment.
+1. **Always use `gh` CLI** — never `curl`, `fetch`, or direct HTTP to `api.github.com`.
+2. **Use `--repo owner/repo`** when not in the target repository's directory.
+3. **Use `--json` + `--jq`** for structured output; do not parse human-readable text.
+4. **Use `gh api`** for endpoints without a dedicated subcommand.
+5. **Paginate with `--paginate`** when listing; default page size is 30.
+6. **Do not create tokens**; `gh` manages authentication.
+7. **Never use web_search or web_read** for GitHub data; use `gh` for issues, PRs, code search, Actions, and API data.
+8. **Use requested reviewers for review requests**; when the user asks for a GitHub Copilot review, add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer.

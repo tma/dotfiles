@@ -5,222 +5,79 @@ description: Use git workflow conventions for commits, pulls, pushes, and branch
 
 # Git
 
+Use this skill for branch setup, commits, pulls, pushes, history rewriting, and branch cleanup. For command examples and detailed workflows, read `references/workflows.md`.
+
 ## Starting development work
 
-Always start a new development task from the latest default branch, not from the
-current local `HEAD` branch. Treat the checked-out branch as incidental unless the
-user explicitly asks to continue that branch.
+Always start a new development task from the latest default branch, not from the current local `HEAD` branch. Treat the checked-out branch as incidental unless the user explicitly asks to continue that branch.
 
 Before creating a task branch or making task-specific edits:
 
-1. Identify the default branch, preferably from `origin/HEAD`
-2. Fetch the latest refs from the remote
-3. Switch to the default branch
-4. Update it from the remote
-5. Create the task branch from that updated default branch
+1. Identify the default branch, preferably from `origin/HEAD`.
+2. Fetch the latest refs from the remote.
+3. Switch to the default branch.
+4. Update it from the remote.
+5. Create the task branch from that updated default branch.
 
-```bash
-# Detect default branch from origin/HEAD
-DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##')
-
-# Fall back to gh when origin/HEAD is unavailable
-DEFAULT_BRANCH=${DEFAULT_BRANCH:-$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)}
-
-git fetch origin
-git switch "$DEFAULT_BRANCH"
-git pull --rebase origin "$DEFAULT_BRANCH"
-git switch -c tma/feature/description
-```
-
-If the current branch has uncommitted work, do not build new task work on top of
-it. Stash or commit the work first, or ask the user how to proceed.
+If the current branch has uncommitted work, do not build new task work on top of it. Stash or commit the work first, or ask the user how to proceed.
 
 ## Branch naming
 
-Use a `tma/` prefix for every branch created in a repository whose `origin` is
-on `github.com` and is not owned by the GitHub user `tma`.
-
-Examples for `github.com/owner/repo` where `owner != tma`:
-
-```bash
-git switch -c tma/feature/description
-git worktree add -b tma/feature/description ../repo-feature origin/main
-```
+Use a `tma/` prefix for every branch created in a repository whose `origin` is on `github.com` and is not owned by the GitHub user `tma`.
 
 Do **not** require the `tma/` prefix when:
 
 - `origin` is on `github.com` and the owner is `tma`
 - `origin` is not on `github.com`
 
-When creating branches for worktrees, apply the same rule to the `-b` branch
-name.
+Apply the same rule to worktree branch names.
 
 ## Commits
 
-### Commit by topic
+Always group changes into topic-based commits. Each commit should represent one logical change: a feature, bug fix, refactor, or configuration update. Never lump unrelated changes into a single commit.
 
-Always group changes into **topic-based commits**. Each commit should represent one logical change — a feature, bugfix, refactor, or config update. Never lump unrelated changes into a single commit.
+When multiple files were changed across different topics, review the full diff, identify the topics, and stage each topic separately using `git add <specific files>` or `git add -p`.
 
-When multiple files were changed across different topics:
+When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit.
 
-1. Review all changes with `git diff` and `git status`
-2. Identify distinct topics (e.g., "new extension", "bug fix in X", "config change")
-3. Stage and commit each topic separately using `git add <specific files>`
-4. Order commits logically — foundations first, dependents after
+Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile. Write messages that encode intent and context, not just what changed.
 
-```bash
-# Stage specific files for one topic
-git add path/to/related-file-1 path/to/related-file-2
-git commit -m "descriptive message"
+Commit message rules:
 
-# Then the next topic
-git add path/to/other-file
-git commit -m "descriptive message"
-```
-
-Use `git add -p` when a single file contains changes belonging to different topics.
-
-### Merge commits before new work
-
-When a merge produces conflicts, resolve the conflicts and commit the merge before
-adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work
-into the merge commit.
-
-New changes after a merge should always be staged and committed separately as
-topic-based commits.
-
-### Commit messages
-
-Before writing a commit message on tma's behalf, apply the `writing-voice` skill
-and its curated profile. The git skill owns the commit format; the writing-voice
-skill owns the tone: plainspoken, specific, and focused on intent/context rather
-than résumé language.
-
-Write messages that encode **intent and context**, not just what changed. Someone reading the log should understand *why* without opening the diff.
-
-For multi-line messages, draft the message first and use:
-
-```bash
-git commit -F /tmp/commit-message
-```
-
-Avoid composing non-trivial commit messages directly inside `git commit -m`.
-
-**Format:**
-```
-<concise summary of what and why>
-
-Optional body for complex changes:
-- Additional context
-- Trade-offs or alternatives considered
-- Related issues or links
-```
-
-**Good:**
-```
-add PID scoping to status files to prevent multi-session collisions
-
-Multiple pi sessions in the same directory were overwriting each
-other's stats and todos files. Scope filenames by process.pid and
-pass PI_PID env var to the status panel shell script.
-```
-
-**Bad:**
-```
-update files
-fix bug
-changes
-WIP
-```
-
-**Rules:**
-- Use imperative mood: "add", "fix", "refactor" — not "added", "fixes"
-- First line under 72 characters
-- No period at the end of the summary line
-- Body wrapped at 72 characters
-- Reference issue numbers when applicable
+- Use imperative mood: `add`, `fix`, `refactor`; not `added` or `fixes`.
+- Keep the first line under 72 characters.
+- Do not put a period at the end of the summary line.
+- Wrap body text at 72 characters.
+- Reference issue numbers when applicable.
+- Use `git commit -F /tmp/commit-message` for non-trivial messages.
 
 ## Pulling
 
-### Always rebase by default
+Pull with rebase by default: `git pull --rebase`.
 
-```bash
-git pull --rebase
-```
+Exception: when a PR is open and not in draft, use a regular merge pull instead. Rebasing would force-push and break review history.
 
-This keeps history linear and avoids unnecessary merge commits.
-
-**Exception — open (non-draft) PRs:** When a PR is open and not in draft, others may have already reviewed the commits. Rebasing would force-push and break the review history. In that case, use a regular merge pull:
-
-```bash
-git pull  # merge, no rebase
-```
-
-Configure rebase as default:
-```bash
-git config --global pull.rebase true
-```
-
-### Before pulling
-
-```bash
-# Stash or commit local changes first
-git stash  # or commit
-git pull --rebase
-git stash pop  # if stashed
-```
+Stash or commit local changes before pulling.
 
 ## Amending and rewriting history
 
-**Never amend commits or rewrite history when a PR is open for the branch.** Amending + force-pushing destroys review context — comments become orphaned and reviewers lose track of what changed.
+Never amend commits or rewrite history when a PR is open for the branch and is not in draft. Add a new commit instead.
 
-Before amending or rebasing, always check:
-
-```bash
-# Check if there's an open PR for the current branch
-gh pr view --json state,isDraft -q '.state + " draft=" + (.isDraft|tostring)' 2>/dev/null
-```
-
-- **No PR or draft PR:** amend/rebase freely, then `git push --force-with-lease`
-- **Open (non-draft) PR:** add a **new commit** instead — never amend, squash, or rebase
+Before amending or rebasing, check the current branch PR state with `gh pr view --json state,isDraft` when `gh` is available.
 
 ## Pushing
 
-```bash
-# Push current branch
-git push
+Use `git push -u origin HEAD` for the first push of a new branch. Use `git push --force-with-lease` only after a rebase on a personal branch with no open, non-draft PR.
 
-# First push of a new branch
-git push -u origin HEAD
-
-# Force push after rebase (only on personal branches, no open PR)
-git push --force-with-lease
-```
-
-Never force push to `main` or shared branches.
-Never force push a branch with an open (non-draft) PR.
-
-## Branches
-
-```bash
-# Create and switch, using tma/ when required by the branch naming rule
-git switch -c tma/feature/description
-
-# Create a worktree branch, using tma/ when required by the branch naming rule
-git worktree add -b tma/feature/description ../repo-feature origin/main
-
-# Delete after merge
-git branch -d tma/feature/description
-git push origin --delete tma/feature/description
-```
+Never force push to `main` or shared branches. Never force push a branch with an open, non-draft PR.
 
 ## Rules
 
-1. **Commit by topic** — one logical change per commit, never mix unrelated changes
-2. **Descriptive messages** — encode intent and context, not just "what"
-3. **Pull with rebase** — `git pull --rebase` unless you want a merge commit
-4. **Commit merges first** — after resolving merge conflicts, commit the merge before adding new changes
-5. **Never force push shared branches** — use `--force-with-lease` on personal branches only
-6. **Never amend/rebase with an open PR** — check `gh pr view` first; add new commits instead
-7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`
-8. **Prefix branches when needed** — use `tma/` for branches on GitHub repos not owned by `tma`; use the same rule for worktree branch names
+1. **Commit by topic** — one logical change per commit; never mix unrelated changes.
+2. **Descriptive messages** — encode intent and context, not just what changed.
+3. **Pull with rebase** — use `git pull --rebase` unless an open, non-draft PR makes a merge pull safer.
+4. **Commit merges first** — after resolving merge conflicts, commit the merge before adding new changes.
+5. **Never force push shared branches** — use `--force-with-lease` on personal branches only.
+6. **Never amend or rebase with an open PR** — check `gh pr view` first; add new commits instead.
+7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`.
+8. **Prefix branches when needed** — use `tma/` for branches on GitHub repositories not owned by `tma`; use the same rule for worktree branch names.
