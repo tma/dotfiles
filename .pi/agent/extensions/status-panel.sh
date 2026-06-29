@@ -312,6 +312,12 @@ for i, t in enumerate(tasks):
   hr
   p ""
 
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    p " ${GRAY}Not a git repository${RESET}"
+    PANEL_TEMPLATE="$buf"
+    return
+  fi
+
   local git_root
   git_root=$(git rev-parse --show-toplevel 2>/dev/null)
   local branch
@@ -449,11 +455,6 @@ render_panel() {
 }
 
 # ── Main loop ─────────────────────────────────────────
-
-if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-  echo "Not a git repository"
-  exit 1
-fi
 
 clear
 while true; do
