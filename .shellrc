@@ -88,6 +88,45 @@ __pi_realpath() {
   fi
 }
 
+__pi_shellrc_path() {
+  local src="$HOME/.shellrc"
+
+  if [ -n "${BASH_VERSION:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ]; then
+    src="${BASH_SOURCE[0]}"
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    eval 'src="${(%):-%x}"'
+    [ -n "$src" ] || src="$HOME/.shellrc"
+  fi
+
+  __pi_realpath "$src" 2>/dev/null || printf '%s\n' "$src"
+}
+
+__pi_dockerfile_path() {
+  local source_path="" dotfiles_dir="" candidate=""
+
+  if [ -n "${PI_DOCKERFILE:-}" ]; then
+    [ -f "$PI_DOCKERFILE" ] || return 1
+    __pi_realpath "$PI_DOCKERFILE" 2>/dev/null || printf '%s\n' "$PI_DOCKERFILE"
+    return
+  fi
+
+  source_path="$(__pi_shellrc_path)"
+  dotfiles_dir="$(dirname "$source_path")"
+  candidate="$dotfiles_dir/.pi/sandbox/Dockerfile.pi"
+  if [ -f "$candidate" ]; then
+    __pi_realpath "$candidate" 2>/dev/null || printf '%s\n' "$candidate"
+    return
+  fi
+
+  candidate="$PWD/.pi/sandbox/Dockerfile.pi"
+  if [ -f "$candidate" ]; then
+    __pi_realpath "$candidate" 2>/dev/null || printf '%s\n' "$candidate"
+    return
+  fi
+
+  return 1
+}
+
 __pi_same_path() {
   local a="" b=""
   a="$(__pi_realpath "$1" 2>/dev/null)" || return 1
@@ -126,6 +165,7 @@ __pi_global_skills_are_project_skills() {
 #   docker-pi [pi args...]                    run pi in the container
 # Override in ~/.zshrc.local / ~/.bashrc.local if needed:
 #   PI_DOCKER_IMAGE         image tag                  (default: pi-sandbox)
+#   PI_DOCKERFILE           image Dockerfile            (default: .pi/sandbox/Dockerfile.pi next to .shellrc)
 #   PI_DOCKER_AGENT_VOLUME  named volume mounted at     (default: pi-agent-home)
 #                           /root/.pi/agent (container-local auth + sessions;
 #                           run `/login` once on first use)
@@ -142,65 +182,13 @@ docker-pi() {
 
   if [ "${1:-}" = "build" ]; then
     shift
-    docker build "$@" -t "$image" - <<'PI_DOCKERFILE'
-# syntax=docker/dockerfile:1
-FROM ubuntu:26.04
-# UTF-8 locale must live on the image: pi-entry runs tmux as PID 1, and tmux
-# locks its UTF-8 detection from the environment at startup. Nothing inside
-# the container (shell rc, .tmux.conf, /etc/environment) can change it after
-# the fact, so without this every non-ASCII glyph renders as `_`. C.UTF-8
-# ships with glibc, so no `locales` package is needed.
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-       bash ca-certificates curl git jq openssh-client ripgrep \
-       nodejs npm tmux python3 ncurses-bin ncurses-term procps \
-       unzip \
-  && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p -m 755 /etc/apt/keyrings \
-  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-       > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends gh \
-  && rm -rf /var/lib/apt/lists/*
-RUN pup_version="1.2.2" \
-  && arch="$(dpkg --print-architecture)" \
-  && case "$arch" in \
-       amd64) pup_arch="x86_64" ;; \
-       arm64) pup_arch="arm64" ;; \
-       *) echo "unsupported pup architecture: $arch" >&2; exit 1 ;; \
-     esac \
-  && curl -fsSL "https://github.com/DataDog/pup/releases/download/v${pup_version}/pup_${pup_version}_Linux_${pup_arch}.tar.gz" \
-       | tar -xz -C /usr/local/bin pup \
-  && chmod +x /usr/local/bin/pup
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-ENV GH_CONFIG_DIR=/root/.pi/agent/gh
-ENV XDG_CONFIG_HOME=/root/.pi/agent/config
-ENV DD_TOKEN_STORAGE=file
-# Launcher: run pi inside tmux when interactive so the status-panel extension
-# can open a tmux split; otherwise exec pi directly.
-COPY <<'PI_ENTRY' /usr/local/bin/pi-entry
-#!/bin/sh
-[ -z "${TERM:-}" ] && export TERM=xterm-256color
-export GH_CONFIG_DIR="${GH_CONFIG_DIR:-/root/.pi/agent/gh}"
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/config}"
-export DD_TOKEN_STORAGE="${DD_TOKEN_STORAGE:-file}"
-git config --global credential.https://github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
-git config --global credential.https://gist.github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
-if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
-  exec pi "$@"
-fi
-# tmux execs the command argv directly (no shell), so pass args through as-is.
-exec tmux -u new-session -s pi pi "$@"
-PI_ENTRY
-RUN chmod +x /usr/local/bin/pi-entry
-WORKDIR /workspace
-ENTRYPOINT ["/usr/local/bin/pi-entry"]
-PI_DOCKERFILE
+    local dockerfile="" docker_context=""
+    dockerfile="$(__pi_dockerfile_path)" || {
+      echo "docker-pi: .pi/sandbox/Dockerfile.pi not found; set PI_DOCKERFILE" >&2
+      return 1
+    }
+    docker_context="$(dirname "$dockerfile")"
+    docker build "$@" -t "$image" -f "$dockerfile" "$docker_context"
     return
   fi
 
@@ -245,21 +233,71 @@ PI_DOCKERFILE
   # Credentials/state (auth.json, sessions/, trust.json) are deliberately left
   # in the named volume, not bind-mounted from the host.
   local cfg_args=()
+  local cfg_symlink_sources=()
+  local cfg_symlink_mounts_seen=$'\n'
   local home_pi="$HOME/.pi/agent"
   local home_agents="$HOME/.agents"
-  [ -d "$home_pi/agents" ]        && cfg_args+=(-v "$home_pi/agents:/root/.pi/agent/agents:ro")
-  [ -d "$home_pi/extensions" ]    && cfg_args+=(-v "$home_pi/extensions:/root/.pi/agent/extensions:ro")
-  [ -d "$home_pi/prompts" ]       && cfg_args+=(-v "$home_pi/prompts:/root/.pi/agent/prompts:ro")
-  [ -f "$home_pi/models.json" ]   && cfg_args+=(-v "$home_pi/models.json:/root/.pi/agent/models.json:ro")
-  [ -f "$home_pi/settings.json" ] && cfg_args+=(-v "$home_pi/settings.json:/root/.pi/agent/settings.json:ro")
+  __pi_add_ro_mount() {
+    local src="$1" dest="$2" real_src=""
+    real_src="$(__pi_realpath "$src" 2>/dev/null)" || return 0
+    [ -e "$real_src" ] || return 0
+    cfg_args+=(-v "$real_src:$dest:ro")
+    [ -d "$real_src" ] && cfg_symlink_sources+=("$real_src")
+  }
+
+  __pi_symlink_target_mount_root() {
+    local target="$1" target_dir="" root=""
+    [ -e "$target" ] || return 1
+
+    if [ -d "$target" ]; then
+      target_dir="$target"
+    else
+      target_dir="$(dirname "$target")"
+    fi
+
+    if command -v git >/dev/null 2>&1; then
+      root="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [ -n "$root" ] && [ -d "$root" ]; then
+        __pi_realpath "$root" 2>/dev/null || printf '%s\n' "$root"
+        return
+      fi
+    fi
+
+    __pi_realpath "$target_dir" 2>/dev/null || printf '%s\n' "$target_dir"
+  }
+
+  __pi_add_nested_symlink_target_mounts() {
+    local src="" link_path="" target="" target_mount=""
+    for src in "${cfg_symlink_sources[@]}"; do
+      [ -d "$src" ] || continue
+      while IFS= read -r link_path; do
+        target="$(__pi_realpath "$link_path" 2>/dev/null)" || continue
+        [ -e "$target" ] || continue
+        target_mount="$(__pi_symlink_target_mount_root "$target" 2>/dev/null)" || continue
+        [ -e "$target_mount" ] || continue
+        __pi_path_is_under "$target_mount" "$mount_root" && continue
+        case "$cfg_symlink_mounts_seen" in
+          *$'\n'"$target_mount"$'\n'*) continue ;;
+        esac
+        cfg_symlink_mounts_seen="$cfg_symlink_mounts_seen$target_mount"$'\n'
+        cfg_args+=(-v "$target_mount:$target_mount:ro")
+      done < <(find "$src" -type l -print 2>/dev/null)
+    done
+  }
+
+  [ -d "$home_pi/agents" ]        && __pi_add_ro_mount "$home_pi/agents" "/root/.pi/agent/agents"
+  [ -d "$home_pi/extensions" ]    && __pi_add_ro_mount "$home_pi/extensions" "/root/.pi/agent/extensions"
+  [ -d "$home_pi/prompts" ]       && __pi_add_ro_mount "$home_pi/prompts" "/root/.pi/agent/prompts"
+  [ -f "$home_pi/models.json" ]   && __pi_add_ro_mount "$home_pi/models.json" "/root/.pi/agent/models.json"
+  [ -f "$home_pi/settings.json" ] && __pi_add_ro_mount "$home_pi/settings.json" "/root/.pi/agent/settings.json"
   if [ -f "$home_pi/AGENTS.md" ]; then
-    cfg_args+=(-v "$home_pi/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+    __pi_add_ro_mount "$home_pi/AGENTS.md" "/root/.pi/agent/AGENTS.md"
   elif [ -f "$home_agents/AGENTS.md" ]; then
-    cfg_args+=(-v "$home_agents/AGENTS.md:/root/.pi/agent/AGENTS.md:ro")
+    __pi_add_ro_mount "$home_agents/AGENTS.md" "/root/.pi/agent/AGENTS.md"
   fi
-  [ -f "$HOME/.tmux.conf" ] && cfg_args+=(-v "$HOME/.tmux.conf:/root/.tmux.conf:ro")
+  [ -f "$HOME/.tmux.conf" ] && __pi_add_ro_mount "$HOME/.tmux.conf" "/root/.tmux.conf"
   if [ -d "$home_agents/skills" ] && ! __pi_global_skills_are_project_skills "$home_agents/skills"; then
-    cfg_args+=(-v "$home_agents/skills:/root/.agents/skills:ro")
+    __pi_add_ro_mount "$home_agents/skills" "/root/.agents/skills"
   fi
 
   # Mount the git root at the SAME absolute path so pi prints host paths,
@@ -288,6 +326,8 @@ PI_DOCKERFILE
       __pi_path_is_under "$git_path" "$mount_root" || project_args+=(-v "$git_path:$git_path")
     done
   fi
+
+  __pi_add_nested_symlink_target_mounts
 
   # Keep agent home in a named volume (host auth stays out). Subshell-scoped
   # EXIT trap clears the status indicator without leaking the trap into the

@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1
+FROM ubuntu:26.04
+
+# UTF-8 locale must live on the image: pi-entry runs tmux as PID 1, and tmux
+# locks its UTF-8 detection from the environment at startup. Nothing inside
+# the container (shell rc, .tmux.conf, /etc/environment) can change it after
+# the fact, so without this every non-ASCII glyph renders as `_`. C.UTF-8
+# ships with glibc, so no `locales` package is needed.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GOBIN=/usr/local/bin GOTOOLCHAIN=local
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates curl git jq openssh-client ripgrep \
+       nodejs npm tmux python3 ncurses-bin ncurses-term procps \
+       unzip build-essential golang-go pkg-config \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN pup_version="1.2.2" \
+  && arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64) pup_arch="x86_64" ;; \
+       arm64) pup_arch="arm64" ;; \
+       *) echo "unsupported pup architecture: $arch" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSL "https://github.com/DataDog/pup/releases/download/v${pup_version}/pup_${pup_version}_Linux_${pup_arch}.tar.gz" \
+       | tar -xz -C /usr/local/bin pup \
+  && chmod +x /usr/local/bin/pup
+
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+RUN set -eux; \
+  go install golang.org/x/tools/gopls@latest; \
+  go install golang.org/x/tools/cmd/goimports@latest; \
+  go install mvdan.cc/gofumpt@latest; \
+  go install honnef.co/go/tools/cmd/staticcheck@latest; \
+  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
+  go install github.com/go-delve/delve/cmd/dlv@latest; \
+  go install golang.org/x/vuln/cmd/govulncheck@latest; \
+  go install gotest.tools/gotestsum@latest; \
+  go install github.com/cweill/gotests/gotests@latest; \
+  go install github.com/fatih/gomodifytags@latest; \
+  go install github.com/josharian/impl@latest; \
+  go install go.uber.org/mock/mockgen@latest; \
+  go install github.com/securego/gosec/v2/cmd/gosec@latest; \
+  go telemetry off; \
+  go clean -cache -modcache
+
+ENV GH_CONFIG_DIR=/root/.pi/agent/gh
+ENV XDG_CONFIG_HOME=/root/.pi/agent/config
+ENV DD_TOKEN_STORAGE=file
+
+# Launcher: run pi inside tmux when interactive so the status-panel extension
+# can open a tmux split; otherwise exec pi directly.
+COPY <<'PI_ENTRY' /usr/local/bin/pi-entry
+#!/bin/sh
+[ -z "${TERM:-}" ] && export TERM=xterm-256color
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-/root/.pi/agent/gh}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/config}"
+export DD_TOKEN_STORAGE="${DD_TOKEN_STORAGE:-file}"
+git config --global credential.https://github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
+git config --global credential.https://gist.github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
+if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
+  exec pi "$@"
+fi
+# tmux execs the command argv directly (no shell), so pass args through as-is.
+exec tmux -u new-session -s pi pi "$@"
+PI_ENTRY
+RUN chmod +x /usr/local/bin/pi-entry
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/pi-entry"]
