@@ -9,11 +9,17 @@ FROM ubuntu:26.04
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOBIN=/usr/local/bin GOTOOLCHAIN=local
+ENV DOCKER_BUILDKIT=1
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash ca-certificates curl git jq openssh-client ripgrep \
-       nodejs npm tmux python3 ncurses-bin ncurses-term procps \
+       nodejs npm tmux \
+       python3 python3-pip python3-venv python-is-python3 \
+       ruby-full ruby-dev \
+       rustc cargo \
+       docker.io \
+       ncurses-bin ncurses-term procps \
        unzip build-essential golang-go pkg-config \
   && rm -rf /var/lib/apt/lists/*
 
@@ -69,13 +75,50 @@ COPY <<'PI_ENTRY' /usr/local/bin/pi-entry
 export GH_CONFIG_DIR="${GH_CONFIG_DIR:-/root/.pi/agent/gh}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.pi/agent/config}"
 export DD_TOKEN_STORAGE="${DD_TOKEN_STORAGE:-file}"
+
+# Older pi-agent-home volumes may contain a zero-byte models.json from before
+# config was bind-mounted from the host. An empty models.json is invalid JSON;
+# remove it so pi falls back to built-in models when no host config is mounted.
+if [ -f /root/.pi/agent/models.json ] && [ ! -s /root/.pi/agent/models.json ]; then
+  rm -f /root/.pi/agent/models.json 2>/dev/null || true
+fi
+
 git config --global credential.https://github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
 git config --global credential.https://gist.github.com.helper "!gh auth git-credential" >/dev/null 2>&1 || true
+
+start_docker() {
+  [ "${PI_START_DOCKER:-0}" = "1" ] || return 0
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p /var/run /var/lib/docker
+  dockerd --host=unix:///var/run/docker.sock >/tmp/pi-dockerd.log 2>&1 &
+  dockerd_pid="$!"
+  for _ in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    kill -0 "$dockerd_pid" 2>/dev/null || break
+    sleep 1
+  done
+  echo "pi-entry: dockerd did not become ready; Docker commands may fail" >&2
+  sed -n '1,80p' /tmp/pi-dockerd.log >&2 || true
+  return 0
+}
+start_docker
+
 if [ "${PI_RUN_TMUX:-0}" != "1" ] || [ ! -t 1 ]; then
   exec pi "$@"
 fi
+# Force the tmux options Pi needs even when no host ~/.tmux.conf is mounted.
+tmux_conf=/tmp/pi-tmux.conf
+{
+  [ -f /root/.tmux.conf ] && cat /root/.tmux.conf
+  printf '%s\n' 'set -g extended-keys on' 'set -gq extended-keys-format csi-u'
+} > "$tmux_conf"
+
 # tmux execs the command argv directly (no shell), so pass args through as-is.
-exec tmux -u new-session -s pi pi "$@"
+exec tmux -u -f "$tmux_conf" new-session -s pi pi "$@"
 PI_ENTRY
 RUN chmod +x /usr/local/bin/pi-entry
 

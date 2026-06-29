@@ -20,7 +20,7 @@ unset __utf8_locale
 unset -f __pick_utf8_locale 2>/dev/null || true
 
 export EDITOR="zed"
-export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.orbstack/bin:$PATH"
 
 # pi coding agent — extended prompt cache (Anthropic: 1h, OpenAI: 24h)
 export PI_CACHE_RETENTION=long
@@ -72,6 +72,13 @@ __pi_container_status_off() {
 
 __pi_realpath() {
   [ -n "$1" ] || return 1
+
+  # Prefer Python so symlinked config files resolve consistently across macOS,
+  # GNU coreutils, zsh hashed commands, and minimal containers.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+    return
+  fi
 
   if command -v realpath >/dev/null 2>&1; then
     realpath "$1" 2>/dev/null
@@ -162,6 +169,7 @@ __pi_global_skills_are_project_skills() {
 
 # docker-pi: run pi inside a throwaway container.
 #   docker-pi build [docker build args...]   (re)build the sandbox image
+#   docker-pi doctor                          show mounted Pi config paths
 #   docker-pi [pi args...]                    run pi in the container
 # Override in ~/.zshrc.local / ~/.bashrc.local if needed:
 #   PI_DOCKER_IMAGE         image tag                  (default: pi-sandbox)
@@ -169,6 +177,8 @@ __pi_global_skills_are_project_skills() {
 #   PI_DOCKER_AGENT_VOLUME  named volume mounted at     (default: pi-agent-home)
 #                           /root/.pi/agent (container-local auth + sessions;
 #                           run `/login` once on first use)
+#   PI_DOCKER_IN_DOCKER    start Docker inside sandbox   (default: 1; set 0 to disable)
+#   PI_DOCKER_LIB_VOLUME   named volume for inner Docker (default: pi-docker-lib)
 # By default, docker-pi mounts selected host dotfiles read-only from their real
 # locations (~/.tmux.conf, ~/.pi/agent/*, ~/.agents/*). It deliberately does
 # not bind-mount ~/.pi/agent wholesale, so auth.json, sessions/, and trust.json
@@ -177,6 +187,7 @@ __pi_global_skills_are_project_skills() {
 # GitHub auth stays container-local too: run `gh auth login` once inside
 # docker-pi. Other secrets still need a *.local override.
 docker-pi() {
+  local docker_pi_version="2026-06-29.2"
   local image="${PI_DOCKER_IMAGE:-pi-sandbox}"
   local agent_volume="${PI_DOCKER_AGENT_VOLUME:-pi-agent-home}"
 
@@ -188,19 +199,37 @@ docker-pi() {
       return 1
     }
     docker_context="$(dirname "$dockerfile")"
-    docker build "$@" -t "$image" -f "$dockerfile" "$docker_context"
+    local docker_bin=""
+    docker_bin="$(command -v docker 2>/dev/null || true)"
+    if [ -z "$docker_bin" ]; then
+      echo "docker-pi: docker not found on PATH" >&2
+      echo "docker-pi: PATH=$PATH" >&2
+      echo "docker-pi: start Docker/OrbStack, or add its docker CLI to PATH" >&2
+      return 127
+    fi
+    "$docker_bin" build "$@" -t "$image" -f "$dockerfile" "$docker_context"
     return
   fi
 
-  if ! command -v docker >/dev/null 2>&1; then
+  local docker_bin=""
+  docker_bin="$(command -v docker 2>/dev/null || true)"
+  if [ -z "$docker_bin" ]; then
     echo "docker-pi: docker not found on PATH" >&2
+    echo "docker-pi: PATH=$PATH" >&2
+    echo "docker-pi: start Docker/OrbStack, or add its docker CLI to PATH" >&2
     return 127
   fi
 
   # Build on first use so the initial run isn't a silent stall.
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
+  if ! "$docker_bin" image inspect "$image" >/dev/null 2>&1; then
     echo "docker-pi: building image '$image' (first run)..." >&2
     docker-pi build || return
+  fi
+
+  local doctor=0
+  if [ "${1:-}" = "doctor" ]; then
+    doctor=1
+    shift
   fi
 
   # Allocate a TTY only when interactive so `... | pi -p ...` stays pipeable.
@@ -216,6 +245,13 @@ docker-pi() {
     -h|--help|-v|--version|-p|--print|--export|--list-models|config|install|remove|uninstall|update|list)
       run_tmux=0 ;;
   esac
+
+  # Start a nested Docker daemon by default. This requires --privileged; set
+  # PI_DOCKER_IN_DOCKER=0 if a less-privileged sandbox is needed.
+  local docker_args=()
+  if [ "${PI_DOCKER_IN_DOCKER:-1}" != "0" ]; then
+    docker_args+=(--privileged -e PI_START_DOCKER=1 -v "${PI_DOCKER_LIB_VOLUME:-pi-docker-lib}:/var/lib/docker")
+  fi
 
   # Pass through only provider credentials / settings that are actually set.
   local env_args=()
@@ -241,7 +277,7 @@ docker-pi() {
     local src="$1" dest="$2" real_src=""
     real_src="$(__pi_realpath "$src" 2>/dev/null)" || return 0
     [ -e "$real_src" ] || return 0
-    cfg_args+=(-v "$real_src:$dest:ro")
+    cfg_args+=(-v "${real_src}:${dest}:ro")
     [ -d "$real_src" ] && cfg_symlink_sources+=("$real_src")
   }
 
@@ -280,7 +316,7 @@ docker-pi() {
           *$'\n'"$target_mount"$'\n'*) continue ;;
         esac
         cfg_symlink_mounts_seen="$cfg_symlink_mounts_seen$target_mount"$'\n'
-        cfg_args+=(-v "$target_mount:$target_mount:ro")
+        cfg_args+=(-v "${target_mount}:${target_mount}:ro")
       done < <(find "$src" -type l -print 2>/dev/null)
     done
   }
@@ -312,7 +348,7 @@ docker-pi() {
     [ -n "$git_root" ] && [ -d "$git_root" ] && mount_root="$git_root"
   fi
 
-  local project_args=(-v "$mount_root:$mount_root" -w "$workdir")
+  local project_args=(-v "${mount_root}:${mount_root}" -w "$workdir")
   if command -v git >/dev/null 2>&1 && [ -n "$git_root" ]; then
     local git_path=""
     local git_paths=()
@@ -323,11 +359,57 @@ docker-pi() {
 
     for git_path in "${git_paths[@]}"; do
       [ -e "$git_path" ] || continue
-      __pi_path_is_under "$git_path" "$mount_root" || project_args+=(-v "$git_path:$git_path")
+      __pi_path_is_under "$git_path" "$mount_root" || project_args+=(-v "${git_path}:${git_path}")
     done
   fi
 
   __pi_add_nested_symlink_target_mounts
+
+  if [ "$doctor" = "1" ]; then
+    echo "docker-pi doctor version: $docker_pi_version"
+    echo "docker-pi function source: $(__pi_shellrc_path 2>/dev/null || printf '%s' "$HOME/.shellrc")"
+    echo "docker-pi host config:"
+    local cfg_path=""
+    for cfg_path in "$home_pi/extensions" "$home_pi/settings.json" "$home_pi/models.json" "$HOME/.tmux.conf"; do
+      if [ -e "$cfg_path" ]; then
+        printf '  %-34s -> %s\n' "$cfg_path" "$(__pi_realpath "$cfg_path" 2>/dev/null || printf '%s' "$cfg_path")"
+      else
+        printf '  %-34s MISSING\n' "$cfg_path"
+      fi
+    done
+    echo
+    if [ -z "$docker_bin" ]; then
+      echo "docker-pi: docker not found on PATH" >&2
+      echo "docker-pi: PATH=$PATH" >&2
+      echo "docker-pi: start Docker/OrbStack, or add its docker CLI to PATH" >&2
+      return 127
+    fi
+
+    "$docker_bin" run --rm "${env_args[@]}" \
+      -e TERM -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+      "${project_args[@]}" \
+      -v "${agent_volume}:/root/.pi/agent" \
+      "${cfg_args[@]}" \
+      --entrypoint sh \
+      "$image" -lc '
+        echo "container config:"
+        for cfg_path in /root/.pi/agent/extensions /root/.pi/agent/settings.json /root/.pi/agent/models.json /root/.tmux.conf; do
+          if [ -e "$cfg_path" ]; then
+            printf "  %-34s present\n" "$cfg_path"
+          else
+            printf "  %-34s MISSING\n" "$cfg_path"
+          fi
+        done
+        echo
+        echo "extensions visible in container:"
+        if [ -d /root/.pi/agent/extensions ]; then
+          find /root/.pi/agent/extensions -maxdepth 1 -type f \( -name "*.ts" -o -name "status-panel.sh" \) -printf "  %f\n" | sort
+        else
+          echo "  none"
+        fi
+      '
+    return
+  fi
 
   # Keep agent home in a named volume (host auth stays out). Subshell-scoped
   # EXIT trap clears the status indicator without leaking the trap into the
@@ -335,11 +417,11 @@ docker-pi() {
   (
     trap '__pi_container_status_off' EXIT
     __pi_container_status_on
-    docker run --rm -i "${tty_args[@]}" "${env_args[@]}" \
+    "$docker_bin" run --rm -i "${tty_args[@]}" "${docker_args[@]}" "${env_args[@]}" \
       -e PI_RUN_TMUX="$run_tmux" -e TERM \
       -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
       "${project_args[@]}" \
-      -v "$agent_volume:/root/.pi/agent" \
+      -v "${agent_volume}:/root/.pi/agent" \
       "${cfg_args[@]}" \
       "$image" "$@"
   )
