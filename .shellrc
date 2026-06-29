@@ -180,8 +180,9 @@ __pi_global_skills_are_project_skills() {
 #   PI_DOCKER_IN_DOCKER    start Docker inside sandbox   (default: 1; set 0 to disable)
 #   PI_DOCKER_LIB_VOLUME   named volume for inner Docker (default: pi-docker-lib)
 # By default, docker-pi mounts selected host dotfiles read-only from their real
-# locations (~/.tmux.conf, ~/.pi/agent/*, ~/.agents/*). It deliberately does
-# not bind-mount ~/.pi/agent wholesale, so auth.json, sessions/, and trust.json
+# locations (~/.gitconfig, ~/.tmux.conf, ~/.pi/agent/*, ~/.agents/*). It
+# deliberately does not bind-mount ~/.pi/agent wholesale, so auth.json,
+# sessions/, and trust.json
 # stay in the container-local named volume.
 # Set PI_NO_TMUX=1 to run pi directly in the container (no tmux/status panel).
 # GitHub auth stays container-local too: run `gh auth login` once inside
@@ -253,6 +254,18 @@ docker-pi() {
     docker_args+=(--privileged -e PI_START_DOCKER=1 -v "${PI_DOCKER_LIB_VOLUME:-pi-docker-lib}:/var/lib/docker")
   fi
 
+  # Keep GitHub credentials container-local even when the host ~/.gitconfig
+  # has a platform-specific credential helper such as osxkeychain.
+  local git_config_args=(
+    -e GIT_CONFIG_COUNT=3
+    -e GIT_CONFIG_KEY_0=credential.helper
+    -e GIT_CONFIG_VALUE_0=
+    -e GIT_CONFIG_KEY_1=credential.https://github.com.helper
+    -e 'GIT_CONFIG_VALUE_1=!gh auth git-credential'
+    -e GIT_CONFIG_KEY_2=credential.https://gist.github.com.helper
+    -e 'GIT_CONFIG_VALUE_2=!gh auth git-credential'
+  )
+
   # Pass through only provider credentials / settings that are actually set.
   local env_args=()
   local var
@@ -265,7 +278,7 @@ docker-pi() {
   done
 
   # Mount managed config (skills, prompts, extensions, settings, agents,
-  # AGENTS.md, tmux.conf) read-only, layered over the named volume.
+  # AGENTS.md, gitconfig, tmux.conf) read-only, layered over the named volume.
   # Credentials/state (auth.json, sessions/, trust.json) are deliberately left
   # in the named volume, not bind-mounted from the host.
   local cfg_args=()
@@ -331,6 +344,7 @@ docker-pi() {
   elif [ -f "$home_agents/AGENTS.md" ]; then
     __pi_add_ro_mount "$home_agents/AGENTS.md" "/root/.pi/agent/AGENTS.md"
   fi
+  [ -f "$HOME/.gitconfig" ] && __pi_add_ro_mount "$HOME/.gitconfig" "/root/.gitconfig"
   [ -f "$HOME/.tmux.conf" ] && __pi_add_ro_mount "$HOME/.tmux.conf" "/root/.tmux.conf"
   if [ -d "$home_agents/skills" ] && ! __pi_global_skills_are_project_skills "$home_agents/skills"; then
     __pi_add_ro_mount "$home_agents/skills" "/root/.agents/skills"
@@ -370,7 +384,7 @@ docker-pi() {
     echo "docker-pi function source: $(__pi_shellrc_path 2>/dev/null || printf '%s' "$HOME/.shellrc")"
     echo "docker-pi host config:"
     local cfg_path=""
-    for cfg_path in "$home_pi/extensions" "$home_pi/settings.json" "$home_pi/models.json" "$HOME/.tmux.conf"; do
+    for cfg_path in "$home_pi/extensions" "$home_pi/settings.json" "$home_pi/models.json" "$HOME/.gitconfig" "$HOME/.tmux.conf"; do
       if [ -e "$cfg_path" ]; then
         printf '  %-34s -> %s\n' "$cfg_path" "$(__pi_realpath "$cfg_path" 2>/dev/null || printf '%s' "$cfg_path")"
       else
@@ -385,7 +399,7 @@ docker-pi() {
       return 127
     fi
 
-    "$docker_bin" run --rm "${env_args[@]}" \
+    "$docker_bin" run --rm "${git_config_args[@]}" "${env_args[@]}" \
       -e TERM -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
       "${project_args[@]}" \
       -v "${agent_volume}:/root/.pi/agent" \
@@ -393,7 +407,7 @@ docker-pi() {
       --entrypoint sh \
       "$image" -lc '
         echo "container config:"
-        for cfg_path in /root/.pi/agent/extensions /root/.pi/agent/settings.json /root/.pi/agent/models.json /root/.tmux.conf; do
+        for cfg_path in /root/.pi/agent/extensions /root/.pi/agent/settings.json /root/.pi/agent/models.json /root/.gitconfig /root/.tmux.conf; do
           if [ -e "$cfg_path" ]; then
             printf "  %-34s present\n" "$cfg_path"
           else
@@ -417,7 +431,7 @@ docker-pi() {
   (
     trap '__pi_container_status_off' EXIT
     __pi_container_status_on
-    "$docker_bin" run --rm -i "${tty_args[@]}" "${docker_args[@]}" "${env_args[@]}" \
+    "$docker_bin" run --rm -i "${tty_args[@]}" "${docker_args[@]}" "${git_config_args[@]}" "${env_args[@]}" \
       -e PI_RUN_TMUX="$run_tmux" -e TERM \
       -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
       "${project_args[@]}" \
