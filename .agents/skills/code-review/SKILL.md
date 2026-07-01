@@ -57,7 +57,9 @@ Prefer review targets in this order:
 3. last commit: `git diff HEAD~1`
 
 If a current-branch PR exists, include PR title, body, comments, review comments,
-and linked issue context in the review.
+and linked issue context in the review. Treat issue references in the PR body as
+important review context because they may contain the motivation, data, research,
+design discussion, constraints, or acceptance criteria behind the change.
 
 ## Required context gathering
 
@@ -68,7 +70,10 @@ Before reviewing:
 3. For changed files with large diffs or unclear surrounding context, read the
    full file.
 4. If a PR exists, read the PR body, conversation comments, inline review
-   comments, and linked issues.
+   comments, and linked issues. Specifically inspect the PR body for
+   cross-referenced issues, including closing keywords, `#123`,
+   `owner/repo#123`, and full GitHub issue URLs; read each referenced issue and
+   its comments before judging the diff.
 5. If the user asks to process Copilot comments, read
    `references/copilot-review.md` and follow that workflow.
 
@@ -118,7 +123,10 @@ which were fixed, which were dismissed, and why.
 ### 📋 PR context
 
 If a PR exists, note whether the changes address PR feedback and linked issue
-requirements. Flag any PR comments or issue requirements not yet addressed.
+requirements. Include any relevant context from PR-body cross-referenced issues
+(motivation, data, research, design constraints, acceptance criteria) when it
+changes how the diff should be reviewed. Flag any PR comments or issue
+requirements not yet addressed.
 
 ### 📝 Docs
 

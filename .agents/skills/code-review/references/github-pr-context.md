@@ -15,7 +15,7 @@ PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/[0-9]+|\1|')
 
 # Fetch PR metadata
-PR_JSON=$(gh pr view "$PR_URL" --json number,url,state,body,title,headRefName,baseRefName,files 2>/dev/null || true)
+PR_JSON=$(gh pr view "$PR_URL" --json number,url,state,body,title,headRefName,baseRefName,files,closingIssuesReferences 2>/dev/null || true)
 
 # Get the full diff
 gh pr diff "$PR_URL"
@@ -48,7 +48,7 @@ ls -1 | head -20
 
 # Get current branch and check for an open PR
 BRANCH=$(git branch --show-current)
-PR_JSON=$(gh pr view "$BRANCH" --json number,url,state,body,title 2>/dev/null || true)
+PR_JSON=$(gh pr view "$BRANCH" --json number,url,state,body,title,closingIssuesReferences 2>/dev/null || true)
 ```
 
 Read the full diff. Prefer staged, fall back to working tree, then last commit:
@@ -94,17 +94,38 @@ gh api "repos/$REPO/issues/$PR_NUM/comments" \
 gh api "repos/$REPO/pulls/$PR_NUM/comments" \
   --jq '.[] | {user: .user.login, path: .path, line: .original_line, body: .body, in_reply_to_id: .in_reply_to_id}'
 
-# Linked issues referenced in the PR body or comments
-echo "$PR_JSON" | jq -r '.body' | grep -oE '#[0-9]+' | sort -u
+# Issues cross-referenced from the PR body. These may contain the motivation,
+# data, research, design discussion, constraints, or acceptance criteria needed
+# to review the change correctly.
+echo "$PR_JSON" | jq -r '.body // ""' | grep -oE '(^|[^A-Za-z0-9_-])#[0-9]+' | grep -oE '[0-9]+' | sort -u
+
+echo "$PR_JSON" | jq -r '.body // ""' | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' | sort -u
+
+echo "$PR_JSON" | jq -r '.body // ""' | grep -oE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+' | sort -u
+
+# Issues GitHub recognizes as closing references from the PR body.
+echo "$PR_JSON" | jq -r '.closingIssuesReferences[]? | {number: .number, title: .title, url: .url}'
 ```
 
-For each linked issue, read it in full including comments:
+For each linked issue or issue URL from the PR body, read it in full including
+comments. Use the current PR repo for plain `#123` references, and the referenced
+repo for `owner/repo#123` or full issue URLs:
 
 ```bash
-# For each linked issue number
-gh issue view <ISSUE_NUM> --repo "$REPO" --json title,body,comments \
+# Same-repo issue reference from #123
+ISSUE_NUM="<number>"
+gh issue view "$ISSUE_NUM" --repo "$REPO" --json title,body,comments \
+  --jq '{title: .title, body: .body, comments: [.comments[] | {user: .author.login, body: .body}]}'
+
+# Cross-repo issue reference from owner/repo#123 or a full issue URL
+ISSUE_REPO="owner/repo"
+ISSUE_NUM="<number>"
+gh issue view "$ISSUE_NUM" --repo "$ISSUE_REPO" --json title,body,comments \
   --jq '{title: .title, body: .body, comments: [.comments[] | {user: .author.login, body: .body}]}'
 ```
 
-Review the PR description, all comments, and linked issues alongside the diff.
-Consider whether the changes address PR feedback and linked issue requirements.
+Review the PR description, all comments, and PR-body cross-referenced issues
+alongside the diff. Before judging the code, capture the relevant issue context:
+motivation, data, research, design constraints, acceptance criteria, and any open
+questions. Consider whether the changes address PR feedback and linked issue
+requirements.
