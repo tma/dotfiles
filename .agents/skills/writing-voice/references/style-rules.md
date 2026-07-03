@@ -99,6 +99,14 @@ Delete these:
 - Contractions are fine. Match the format's formality.
 - Keep paragraphs to 3–5 sentences for most writing.
 
+## GitHub Markdown links
+
+When drafting GitHub-facing Markdown, including issue bodies, PR bodies, discussions, comments, and reviews, let GitHub autolink issue and PR references.
+
+- Use bare GitHub issue and PR URLs, especially in bullet lists.
+- Do not write Markdown links like `[owner/repo#123](https://github.com/owner/repo/issues/123)`.
+- Do not put issue or PR references in backticks.
+
 ## Applying voice and style together
 
 1. Curated profile exists: for tma, read `references/tma-curated-voice.md` and match it as the baseline.

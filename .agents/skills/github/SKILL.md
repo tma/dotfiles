@@ -22,7 +22,9 @@ This includes:
 - PR review comments
 - release notes
 
-Draft the text first, apply the writing-voice checklist, then publish with `gh`. Prefer `--body-file` over inline `--body` for anything longer than one sentence. Do not wrap GitHub issue or PR cross-references in backticks; it prevents auto-linking.
+Draft the text first, apply the writing-voice checklist, then publish with `gh`. Prefer `--body-file` over inline `--body` for anything longer than one sentence.
+
+For GitHub-facing Markdown (issues, PRs, discussions, comments, and reviews), let GitHub autolink issue and PR references. Do not wrap GitHub issue or PR cross-references in backticks; it prevents auto-linking. Do not turn full GitHub issue or PR URLs into Markdown links like `[owner/repo#123](https://github.com/owner/repo/issues/123)`. Use the bare URL instead, especially in bullet lists.
 
 ## Authentication
 
