@@ -42,8 +42,8 @@ the user explicitly asks.
 If the user provided a GitHub PR URL, review that remote PR only. The PR may be
 for a different repo than the current directory. Skip local diff gathering.
 
-Use `gh` for GitHub data. Read `references/github-pr-context.md` for the full PR
-context workflow.
+Use `gh` for GitHub data. Read the
+[GitHub PR context workflow](./references/github-pr-context.md).
 
 ### Mode B — No PR URL
 
@@ -74,15 +74,15 @@ Before reviewing:
    cross-referenced issues, including closing keywords, `#123`,
    `owner/repo#123`, and full GitHub issue URLs; read each referenced issue and
    its comments before judging the diff.
-5. If the user asks to process Copilot comments, read
-   `references/copilot-review.md` and follow that workflow.
+5. If the user asks to process Copilot comments, read the
+   [Copilot review workflow](./references/copilot-review.md).
 
 Do not review from a summary alone when source files are available.
 
 ## Review checklist
 
-Read `references/checklist.md` and apply it to each changed file. Focus on real
-issues that matter for the codebase:
+Read the [review checklist](./references/checklist.md) and apply it to each
+changed file. Focus on real issues that matter for the codebase:
 
 - correctness
 - security
@@ -154,5 +154,5 @@ If the user asks you to post comments or a GitHub review:
    post/publish/submit.
 4. Use `gh`, preferably with `--body-file` for anything longer than one sentence.
 
-Never post `@copilot review this`; request Copilot through the reviewer flow in
-`references/copilot-review.md`.
+Never post `@copilot review this`; request Copilot through the
+[Copilot review workflow](./references/copilot-review.md).

@@ -7,7 +7,7 @@ description: Control cmux workspaces, panes, surfaces, status/sidebar, browser p
 
 Use the `cmux` CLI for all cmux operations. Commands communicate through the cmux Unix socket.
 
-For command examples, read `references/command-reference.md`.
+For command examples, read the [cmux command reference](./references/command-reference.md).
 
 ## Preflight
 

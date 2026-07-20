@@ -109,7 +109,7 @@ When drafting GitHub-facing Markdown, including issue bodies, PR bodies, discuss
 
 ## Applying voice and style together
 
-1. Curated profile exists: for tma, read `references/tma-curated-voice.md` and match it as the baseline.
+1. Curated profile exists: for tma, read the [curated voice profile](./tma-curated-voice.md) and match it as the baseline.
 2. Sampled profile exists: use it as supplemental signal only; do not let it override the curated profile.
 3. No profile exists: write in a direct, specific, confident-not-arrogant style with mixed sentence lengths and contractions.
 4. After generating: scan for kill-list words and AI patterns. Rewrite anything that sounds like a chatbot.

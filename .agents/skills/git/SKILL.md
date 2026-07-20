@@ -5,7 +5,7 @@ description: Use git workflow conventions for commits, pulls, pushes, and branch
 
 # Git
 
-Use this skill for branch setup, commits, pulls, pushes, history rewriting, and branch cleanup. For command examples and detailed workflows, read `references/workflows.md`.
+Use this skill for branch setup, commits, pulls, pushes, history rewriting, and branch cleanup. For command examples and detailed workflows, read the [Git workflows reference](./references/workflows.md).
 
 ## Starting development work
 

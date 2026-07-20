@@ -1,6 +1,6 @@
 # Voice sampling
 
-Use this only when no curated or cached profile exists, or when the curated profile needs more signal. For tma, `references/tma-curated-voice.md` is the baseline; sample only on mismatch, user request, or when the profile is not enough for the format.
+Use this only when no curated or cached profile exists, or when the curated profile needs more signal. For tma, the [curated voice profile](./tma-curated-voice.md) is the baseline; sample only on mismatch, user request, or when the profile is not enough for the format.
 
 More samples improve the match. Analyze 10–20 samples when available.
 

@@ -7,7 +7,7 @@ description: Use gh for GitHub issues, PRs, reviews, Copilot reviewer requests, 
 
 Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library; `gh` handles authentication, pagination, and API versioning.
 
-For command examples, read `references/command-reference.md`. For broad code searches and full-link requirements, read `workflows/code-search.md`.
+For command examples, read the [GitHub command reference](./references/command-reference.md). For broad code searches and full-link requirements, read the [code search workflow](./workflows/code-search.md).
 
 ## Writing on GitHub
 
@@ -46,7 +46,7 @@ Do not base new task work on the currently checked-out local branch unless the u
 
 When the user asks for a GitHub Copilot review on a PR, use the requested-reviewer flow. Add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer.
 
-Never post `@copilot review this`; that does not create the requested-reviewer review flow. Use `references/command-reference.md` for the exact commands.
+Never post `@copilot review this`; that does not create the requested-reviewer review flow. Use the [GitHub command reference](./references/command-reference.md) for the exact commands.
 
 ## Rules
 

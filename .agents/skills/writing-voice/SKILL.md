@@ -14,14 +14,14 @@ This skill has two parts:
 
 Before drafting, read:
 
-- `references/tma-curated-voice.md` for tma's baseline voice.
-- `references/style-rules.md` for kill-list words, filler, punctuation, and structure rules.
+- [tma's curated voice](./references/tma-curated-voice.md) for the baseline voice.
+- [Style rules](./references/style-rules.md) for kill-list words, filler, punctuation, and structure rules.
 
-Read `references/voice-sampling.md` only when there is no curated/cached profile, the user asks for sampling, the current draft does not sound like them, or the curated profile needs more signal for the format.
+Read the [voice sampling guide](./references/voice-sampling.md) only when there is no curated/cached profile, the user asks for sampling, the current draft does not sound like them, or the curated profile needs more signal for the format.
 
 ## Skill-local curated profile
 
-For tma, `references/tma-curated-voice.md` is the committed, sanitized baseline voice. Use it before sampling recent writing or cache files. Sampled profiles are supplemental signal, never a replacement.
+For tma, the [curated voice profile](./references/tma-curated-voice.md) is the committed, sanitized baseline voice. Use it before sampling recent writing or cache files. Sampled profiles are supplemental signal, never a replacement.
 
 Keep the curated profile style-only: no raw samples, internal links, teammate names, or private details. Do not overwrite it with sampled content; edit it by hand.
 
@@ -29,7 +29,7 @@ Keep the curated profile style-only: no raw samples, internal links, teammate na
 
 1. Load the curated profile first.
 2. Load the style rules.
-3. If needed, load sampled profile notes from `$HOME/.pi/voice-profiles/` or collect samples using `references/voice-sampling.md`.
+3. If needed, load sampled profile notes from `$HOME/.pi/voice-profiles/` or collect samples using the [voice sampling guide](./references/voice-sampling.md).
 4. Draft the text.
 5. Edit once for voice: direct, plainspoken, specific, and appropriate to the venue.
 6. Edit once for AI tells: kill-list words, filler, em-dash overuse, dramatic fragments, and generic conclusions.
@@ -48,7 +48,7 @@ If no profile is available, write in a direct, specific, confident-not-arrogant 
 
 ## Rules
 
-1. **Curated profile first** — for tma, use `references/tma-curated-voice.md` as the baseline.
+1. **Curated profile first** — for tma, use the [curated voice profile](./references/tma-curated-voice.md) as the baseline.
 2. **Sample only when needed** — sample before writing only when no curated/cached profile exists, the user asks, the profile does not fit, or more signal is needed.
 3. **Use sampled signal as supplemental** — never let sampled notes override the curated profile for tma.
 4. **Never show the profile unprompted** — use it silently; share only if asked.

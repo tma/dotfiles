@@ -9,7 +9,7 @@ Get one, two, or three independent advisory reviews by delegating self-contained
 
 This skill is harness-agnostic: prepare a review packet, then delegate it through the host harness's native child-agent/subagent mechanism. Do **not** shell out to model CLIs such as Codex, Claude, Gemini, or similar.
 
-For routing tables, task templates, examples, and detailed error handling, read `references/operations.md`.
+For routing tables, task templates, examples, and detailed error handling, read the [operations reference](./references/operations.md).
 
 ## Core contract
 
