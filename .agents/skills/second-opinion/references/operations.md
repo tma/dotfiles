@@ -43,6 +43,7 @@ Reviewer selection:
 - `auto` — prefer model families different from the current/root agent
 - `opus` — latest Opus child reviewer at max thinking (`xhigh`)
 - `gpt` — latest GPT child reviewer at max thinking (`xhigh`)
+- `grok` — latest Grok child reviewer at max thinking (`xhigh`)
 - `mixed` — use multiple routed reviewers when available
 
 Focus:
@@ -62,10 +63,11 @@ For a single review, use the opposite family when the current/root family is kno
 |---------------------------|----------------|-------------|
 | GPT/OpenAI | Latest Opus | `second-opinion-opus` |
 | Opus/Anthropic | Latest GPT | `second-opinion-gpt` |
+| Grok/xAI | Latest Opus | `second-opinion-opus` |
 
 For multiple reviews:
 
-1. If invoked by the `code-review` skill for a deep/thorough review, always include both `second-opinion-gpt` and `second-opinion-opus` when available, even if one matches the current/root model family.
+1. If invoked by the `code-review` skill for a deep/thorough review, always include both `second-opinion-gpt` and `second-opinion-opus` when available, even if one matches the current/root model family. Add `second-opinion-grok` when the user asks for three reviewers.
 2. Otherwise, prefer distinct non-current reviewer routes.
 3. If only one non-current route is configured, reuse that route with separate tasks and different reviewer focuses.
 4. If the user explicitly requests a current-family reviewer, ask for confirmation unless their wording already makes the override clear.
@@ -81,7 +83,7 @@ Suggested focus split when reusing one route:
 
 If the current/root model is unknown and reviewer choice matters, ask:
 
-> Which reviewer route(s) should I use: latest Opus, latest GPT, or mixed?
+> Which reviewer route(s) should I use: latest Opus, latest GPT, latest Grok, or mixed?
 
 ## Review material
 
@@ -130,7 +132,7 @@ Each child task must be self-contained and include:
 Template:
 
 ```markdown
-You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on <latest Opus|latest GPT|configured route> at max thinking when supported.
+You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on <latest Opus|latest GPT|latest Grok|configured route> at max thinking when supported.
 The root agent is running on <current model family or unknown>.
 
 Review scope: <scope>
@@ -163,7 +165,8 @@ Single review:
 
 - Current/root GPT/OpenAI → `agent: "second-opinion-opus"`.
 - Current/root Opus/Anthropic → `agent: "second-opinion-gpt"`.
-- Deep/thorough code-review workflow → include both `agent: "second-opinion-gpt"` and `agent: "second-opinion-opus"`.
+- Current/root Grok/xAI → `agent: "second-opinion-opus"`.
+- Deep/thorough code-review workflow → include both `agent: "second-opinion-gpt"` and `agent: "second-opinion-opus"`. Add `agent: "second-opinion-grok"` for a third reviewer.
 
 Multiple reviews:
 

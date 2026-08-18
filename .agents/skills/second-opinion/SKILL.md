@@ -41,6 +41,7 @@ Use the `subagent` tool with configured reviewer agents:
 
 - `second-opinion-opus` — latest available Opus model at max thinking (`xhigh`).
 - `second-opinion-gpt` — latest available GPT model at max thinking (`xhigh`).
+- `second-opinion-grok` — latest available Grok model at max thinking (`xhigh`).
 
 For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its reviewer label and focus.
 
@@ -82,5 +83,5 @@ If multiple tasks reused the same route, mention that plainly.
 2. **Default to one review** and cap at three.
 3. **Prefer a different model family** from the current/root agent unless the user confirms otherwise.
 4. **Keep reviewers read-only**; they do not edit files or post GitHub comments.
-5. **Use both GPT and Opus routes** for deep/thorough code-review workflows when available.
+5. **Use both GPT and Opus routes** for deep/thorough code-review workflows when available. Add the Grok route when the user asks for three reviewers.
 6. **Stop on empty input**; do not ask reviewers to review nothing.

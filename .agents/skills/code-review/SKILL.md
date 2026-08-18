@@ -26,7 +26,8 @@ Also determine review depth:
 For deep reviews, gather the normal review context first, then invoke
 `second-opinion` with both latest GPT and latest Opus reviewer routes at max
 thinking (`xhigh`). Use two reviewers by default, or three when the user asks for
-a very thorough review or explicitly asks for three. Split reviewer focus across:
+a very thorough review or explicitly asks for three. For three, add the latest
+Grok route at max thinking (`xhigh`). Split reviewer focus across:
 
 1. correctness, security, and data-loss risks
 2. edge cases, reliability, error handling, and tests
