@@ -4,3 +4,9 @@
 # Python bytecode/cache files
 __pycache__/
 *.py[cod]
+
+# Extension runtime deps
+node_modules/
+
+# Built Gondolin guest image
+.pi/agent/extensions/gondolin/image/

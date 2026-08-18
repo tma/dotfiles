@@ -264,6 +264,14 @@ main() {
     failures=$((failures + 1))
   fi
 
+  local gondolin_dir="$DOTFILES_DIR/.pi/agent/extensions/gondolin"
+  if [ -f "$gondolin_dir/package.json" ] && command -v npm >/dev/null 2>&1; then
+    log "Installing Gondolin extension dependencies..."
+    if ! npm install --ignore-scripts --prefix "$gondolin_dir"; then
+      warn "Gondolin npm install failed; host pi will run without the micro-VM"
+    fi
+  fi
+
   if [ "$failures" -gt 0 ]; then
     warn "Dotfiles bootstrap completed with $failures non-fatal issue(s)"
   else

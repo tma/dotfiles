@@ -1,0 +1,20 @@
+{
+	"name": "pi-extension-gondolin",
+	"private": true,
+	"version": "0.84.1",
+	"type": "module",
+	"scripts": {
+		"clean": "echo 'nothing to clean'",
+		"build": "echo 'nothing to build'",
+		"check": "echo 'nothing to check'",
+		"build-image": "gondolin build --config build-config.json --output ./image"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"@earendil-works/gondolin": "0.12.0"
+	}
+}
