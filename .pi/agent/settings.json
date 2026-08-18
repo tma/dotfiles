@@ -1,6 +1,6 @@
 {
   "defaultProvider": "github-copilot",
-  "defaultModel": "gpt-5.6-sol",
+  "defaultModel": "grok-4.6",
   "defaultThinkingLevel": "high",
   "editorPaddingX": 2,
   "hideThinkingBlock": true,
@@ -17,12 +17,9 @@
     "keepRecentTokens": 30000
   },
   "enabledModels": [
-    "claude-*-4.6",
-    "claude-*-4.7",
-    "claude-*-4.8",
-    "gpt-5.5",
-    "gpt-5.6",
-    "gemini-3.1*"
+    "github-copilot/grok-4.6",
+    "github-copilot/claude-opus-5",
+    "github-copilot/gpt-5.6-sol"
   ],
   "lastChangelogVersion": "99.99.99",
   "packages": []
