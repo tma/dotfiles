@@ -4,39 +4,39 @@
  * Adapted from:
  * https://github.com/Attamusc/dotfiles/blob/main/dot_pi/agent/extensions/github-copilot-dynamic/index.ts
  *
- * Fetches the live /models list from the Copilot API at Pi startup and
- * replaces the static github-copilot provider model list with whatever
- * GitHub actually serves for this account, including subscription-gated and
- * feature-flagged models that are not yet in Pi's generated static registry.
+ * Fetches the live /models list from the Copilot API and replaces Pi's static
+ * github-copilot catalog with whatever GitHub serves for this account, including
+ * models that are not in Pi's generated registry yet (grok-4.6, gemini-3.7-flash, …).
  *
- * The refreshed JWT is kept in-memory only; auth.json is never written.
+ * Token minting is vendored. `@earendil-works/pi-ai/oauth` is types-only since
+ * 0.82.1, so importing `refreshGitHubCopilotToken` throws
+ * "… is not a function" on boot whenever the cached Copilot JWT is stale.
+ *
+ * The minted JWT is in-memory only; auth.json is never written. Built-in
+ * github-copilot OAuth is left in place — we only swap the model list.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-	getGitHubCopilotBaseUrl,
-	githubCopilotOAuthProvider,
-	refreshGitHubCopilotToken,
-} from "@earendil-works/pi-ai/oauth";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// Re-declared from pi-ai's COPILOT_HEADERS; it is not exported by pi-ai.
 const COPILOT_HEADERS: Record<string, string> = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
 	"Editor-Version": "vscode/1.107.0",
 	"Editor-Plugin-Version": "copilot-chat/0.35.0",
 	"Copilot-Integration-Id": "vscode-chat",
+	"X-GitHub-Api-Version": "2026-06-01",
 };
 
 const TAG = "[github-copilot-dynamic]";
 
 interface AuthEntry {
 	type: string;
-	access: string;
-	refresh: string;
-	expires: number;
+	access?: string;
+	refresh?: string;
+	expires?: number;
 	enterpriseUrl?: string;
 }
 
@@ -56,10 +56,49 @@ interface RawModel {
 			max_context_window_tokens?: number;
 			max_output_tokens?: number;
 		};
+		supports?: {
+			adaptive_thinking?: boolean;
+			reasoning_effort?: string[];
+			tool_calls?: boolean;
+		};
 	};
 }
 
 type CopilotApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+
+let lastModels: ProviderModelConfig[] | undefined;
+
+function getGitHubCopilotBaseUrl(token: string | undefined, enterpriseDomain?: string): string {
+	const match = token?.match(/proxy-ep=([^;]+)/);
+	if (match) return `https://${match[1].replace(/^proxy\./, "api.")}`;
+	if (enterpriseDomain) return `https://copilot-api.${enterpriseDomain}`;
+	return "https://api.individual.githubcopilot.com";
+}
+
+async function mintCopilotJwt(refreshToken: string, enterpriseDomain?: string, signal?: AbortSignal): Promise<string | null> {
+	const domain = enterpriseDomain || "github.com";
+	try {
+		const response = await fetch(`https://api.${domain}/copilot_internal/v2/token`, {
+			headers: {
+				Accept: "application/json",
+				Authorization: `Bearer ${refreshToken}`,
+				...COPILOT_HEADERS,
+			},
+			signal,
+		});
+		if (!response.ok) {
+			console.error(`${TAG} token mint failed: HTTP ${response.status}`);
+			return null;
+		}
+		const raw: unknown = await response.json();
+		const token = (raw as { token?: unknown })?.token;
+		return typeof token === "string" ? token : null;
+	} catch (err: unknown) {
+		if (signal?.aborted) return null;
+		console.error(`${TAG} token mint failed: ${err instanceof Error ? err.message : String(err)}`);
+		return null;
+	}
+}
 
 function readAuthFile(): Record<string, AuthEntry> | null {
 	const authPath = join(homedir(), ".pi", "agent", "auth.json");
@@ -74,7 +113,7 @@ function readAuthFile(): Record<string, AuthEntry> | null {
 	try {
 		return JSON.parse(raw) as Record<string, AuthEntry>;
 	} catch {
-		console.error(`${TAG} failed to parse auth.json; skipping dynamic discovery`);
+		console.error(`${TAG} failed to parse auth.json; skipping startup discovery`);
 		return null;
 	}
 }
@@ -83,8 +122,7 @@ async function readCopilotAuth(): Promise<CopilotAuth | null> {
 	const entry = readAuthFile()?.["github-copilot"];
 	if (!entry) return null;
 
-	// Use cached Copilot JWT if it is still valid.
-	if (entry.expires > Date.now()) {
+	if (typeof entry.access === "string" && typeof entry.expires === "number" && entry.expires > Date.now()) {
 		return {
 			jwt: entry.access,
 			baseUrl: getGitHubCopilotBaseUrl(entry.access, entry.enterpriseUrl),
@@ -92,21 +130,50 @@ async function readCopilotAuth(): Promise<CopilotAuth | null> {
 		};
 	}
 
-	// JWT expired — exchange refresh token for a new Copilot JWT.
-	try {
-		const refreshed = await refreshGitHubCopilotToken(entry.refresh, entry.enterpriseUrl);
-		return {
-			jwt: refreshed.access,
-			baseUrl: getGitHubCopilotBaseUrl(refreshed.access, entry.enterpriseUrl),
-			enterpriseUrl: entry.enterpriseUrl,
-		};
-	} catch (err: unknown) {
-		console.error(`${TAG} JWT refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+	if (typeof entry.refresh !== "string" || !entry.refresh) {
+		console.error(`${TAG} github-copilot credentials have no refresh token; using Pi's built-in list`);
 		return null;
 	}
+
+	const minted = await mintCopilotJwt(entry.refresh, entry.enterpriseUrl);
+	if (!minted) {
+		console.error(`${TAG} could not mint a Copilot JWT; using Pi's built-in list this run`);
+		return null;
+	}
+
+	return {
+		jwt: minted,
+		baseUrl: getGitHubCopilotBaseUrl(minted, entry.enterpriseUrl),
+		enterpriseUrl: entry.enterpriseUrl,
+	};
 }
 
-async function fetchModels(auth: CopilotAuth): Promise<RawModel[] | null> {
+function authFromCredential(credential: RefreshModelsContext["credential"]): CopilotAuth | null {
+	if (!credential) return null;
+
+	if (credential.type === "oauth") {
+		const enterpriseUrl = typeof credential.enterpriseUrl === "string" ? credential.enterpriseUrl : undefined;
+		if (typeof credential.access === "string" && credential.access) {
+			return {
+				jwt: credential.access,
+				baseUrl: getGitHubCopilotBaseUrl(credential.access, enterpriseUrl),
+				enterpriseUrl,
+			};
+		}
+		return null;
+	}
+
+	if (credential.type === "api_key" && typeof credential.key === "string" && credential.key) {
+		return {
+			jwt: credential.key,
+			baseUrl: getGitHubCopilotBaseUrl(credential.key),
+		};
+	}
+
+	return null;
+}
+
+async function fetchModels(auth: CopilotAuth, signal?: AbortSignal): Promise<RawModel[] | null> {
 	let response: Response;
 	try {
 		response = await fetch(`${auth.baseUrl}/models`, {
@@ -115,8 +182,10 @@ async function fetchModels(auth: CopilotAuth): Promise<RawModel[] | null> {
 				Accept: "application/json",
 				...COPILOT_HEADERS,
 			},
+			signal,
 		});
 	} catch (err: unknown) {
+		if (signal?.aborted) return null;
 		console.error(`${TAG} /models fetch failed: ${err instanceof Error ? err.message : String(err)}`);
 		return null;
 	}
@@ -143,81 +212,136 @@ async function fetchModels(auth: CopilotAuth): Promise<RawModel[] | null> {
 }
 
 function isModelEligible(model: RawModel): boolean {
+	if (model.capabilities?.supports?.tool_calls === false) return false;
 	if (model.model_picker_enabled === false) return false;
 	if (model.policy?.state === "disabled") return false;
 	return true;
 }
 
-/** Derive compat flags from model id to match pi-ai's static registry. */
-function getCompat(id: string): Record<string, boolean> {
-	// Adaptive-thinking models: claude-opus-4.6+, claude-sonnet-4.6+
-	if (/^claude-(opus|sonnet)-4\.[6-9]/.test(id)) {
-		return { forceAdaptiveThinking: true };
+function getApi(id: string): CopilotApi {
+	if (/^claude-fable-/.test(id)) return "openai-completions";
+	if (/^claude-/.test(id)) return "anthropic-messages";
+	if (/^(gpt-5|grok-|mai-)/.test(id)) return "openai-responses";
+	if (/^(gpt-4|gemini|kimi)/.test(id)) return "openai-completions";
+
+	console.error(`${TAG} unknown model id family for "${id}"; defaulting api to openai-completions`);
+	return "openai-completions";
+}
+
+function getCompat(raw: RawModel): Record<string, boolean> {
+	const id = raw.id;
+
+	if (raw.capabilities?.supports?.adaptive_thinking === true || /^claude-(opus|sonnet)-(4\.[6-9]|[5-9])/.test(id)) {
+		const compat: Record<string, boolean> = { forceAdaptiveThinking: true };
+		if (/^claude-opus-(4\.[7-9]|[5-9])/.test(id)) compat.supportsTemperature = false;
+		return compat;
 	}
 
-	// Gemini / GPT-4 / Grok / Kimi / MAI: no streaming, no developer role, no reasoning effort.
-	if (/^(gemini|gpt-4|grok|kimi|mai)/.test(id)) {
+	if (/^(gemini|gpt-4|kimi|claude-fable)/.test(id)) {
 		return { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false };
 	}
 
-	// Haiku / Sonnet 4.5: eager tool streaming off.
-	if (/^claude-(haiku|sonnet)-4\.5/.test(id)) {
+	if (/^gpt-5/.test(id)) {
+		return { supportsOpenAIGrammarTools: true };
+	}
+
+	if (/^claude-(haiku|sonnet)-4(\.5)?$/.test(id)) {
 		return { supportsEagerToolInputStreaming: false };
 	}
 
 	return {};
 }
 
-/**
- * Derive the API protocol from a model id. Copilot proxies multiple upstream
- * providers behind one base URL, and each model family speaks a different
- * wire protocol.
- */
-function getApi(id: string): CopilotApi {
-	if (/^claude-/.test(id)) return "anthropic-messages";
-	if (/^gpt-5/.test(id)) return "openai-responses";
-	if (/^(gpt-4|gemini|grok|kimi|mai)/.test(id)) return "openai-completions";
+function getThinkingLevelMap(raw: RawModel): ProviderModelConfig["thinkingLevelMap"] {
+	const efforts = raw.capabilities?.supports?.reasoning_effort;
+	if (Array.isArray(efforts) && efforts.length > 0) {
+		const has = (value: string) => efforts.includes(value);
+		return {
+			off: has("off") ? "off" : null,
+			minimal: has("minimal") ? "minimal" : has("low") ? "low" : null,
+			low: has("low") ? "low" : undefined,
+			medium: has("medium") ? "medium" : undefined,
+			high: has("high") ? "high" : undefined,
+			xhigh: has("xhigh") ? "xhigh" : has("max") ? "max" : null,
+			max: has("max") ? "max" : null,
+		};
+	}
 
-	console.error(`${TAG} unknown model id family for "${id}"; defaulting api to openai-completions`);
-	return "openai-completions";
+	if (raw.id.startsWith("gpt-5")) {
+		return { off: null, minimal: "low", xhigh: "xhigh" };
+	}
+
+	if (/^(grok-|mai-)/.test(raw.id)) {
+		return { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null };
+	}
+
+	return undefined;
 }
 
-function toPiModel(raw: RawModel) {
+function toPiModel(raw: RawModel): ProviderModelConfig {
 	return {
 		id: raw.id,
 		name: raw.name ?? raw.id,
 		api: getApi(raw.id),
 		headers: { ...COPILOT_HEADERS },
-		compat: getCompat(raw.id),
+		compat: getCompat(raw),
 		reasoning: true,
-		thinkingLevelMap: raw.id.startsWith("gpt-5") ? { off: null, minimal: "low", xhigh: "xhigh" } : undefined,
-		input: ["text", "image"] as ("text" | "image")[],
+		thinkingLevelMap: getThinkingLevelMap(raw),
+		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: raw.capabilities?.limits?.max_context_window_tokens ?? 128000,
 		maxTokens: raw.capabilities?.limits?.max_output_tokens ?? 16000,
 	};
 }
 
+function toEligibleModels(rawModels: RawModel[]): ProviderModelConfig[] {
+	return rawModels.filter(isModelEligible).map(toPiModel);
+}
+
+async function discoverModels(auth: CopilotAuth, signal?: AbortSignal): Promise<ProviderModelConfig[] | undefined> {
+	const rawModels = await fetchModels(auth, signal);
+	if (!rawModels) return undefined;
+
+	const models = toEligibleModels(rawModels);
+	if (models.length === 0) {
+		console.error(`${TAG} /models returned no eligible models after filtering`);
+		return undefined;
+	}
+
+	lastModels = models;
+	return models;
+}
+
 export default async function (pi: ExtensionAPI) {
 	try {
-		const auth = await readCopilotAuth();
-		if (!auth) return;
+		const startupAuth = await readCopilotAuth();
+		const startupModels = startupAuth ? await discoverModels(startupAuth) : undefined;
 
-		const rawModels = await fetchModels(auth);
-		if (!rawModels) return;
-
-		const models = rawModels.filter(isModelEligible).map(toPiModel);
-		if (models.length === 0) {
-			console.error(`${TAG} /models returned no eligible models after filtering; skipping registerProvider`);
-			return;
-		}
-
-		// Re-registering the same OAuth provider is idempotent. Registering models
-		// here replaces Pi's static github-copilot catalog with the live account catalog.
 		pi.registerProvider("github-copilot", {
-			baseUrl: auth.baseUrl,
-			oauth: githubCopilotOAuthProvider,
-			models,
+			...(startupAuth ? { baseUrl: startupAuth.baseUrl } : {}),
+			...(startupModels ? { models: startupModels } : {}),
+			async refreshModels(context) {
+				// Return undefined (not []) when we have no list, so Pi keeps its built-in catalog.
+				if (context.signal.aborted || !context.allowNetwork) return lastModels;
+
+				let auth = authFromCredential(context.credential);
+				if (!auth && context.credential?.type === "oauth" && typeof context.credential.refresh === "string") {
+					const enterpriseUrl =
+						typeof context.credential.enterpriseUrl === "string" ? context.credential.enterpriseUrl : undefined;
+					const minted = await mintCopilotJwt(context.credential.refresh, enterpriseUrl, context.signal);
+					if (minted) {
+						auth = {
+							jwt: minted,
+							baseUrl: getGitHubCopilotBaseUrl(minted, enterpriseUrl),
+							enterpriseUrl,
+						};
+					}
+				}
+
+				if (!auth) return lastModels;
+
+				return (await discoverModels(auth, context.signal)) ?? lastModels;
+			},
 		});
 	} catch (err: unknown) {
 		console.error(`${TAG} unexpected error: ${err instanceof Error ? err.message : String(err)}`);
