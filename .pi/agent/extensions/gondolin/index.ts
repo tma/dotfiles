@@ -29,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RealFSProvider, VM } from "@earendil-works/gondolin";
+import { Agent, fetch as undiciFetch } from "undici";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
@@ -53,6 +54,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const GUEST_WORKSPACE = "/workspace";
+const GUEST_HOME = "/root";
 const DEFAULT_GREP_LIMIT = 100;
 const QEMU_BINARIES = ["qemu-system-aarch64", "qemu-system-x86_64"];
 const GUEST_SSH_CONFIG = "/root/.ssh/config";
@@ -87,6 +89,7 @@ type SshEgressConfig = {
 	allowedHosts: string[];
 	agent: string;
 	knownHostsFile?: string | string[];
+	readyTimeoutMs: number;
 	entries: SshHostEntry[];
 };
 
@@ -166,6 +169,10 @@ function loadSshEgressConfig(): SshEgressConfig | undefined {
 		allowedHosts: entries.map((entry) => entry.host),
 		agent,
 		knownHostsFile,
+		// The first connection after 1Password locks needs an approval click, and
+		// gondolin's 15s default expires before most people get there.
+		readyTimeoutMs:
+			typeof parsed.readyTimeoutMs === "number" && parsed.readyTimeoutMs > 0 ? parsed.readyTimeoutMs : 60_000,
 		entries,
 	};
 }
@@ -193,6 +200,45 @@ async function installGuestSshConfig(vm: VM, entries: SshHostEntry[]): Promise<v
 		`chmod 600 ${GUEST_SSH_CONFIG}`,
 	].join("\n");
 	await vm.exec(["/bin/sh", "-lc", script]);
+}
+
+/**
+ * undici 6 (gondolin's http bridge) picks up the global dispatcher, which on
+ * current Node versions is Node's own bundled undici. The two disagree on
+ * request internals, so every request with a body fails with "invalid
+ * content-length header" and the guest sees a 502. Handing gondolin a fetch
+ * bound to a matching undici 6 agent keeps both halves on the same version.
+ */
+function createMatchedFetch(): typeof undiciFetch {
+	const agent = new Agent();
+	return ((url: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
+		undiciFetch(url, { ...init, dispatcher: agent })) as typeof undiciFetch;
+}
+
+/**
+ * The guest inherits the host environment, so `HOME` points at a macOS path
+ * that does not exist in the VM. That breaks `git config --global` and
+ * anything else writing to the home directory. `SSH_AUTH_SOCK` is dropped for
+ * the same reason: it names a host socket the guest cannot reach, and SSH
+ * egress is proxied on the host anyway.
+ */
+function guestEnvOverrides(): Record<string, string> {
+	return {
+		HOME: GUEST_HOME,
+		USER: "root",
+		LOGNAME: "root",
+		SSH_AUTH_SOCK: "",
+	};
+}
+
+async function configureGuestGit(vm: VM): Promise<void> {
+	// The workspace is owned by the host uid, which git reads as someone else's
+	// repository unless we mark it safe.
+	await vm.exec([
+		"/bin/sh",
+		"-lc",
+		`git config --global --add safe.directory ${GUEST_WORKSPACE} 2>/dev/null || true`,
+	]);
 }
 
 function hasQemu(): boolean {
@@ -481,6 +527,10 @@ function sanitizeEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string>
 	return result;
 }
 
+function guestEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
+	return { ...(sanitizeEnv(env) ?? {}), ...guestEnvOverrides() };
+}
+
 function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
@@ -502,7 +552,7 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 			try {
 				const proc = vm.exec([shellPath, "-lc", command], {
 					cwd: guestCwd,
-					env: sanitizeEnv(env),
+					env: guestEnv(env),
 					signal: controller.signal,
 					stdout: "pipe",
 					stderr: "pipe",
@@ -548,12 +598,15 @@ export default function (pi: ExtensionAPI) {
 		const imageDir = fileURLToPath(new URL("./image", import.meta.url));
 		const created = await VM.create({
 			sessionLabel: `pi ${path.basename(localCwd)}`,
+			fetch: createMatchedFetch(),
+			env: guestEnvOverrides(),
 			...(existsSync(path.join(imageDir, "manifest.json")) ? { sandbox: { imagePath: imageDir } } : {}),
 			...(sshEgress
 				? {
 						ssh: {
 							allowedHosts: sshEgress.allowedHosts,
 							agent: sshEgress.agent,
+							upstreamReadyTimeoutMs: sshEgress.readyTimeoutMs,
 							...(sshEgress.knownHostsFile ? { knownHostsFile: sshEgress.knownHostsFile } : {}),
 						},
 					}
@@ -566,6 +619,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		const bashProbe = await created.exec(["/bin/sh", "-lc", "command -v bash || true"]);
 		shellPath = bashProbe.stdout.trim() || "/bin/sh";
+		await configureGuestGit(created);
 		if (sshEgress) await installGuestSshConfig(created, sshEgress.entries);
 		vm = created;
 		return created;
