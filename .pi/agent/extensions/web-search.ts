@@ -2,8 +2,8 @@
  * Web Search Extension
  *
  * Registers `web_search` and `web_read` tools.
- * - web_search: DuckDuckGo lite search
- * - web_read: Fetch URLs with smart extraction, Jina Reader fallback,
+ * - web_search: DuckDuckGo lite, with Marginalia and Hacker News as fallbacks
+ * - web_read: Fetch URLs with smart extraction, Wayback Machine fallback,
  *   GitHub raw file detection, and multi-URL support.
  *
  * No API keys, no Docker, no MCP.
@@ -17,11 +17,25 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const UA_BOT = "pi-coding-agent/1.0"; // DDG lite blocks browser UAs, wants bot-like agents
+const UA_BOT = "pi-coding-agent/1.0";
 const MAX_CHARS = 50_000;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
-const JINA_PREFIX = "https://r.jina.ai/";
+const WAYBACK_PREFIX = "https://web.archive.org/web/2/";
+const MARGINALIA_ENDPOINT = "https://api.marginalia.nu/public/search/";
+const HN_ENDPOINT = "https://hn.algolia.com/api/v1/search";
+const GOOGLE_NEWS_ENDPOINT = "https://news.google.com/rss/search";
+const WIKIPEDIA_ENDPOINT = "https://en.wikipedia.org/w/api.php";
+const DDG_ENDPOINT = "https://lite.duckduckgo.com/lite/";
+const DDG_ATTEMPTS = 2;
+// DuckDuckGo challenges by IP and keeps doing it for a while once it starts.
+// Retrying through that only digs the hole deeper, so back off for a bit.
+const DDG_COOLDOWN_MS = 10 * 60_000;
+// DuckDuckGo challenges some agents some of the time, and which one it dislikes
+// changes. Rotating through a few makes a retry more likely to land.
+const DDG_AGENTS = [UA_BOT, "Mozilla/5.0", UA];
+const SEARCH_TIMEOUT_MS = 8_000;
+const SEARCH_RESULT_LIMIT = 10;
 const MIN_CONTENT_LENGTH = 200; // below this, content is probably garbage
 const BLOCKED_HOSTNAMES = new Set([
 	"localhost",
@@ -56,18 +70,20 @@ export default function (pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, signal) {
-			// DDG blocks Node.js fetch (TLS fingerprinting). Use curl instead.
-			const html = await curlPost(
-				"https://lite.duckduckgo.com/lite/",
-				`q=${encodeURIComponent(params.query)}`,
-				signal,
-			);
-			const results = parseDDGLite(html);
+			const { results, provider, attempts } = await runSearch(params.query, signal);
 
 			if (results.length === 0) {
+				// Say which backend failed and how. "No results found" hides bot
+				// challenges and rate limits, which is what usually happened.
 				return {
-					content: [{ type: "text", text: "No results found." }],
-					details: { query: params.query, count: 0 },
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: `No results for "${params.query}".\n\n${formatAttempts(attempts)}`,
+						},
+					],
+					details: { query: params.query, count: 0, provider: null, attempts },
 				};
 			}
 
@@ -76,14 +92,29 @@ export default function (pi: ExtensionAPI) {
 				.join("\n\n");
 
 			return {
-				content: [{ type: "text", text }],
-				details: { query: params.query, count: results.length },
+				content: [{ type: "text", text: `Source: ${provider}\n\n${text}` }],
+				details: { query: params.query, count: results.length, provider, attempts },
 			};
 		},
 
 		renderResult(result, { expanded }, theme) {
-			const d = result.details as { query: string; count: number };
-			let line = theme.fg("success", `${d.count} results`) + theme.fg("muted", ` for "${d.query}"`);
+			const d = result.details as {
+				query: string;
+				count: number;
+				provider: string | null;
+				attempts: SearchAttempt[];
+			};
+			if (result.isError || d.count === 0) {
+				let line =
+					theme.fg("error", "No results") + theme.fg("muted", ` for "${d.query}"`);
+				if (expanded) {
+					line += "\n" + theme.fg("dim", formatAttempts(d.attempts ?? []));
+				}
+				return new Text(line, 0, 0);
+			}
+			let line =
+				theme.fg("success", `${d.count} results`) +
+				theme.fg("muted", ` for "${d.query}" via ${d.provider}`);
 			if (expanded) {
 				line += "\n" + theme.fg("dim", result.content?.[0]?.text ?? "");
 			}
@@ -97,7 +128,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Fetch a URL and extract its text content, stripping HTML tags. Supports multiple URLs. " +
 			"Only http(s) public web URLs are allowed; localhost, private IPs, and unsafe redirects are blocked. " +
-			"Automatically detects GitHub file URLs (serves raw content) and falls back to Jina Reader for JS-heavy or blocked pages.",
+			"Automatically detects GitHub file URLs (serves raw content) and falls back to the Wayback Machine for blocked pages.",
 		promptSnippet: "Fetch and read a web page as plain text",
 		parameters: Type.Object({
 			url: Type.String({ description: "URL to fetch" }),
@@ -112,7 +143,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(result, { expanded }, theme) {
-			const d = result.details as { url?: string; length?: number; source?: string };
+			const d = (result.details ?? {}) as { url?: string; length?: number; source?: string };
 			if (result.isError || d.length == null) {
 				const msg = result.content?.[0]?.text ?? "Failed to fetch";
 				let line = theme.fg("error", "Failed") + theme.fg("muted", d.url ? ` ${d.url}` : "");
@@ -134,10 +165,30 @@ export default function (pi: ExtensionAPI) {
 
 // ── URL reading with fallbacks ──────────────────────────────────────
 
-type ReadResult = { text: string; source: "direct" | "jina" | "github-raw" };
+type ReadResult = { text: string; source: "direct" | "wayback" | "github-raw" };
+type ReadAttempt = { stage: string; outcome: string };
+
+class ReadFailedError extends Error {
+	attempts: ReadAttempt[];
+	constructor(url: string, attempts: ReadAttempt[]) {
+		const detail = attempts.map((a) => `${a.stage}: ${a.outcome}`).join("; ");
+		super(`Failed to fetch ${url} (${detail})`);
+		this.name = "ReadFailedError";
+		this.attempts = attempts;
+	}
+}
+
+function describeError(error: unknown): string {
+	if (error instanceof Error) {
+		if (error.name === "AbortError" || error.message.includes("timeout")) return "timed out";
+		return error.message;
+	}
+	return String(error);
+}
 
 async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadResult> {
 	const inputUrl = assertSafeWebUrl(url).toString();
+	const attempts: ReadAttempt[] = [];
 
 	// GitHub file URLs → raw content
 	const rawUrl = githubToRaw(inputUrl);
@@ -154,13 +205,15 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 				text = truncate(text);
 				return { text, source: "github-raw" };
 			}
+			attempts.push({ stage: "github-raw", outcome: `HTTP ${res.status}` });
 		} catch (error) {
 			if (error instanceof UnsafeUrlError) throw error;
-			// Fall through to normal fetch
+			attempts.push({ stage: "github-raw", outcome: describeError(error) });
 		}
 	}
 
 	// Direct fetch
+	let thinContent: string | null = null;
 	try {
 		const res = await fetchSafe(inputUrl, signal);
 		if (res.ok) {
@@ -182,37 +235,45 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 			if (text.length >= MIN_CONTENT_LENGTH) {
 				return { text, source: "direct" };
 			}
-			// Otherwise fall through to Jina
+			// Hold on to it: thin content still beats failing outright.
+			thinContent = text;
+			attempts.push({ stage: "direct", outcome: `only ${text.length} chars of text` });
+		} else {
+			attempts.push({ stage: "direct", outcome: `HTTP ${res.status}` });
 		}
 	} catch (error) {
 		if (error instanceof UnsafeUrlError) throw error;
-		// Fall through to Jina
+		attempts.push({ stage: "direct", outcome: describeError(error) });
 	}
 
-	// Jina Reader fallback — handles JS-rendered, anti-bot, SPAs
+	// Wayback fallback for pages that block direct fetches. Key-less, but the
+	// Internet Archive rate limits hard, so treat it as best effort.
 	try {
-		const jinaUrl = assertSafeWebUrl(JINA_PREFIX + inputUrl, "Jina Reader URL");
-		await assertPublicDns(jinaUrl, "Jina Reader URL");
-		const res = await fetchWithTimeout(jinaUrl.toString(), {
-			headers: {
-				"User-Agent": UA,
-				Accept: "text/markdown",
-			},
+		const waybackUrl = assertSafeWebUrl(WAYBACK_PREFIX + inputUrl, "Wayback URL");
+		await assertPublicDns(waybackUrl, "Wayback URL");
+		const res = await fetchWithTimeout(waybackUrl.toString(), {
+			headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
 			signal,
 		});
 		if (res.ok) {
-			let text = await res.text();
-			text = truncate(text);
-			if (text.length > 0) {
-				return { text, source: "jina" };
+			const text = truncate(extractContent(await res.text()));
+			if (text.length >= MIN_CONTENT_LENGTH) {
+				return { text, source: "wayback" };
 			}
+			attempts.push({ stage: "wayback", outcome: `only ${text.length} chars of text` });
+		} else {
+			attempts.push({ stage: "wayback", outcome: `HTTP ${res.status}` });
 		}
 	} catch (error) {
 		if (error instanceof UnsafeUrlError) throw error;
-		// Nothing worked
+		attempts.push({ stage: "wayback", outcome: describeError(error) });
 	}
 
-	throw new Error(`Failed to fetch content from ${inputUrl} (tried direct + Jina Reader)`);
+	if (thinContent !== null && thinContent.length > 0) {
+		return { text: thinContent, source: "direct" };
+	}
+
+	throw new ReadFailedError(inputUrl, attempts);
 }
 
 // ── URL safety ──────────────────────────────────────────────────────
@@ -354,7 +415,7 @@ function githubToRaw(url: string): string | null {
 
 async function fetchWithTimeout(
 	url: string,
-	init?: RequestInit & { signal?: AbortSignal | null },
+	init?: RequestInit & { signal?: AbortSignal | null; timeoutMs?: number },
 ): Promise<Response> {
 	const controller = new AbortController();
 	const externalSignal = init?.signal;
@@ -366,10 +427,13 @@ async function fetchWithTimeout(
 		externalSignal.addEventListener("abort", () => controller.abort(externalSignal.reason), { once: true });
 	}
 
-	const timer = setTimeout(() => controller.abort(new Error("Fetch timeout")), FETCH_TIMEOUT_MS);
+	const timer = setTimeout(
+		() => controller.abort(new Error("Fetch timeout")),
+		init?.timeoutMs ?? FETCH_TIMEOUT_MS,
+	);
 
 	try {
-		const { signal: _externalSignal, ...fetchInit } = init ?? {};
+		const { signal: _externalSignal, timeoutMs: _timeoutMs, ...fetchInit } = init ?? {};
 		return await fetch(url, {
 			...fetchInit,
 			signal: controller.signal,
@@ -388,7 +452,11 @@ async function fetchSafe(url: string, signal?: AbortSignal | null): Promise<Resp
 		const safeUrl = assertSafeWebUrl(currentUrl, redirects === 0 ? "URL" : "redirect URL");
 		await assertPublicDns(safeUrl, redirects === 0 ? "URL" : "redirect URL");
 		const res = await fetchWithTimeout(safeUrl.toString(), {
-			headers: { "User-Agent": UA },
+			headers: {
+				"User-Agent": UA,
+				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+				"Accept-Language": "en-US,en;q=0.9",
+			},
 			signal,
 			redirect: "manual",
 		});
@@ -503,11 +571,16 @@ function formatJson(body: string): string {
 
 // ── curl helper (DDG blocks Node.js fetch via TLS fingerprinting) ───
 
-function curlPost(url: string, body: string, signal?: AbortSignal | null): Promise<string> {
+function curlPost(
+	url: string,
+	body: string,
+	userAgent: string,
+	signal?: AbortSignal | null,
+): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const proc = execFile(
 			"curl",
-			["-s", "-X", "POST", url, "-H", "Content-Type: application/x-www-form-urlencoded", "-H", `User-Agent: ${UA_BOT}`, "-d", body, "--max-time", String(FETCH_TIMEOUT_MS / 1000)],
+			["-s", "-X", "POST", url, "-H", "Content-Type: application/x-www-form-urlencoded", "-H", `User-Agent: ${userAgent}`, "-d", body, "--max-time", String(SEARCH_TIMEOUT_MS / 1000)],
 			{ encoding: "utf8", maxBuffer: 1024 * 1024 },
 			(err, stdout) => {
 				if (err) reject(new Error(`curl failed: ${err.message}`));
@@ -522,7 +595,7 @@ function curlPost(url: string, body: string, signal?: AbortSignal | null): Promi
 	});
 }
 
-// ── DuckDuckGo parsing ──────────────────────────────────────────────
+// ── Search providers ────────────────────────────────────────────────
 
 interface SearchResult {
 	title: string;
@@ -530,12 +603,205 @@ interface SearchResult {
 	snippet: string;
 }
 
+type SearchAttempt = { provider: string; outcome: string };
+
+type SearchProvider = {
+	name: string;
+	run: (query: string, signal?: AbortSignal | null) => Promise<SearchResult[]>;
+};
+
+class SearchBlockedError extends Error {}
+
+// All key-less. DuckDuckGo carries general queries; the rest are narrower
+// indexes that answer when DuckDuckGo hands back a challenge. Which fallback
+// goes first depends on whether the query is asking about something recent.
+const PRIMARY_PROVIDER: SearchProvider = { name: "duckduckgo", run: searchDuckDuckGo };
+const MARGINALIA: SearchProvider = { name: "marginalia", run: searchMarginalia };
+const GOOGLE_NEWS: SearchProvider = { name: "google news", run: searchGoogleNews };
+const HACKER_NEWS: SearchProvider = { name: "hacker news", run: searchHackerNews };
+const WIKIPEDIA: SearchProvider = { name: "wikipedia", run: searchWikipedia };
+
+const RECENCY_PATTERN =
+	/\b(news|today|yesterday|latest|recent|release[ds]?|announce[ds]?|outage|incident|breach|launch(?:ed|es)?|update[ds]?|20[2-9]\d)\b/i;
+
+function providersFor(query: string): SearchProvider[] {
+	return RECENCY_PATTERN.test(query)
+		? [PRIMARY_PROVIDER, GOOGLE_NEWS, MARGINALIA, HACKER_NEWS, WIKIPEDIA]
+		: [PRIMARY_PROVIDER, MARGINALIA, WIKIPEDIA, HACKER_NEWS, GOOGLE_NEWS];
+}
+
+async function runSearch(
+	query: string,
+	signal?: AbortSignal | null,
+): Promise<{ results: SearchResult[]; provider: string | null; attempts: SearchAttempt[] }> {
+	const attempts: SearchAttempt[] = [];
+
+	for (const provider of providersFor(query)) {
+		try {
+			const results = await provider.run(query, signal);
+			if (results.length > 0) {
+				attempts.push({ provider: provider.name, outcome: `${results.length} results` });
+				return { results, provider: provider.name, attempts };
+			}
+			attempts.push({ provider: provider.name, outcome: "no results" });
+		} catch (error) {
+			attempts.push({
+				provider: provider.name,
+				outcome: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	return { results: [], provider: null, attempts };
+}
+
+function formatAttempts(attempts: SearchAttempt[]): string {
+	const lines = attempts.map((a) => `- ${a.provider}: ${a.outcome}`).join("\n");
+	return `Tried:\n${lines}`;
+}
+
+let ddgBlockedUntil = 0;
+
+async function searchDuckDuckGo(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
+	const now = Date.now();
+	if (now < ddgBlockedUntil) {
+		const minutes = Math.ceil((ddgBlockedUntil - now) / 60_000);
+		throw new SearchBlockedError(`in cooldown after a bot challenge, ${minutes} min left`);
+	}
+
+	// DuckDuckGo blocks Node's fetch on TLS fingerprint, so shell out to curl.
+	let lastError: Error | null = null;
+	for (let attempt = 0; attempt < DDG_ATTEMPTS; attempt++) {
+		if (attempt > 0) await delay(1_500);
+		const html = await curlPost(
+			DDG_ENDPOINT,
+			`q=${encodeURIComponent(query)}`,
+			DDG_AGENTS[attempt % DDG_AGENTS.length],
+			signal,
+		);
+		if (isDDGChallenge(html)) {
+			lastError = new SearchBlockedError("bot challenge, backing off for 10 min");
+			continue;
+		}
+		ddgBlockedUntil = 0;
+		return parseDDGLite(html);
+	}
+	ddgBlockedUntil = Date.now() + DDG_COOLDOWN_MS;
+	throw lastError ?? new Error("no response");
+}
+
+function isDDGChallenge(html: string): boolean {
+	const head = html.slice(0, 4000).toLowerCase();
+	return head.includes("challenge") || head.includes("captcha");
+}
+
+async function searchMarginalia(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
+	const res = await fetchWithTimeout(MARGINALIA_ENDPOINT + encodeURIComponent(query), {
+		headers: { Accept: "application/json", "User-Agent": UA_BOT },
+		signal,
+		timeoutMs: SEARCH_TIMEOUT_MS,
+	});
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const body = (await res.json()) as {
+		results?: Array<{ url?: string; title?: string; description?: string }>;
+	};
+	return (body.results ?? [])
+		.slice(0, SEARCH_RESULT_LIMIT)
+		.filter((r) => r.url && r.title)
+		.map((r) => ({
+			title: stripTags(r.title ?? ""),
+			url: r.url ?? "",
+			snippet: stripTags(r.description ?? ""),
+		}));
+}
+
+async function searchHackerNews(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
+	const url = `${HN_ENDPOINT}?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${SEARCH_RESULT_LIMIT}`;
+	const res = await fetchWithTimeout(url, {
+		headers: { Accept: "application/json", "User-Agent": UA_BOT },
+		signal,
+		timeoutMs: SEARCH_TIMEOUT_MS,
+	});
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const body = (await res.json()) as {
+		hits?: Array<{ title?: string; url?: string; objectID?: string; points?: number; num_comments?: number }>;
+	};
+	return (body.hits ?? [])
+		.filter((hit) => hit.title)
+		.map((hit) => ({
+			title: stripTags(hit.title ?? ""),
+			url: hit.url ?? `https://news.ycombinator.com/item?id=${hit.objectID}`,
+			snippet: `Hacker News story, ${hit.points ?? 0} points, ${hit.num_comments ?? 0} comments: https://news.ycombinator.com/item?id=${hit.objectID}`,
+		}));
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function searchGoogleNews(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
+	const url = `${GOOGLE_NEWS_ENDPOINT}?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+	const res = await fetchWithTimeout(url, {
+		headers: { Accept: "application/rss+xml", "User-Agent": UA },
+		signal,
+		timeoutMs: SEARCH_TIMEOUT_MS,
+	});
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const xml = await res.text();
+	const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+	return items.slice(0, SEARCH_RESULT_LIMIT).flatMap((item) => {
+		const title = readXmlTag(item, "title");
+		const link = readXmlTag(item, "link");
+		if (!title || !link) return [];
+		const date = readXmlTag(item, "pubDate");
+		const source = readXmlTag(item, "source");
+		return [
+			{
+				title,
+				url: link,
+				snippet: [source, date].filter(Boolean).join(", "),
+			},
+		];
+	});
+}
+
+async function searchWikipedia(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
+	const url = `${WIKIPEDIA_ENDPOINT}?action=query&list=search&format=json&srlimit=${SEARCH_RESULT_LIMIT}&srsearch=${encodeURIComponent(query)}`;
+	const res = await fetchWithTimeout(url, {
+		headers: { Accept: "application/json", "User-Agent": UA_BOT },
+		signal,
+		timeoutMs: SEARCH_TIMEOUT_MS,
+	});
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const body = (await res.json()) as {
+		query?: { search?: Array<{ title?: string; snippet?: string }> };
+	};
+	return (body.query?.search ?? [])
+		.filter((hit) => hit.title)
+		.map((hit) => ({
+			title: hit.title ?? "",
+			url: `https://en.wikipedia.org/wiki/${encodeURIComponent((hit.title ?? "").replace(/ /g, "_"))}`,
+			snippet: stripTags(hit.snippet ?? ""),
+		}));
+}
+
+function readXmlTag(xml: string, tag: string): string {
+	const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
+	if (!match?.[1]) return "";
+	const raw = match[1].replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "");
+	return stripTags(raw);
+}
+
+// ── DuckDuckGo parsing ──────────────────────────────────────────────
+
 function parseDDGLite(html: string): SearchResult[] {
 	const results: SearchResult[] = [];
 
+	// DuckDuckGo mixes quote styles in this markup and has changed attribute
+	// order before, so accept either.
 	const linkRe =
-		/<a[^>]+class='result-link'[^>]*href="([^"]+)"[^>]*>\s*([\s\S]*?)\s*<\/a>|<a[^>]+href="([^"]+)"[^>]*class='result-link'[^>]*>\s*([\s\S]*?)\s*<\/a>/gi;
-	const snippetRe = /<td[^>]+class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+		/<a[^>]+class=['"]result-link['"][^>]*href="([^"]+)"[^>]*>\s*([\s\S]*?)\s*<\/a>|<a[^>]+href="([^"]+)"[^>]*class=['"]result-link['"][^>]*>\s*([\s\S]*?)\s*<\/a>/gi;
+	const snippetRe = /<td[^>]+class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi;
 
 	const links: { url: string; title: string }[] = [];
 	let m: RegExpExecArray | null;
@@ -557,13 +823,26 @@ function parseDDGLite(html: string): SearchResult[] {
 		results.push({
 			title: links[i].title,
 			url: links[i].url,
-			snippet: snippets[i] ?? "",
+			snippet: decodeEntities(snippets[i] ?? ""),
 		});
 	}
 
-	return results;
+	return results.slice(0, SEARCH_RESULT_LIMIT);
 }
 
 function stripTags(html: string): string {
-	return html.replace(/<[^>]*>/g, "");
+	return decodeEntities(html.replace(/<[^>]*>/g, ""));
+}
+
+function decodeEntities(text: string): string {
+	return text
+		.replace(/&nbsp;/g, " ")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#x27;|&#39;/g, "'")
+		.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+		.replace(/&amp;/g, "&")
+		.replace(/\s+/g, " ")
+		.trim();
 }
