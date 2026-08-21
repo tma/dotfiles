@@ -2,9 +2,10 @@
  * Gondolin Tool Routing Example
  *
  * Runs pi's built-in tools inside a local Gondolin micro-VM. The host working
- * directory is mounted at /workspace in the guest. File changes under
- * /workspace write through to the host; other guest filesystem changes are
- * isolated to the VM.
+ * directory is mounted at /workspace in the guest. Host skill trees such as
+ * ~/.agents are also mounted at their host paths so /skill commands can load.
+ * File changes under those mounts write through to the host; other guest
+ * filesystem changes are isolated to the VM.
  *
  * Setup:
  *   cd packages/coding-agent/examples/extensions/gondolin
@@ -24,7 +25,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -287,6 +288,91 @@ function isInsideHostPath(root: string, value: string): boolean {
 	return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
+function resolveHostPath(hostPath: string): string {
+	try {
+		return realpathSync(hostPath);
+	} catch {
+		return hostPath;
+	}
+}
+
+function collectSymlinkTargets(root: string, depth = 0): string[] {
+	if (depth > 5) return [];
+	let entries;
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const targets: string[] = [];
+	for (const entry of entries) {
+		const full = path.join(root, entry.name);
+		if (entry.isSymbolicLink()) {
+			const resolved = resolveHostPath(full);
+			if (resolved !== full) targets.push(resolved);
+			continue;
+		}
+		if (entry.isDirectory()) targets.push(...collectSymlinkTargets(full, depth + 1));
+	}
+	return targets;
+}
+
+function hostMountRoot(resolvedPath: string): string {
+	let current = resolvedPath;
+	try {
+		if (!statSync(current).isDirectory()) current = path.dirname(current);
+	} catch {
+		current = path.dirname(current);
+	}
+	const home = os.homedir();
+	let cursor = current;
+	while (cursor !== home && cursor !== path.dirname(cursor)) {
+		if (existsSync(path.join(cursor, ".git"))) return cursor;
+		cursor = path.dirname(cursor);
+	}
+	if (isInsideHostPath(home, current)) {
+		const top = path.relative(home, current).split(path.sep)[0];
+		if (top) return path.join(home, top);
+	}
+	return current;
+}
+
+function resolvedTreeRoot(hostPath: string): string {
+	const self = resolveHostPath(hostPath);
+	if (self !== hostPath) return self;
+	const targets = collectSymlinkTargets(hostPath);
+	if (targets.length === 0) return hostPath;
+	const candidate = path.join(hostMountRoot(targets[0]), path.basename(hostPath));
+	if (existsSync(candidate) && resolveHostPath(candidate) !== hostPath) return candidate;
+	return hostPath;
+}
+
+function extraHostMounts(localCwd: string): Record<string, RealFSProvider> {
+	const mounts: Record<string, RealFSProvider> = {};
+
+	function addMount(guestPath: string, hostPath: string): void {
+		if (!existsSync(hostPath)) return;
+		const key = toPosix(guestPath);
+		if (key === GUEST_WORKSPACE || mounts[key]) return;
+		mounts[key] = new RealFSProvider(hostPath);
+	}
+
+	// Host-absolute project paths, including skill symlink targets.
+	addMount(localCwd, localCwd);
+
+	for (const skillTree of [
+		path.join(os.homedir(), ".agents"),
+		path.join(os.homedir(), ".pi", "agent", "skills"),
+	]) {
+		addMount(skillTree, resolvedTreeRoot(skillTree));
+		for (const target of collectSymlinkTargets(skillTree)) {
+			const root = hostMountRoot(target);
+			addMount(root, root);
+		}
+	}
+	return mounts;
+}
+
 function hostPathToGuest(localCwd: string, hostPath: string): string {
 	const relativePath = path.relative(localCwd, hostPath);
 	if (!isInsideHostPath(localCwd, hostPath)) return toPosix(hostPath);
@@ -297,6 +383,8 @@ function toGuestPath(localCwd: string, inputPath: string): string {
 	const trimmed = stripAtPrefix(inputPath.trim());
 	if (!trimmed) return GUEST_WORKSPACE;
 	if (path.isAbsolute(trimmed)) {
+		const resolved = resolveHostPath(trimmed);
+		if (isInsideHostPath(localCwd, resolved)) return hostPathToGuest(localCwd, resolved);
 		if (isInsideHostPath(localCwd, trimmed)) return hostPathToGuest(localCwd, trimmed);
 		return path.posix.resolve("/", toPosix(trimmed));
 	}
@@ -597,6 +685,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const localCwd = process.cwd();
+	const hostMounts = extraHostMounts(localCwd);
 	const localRead = createReadTool(localCwd);
 	const localWrite = createWriteTool(localCwd);
 	const localEdit = createEditTool(localCwd);
@@ -631,6 +720,7 @@ export default function (pi: ExtensionAPI) {
 			vfs: {
 				mounts: {
 					[GUEST_WORKSPACE]: new RealFSProvider(localCwd),
+					...hostMounts,
 				},
 			},
 		});
@@ -675,6 +765,7 @@ export default function (pi: ExtensionAPI) {
 					`Gondolin VM: ${activeVm.id}`,
 					`Host workspace: ${localCwd}`,
 					`Guest workspace: ${GUEST_WORKSPACE}`,
+					`Host mounts: ${Object.keys(hostMounts).join(", ") || "none"}`,
 					`Shell: ${shellPath}`,
 					sshEgress
 						? `SSH egress: ${sshEgress.allowedHosts.join(", ")} (host agent ${sshEgress.agent})`
