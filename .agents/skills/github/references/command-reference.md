@@ -42,6 +42,29 @@ gh issue edit 123 --repo owner/repo --add-assignee @me
 
 ## Pull requests
 
+Before drafting a PR body, inspect the repository for a pull request template. Check the root, `docs/`, and `.github/` for a case-insensitive filename match on `pull_request_template.md`, plus `.github/PULL_REQUEST_TEMPLATE/` for multiple templates. Use the local checkout when available. For a remote repository, list candidate directories with `gh api repos/owner/repo/contents/<path>` and match returned names case-insensitively instead of probing one filename casing. Preserve required headings, checklists, and ordering.
+
+Draft PR descriptions with the rationale first:
+
+```markdown
+## Why
+
+Explain the problem, intended outcome, or risk that makes this PR
+necessary. State why the current behavior is insufficient.
+
+## Change
+
+Summarize the implementation after the motivation is clear.
+
+## Verification
+
+Describe the checks that support the change.
+```
+
+Use this scaffold only when the repository does not provide a fixed template. Do not lead with a summary of files or implementation details. When a repository template fixes the order, make its first substantive prose explain why before how.
+
+PR titles follow the same why-first order as commit subjects: start with the intended outcome, problem, or avoided risk, then name the mechanism when useful. This keeps PR lists understandable and preserves the rationale when a squash merge uses the PR title as its commit subject.
+
 ```bash
 # List PRs
 gh pr list --repo owner/repo
@@ -51,7 +74,10 @@ gh pr view 123 --repo owner/repo --json title,body,headRefName,baseRefName,files
 gh pr diff 123 --repo owner/repo
 
 # Create a PR
-gh pr create --title "Title" --body-file /tmp/pr-body.md --base main
+gh pr create \
+  --title "Prevent timeout errors by bounding retries" \
+  --body-file /tmp/pr-body.md \
+  --base main
 
 # Review comments
 gh api repos/owner/repo/pulls/123/comments \

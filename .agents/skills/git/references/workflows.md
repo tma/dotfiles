@@ -60,7 +60,9 @@ Use `git add -p` when a single file contains changes belonging to different topi
 
 Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile. The git skill owns the format; the writing-voice skill owns the tone.
 
-Write messages that encode intent and context, not just what changed. Someone reading the log should understand why without opening the diff.
+Lead every message with why the commit exists: the intended outcome, the problem being solved, or the risk being avoided. Put implementation details second. Someone reading the log should understand why without opening the diff.
+
+Prefer subjects shaped like `<intended outcome> by <mechanism>`. If the why cannot fit clearly in the subject, state it in the first body paragraph before explaining the implementation. Never open with filenames, code mechanics, or a change list.
 
 For multi-line messages, draft the message first and use:
 
@@ -73,25 +75,28 @@ Avoid composing non-trivial commit messages directly inside `git commit -m`.
 Format:
 
 ```text
-<concise summary of what and why>
+<imperative intended outcome, followed by the mechanism when useful>
 
-Optional body for complex changes:
-- Additional context
-- Trade-offs or alternatives considered
-- Related issues or links
+<why this change is needed and why it matters, required when the
+subject does not make the why clear>
+
+Optional implementation detail:
+<how the change achieves that outcome, including trade-offs if relevant>
+
+<related issues or links>
 ```
 
 Good:
 
 ```text
-add PID scoping to status files to prevent multi-session collisions
+prevent multi-session collisions by scoping status files
 
 Multiple pi sessions in the same directory were overwriting each
 other's stats and todos files. Scope filenames by process.pid and
 pass PI_PID environment variable to the status panel shell script.
 ```
 
-Bad:
+Bad because they are too vague:
 
 ```text
 update files
@@ -100,8 +105,17 @@ changes
 WIP
 ```
 
+Bad because it leads with the mechanism and omits why:
+
+```text
+scope status files by PID
+```
+
+Prefer `prevent multi-session collisions by scoping status files`.
+
 Rules:
 
+- Lead with the intended outcome, problem, or avoided risk; put implementation details second.
 - Use imperative mood: `add`, `fix`, `refactor`; not `added` or `fixes`.
 - Keep the first line under 72 characters.
 - Do not put a period at the end of the summary line.

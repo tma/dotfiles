@@ -40,7 +40,14 @@ When multiple files were changed across different topics, review the full diff, 
 
 When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit.
 
-Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile. Write messages that encode intent and context, not just what changed.
+Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile.
+
+Every commit message must lead with **why the commit exists**: the problem it solves, the outcome it enables, or the risk it avoids. Put that intent before implementation details:
+
+- Start the subject with the intended outcome or motivation, then name the mechanism if useful.
+- If the why does not fit clearly in the subject, make it the first paragraph of the body.
+- Do not lead with filenames, code mechanics, or a list of changes.
+- A reader should understand why the commit matters without opening the diff.
 
 Commit message rules:
 
@@ -74,7 +81,7 @@ Never force push to `main` or shared branches. Never force push a branch with an
 ## Rules
 
 1. **Commit by topic** — one logical change per commit; never mix unrelated changes.
-2. **Descriptive messages** — encode intent and context, not just what changed.
+2. **Lead with why** — state the intended outcome, problem, or avoided risk before implementation details.
 3. **Pull with rebase** — use `git pull --rebase` unless an open, non-draft PR makes a merge pull safer.
 4. **Commit merges first** — after resolving merge conflicts, commit the merge before adding new changes.
 5. **Never force push shared branches** — use `--force-with-lease` on personal branches only.

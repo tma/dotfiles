@@ -45,7 +45,7 @@ Before drafting or publishing user-visible prose on my behalf, load and apply:
 
 This applies to:
 
-- GitHub PR bodies
+- GitHub PR titles and bodies
 - GitHub issue bodies and comments
 - GitHub PR review comments
 - GitHub PR comments
@@ -55,6 +55,15 @@ This applies to:
 
 Draft the text first, apply the writing-voice final checklist, then publish it.
 Do not compose polished prose directly inside a `gh` or `git commit -m` command.
+
+Git and GitHub prose must lead with why:
+
+- Commit messages and PR titles start with the intended outcome, problem being
+  solved, or risk being avoided; implementation details come second.
+- PR descriptions make the rationale the first substantive focus. Use `## Why`
+  as the first substantive heading unless a repository template fixes the order.
+- Preserve repository PR templates. When their order is fixed, make the first
+  substantive prose explain why before how.
 
 ## Approval before publishing or destructive actions
 
@@ -80,7 +89,7 @@ Before committing:
 - inspect `git status`
 - inspect the relevant diff
 - stage only the files for that topic
-- write a commit message with intent/context, not just what changed
+- write a commit message that leads with the intended outcome, problem, or risk
 
 Do not amend, rebase, squash, or force-push a branch with an open non-draft PR.
 
