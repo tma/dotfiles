@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pi status panel — runs in a cmux right split pane
-# Shows modified files, git status, and session stats
+# Shows session stats, active subagents, todos, and git status
 # Rebuilds data every second and shows a single Session state indicator
 # Requires bash 4+ for associative arrays (brew install bash)
 
@@ -56,6 +56,7 @@ SCROLL_STEP=3
 PANEL_PAD_X="${PI_STATUS_PANEL_PAD_X:-1}"
 PANEL_PAD_BOTTOM="${PI_STATUS_PANEL_PAD_BOTTOM:-3}"
 [[ "$PANEL_PAD_BOTTOM" =~ ^[0-9]+$ ]] || PANEL_PAD_BOTTOM=3
+[[ "$PANEL_PAD_BOTTOM" -gt 20 ]] && PANEL_PAD_BOTTOM=20
 PANEL_BG="${PI_STATUS_PANEL_BG:-#171a21}"
 # Stats file scoped per project directory (matches notify.ts)
 if [[ -z "$PI_SESSION_DIR" ]]; then
@@ -64,9 +65,12 @@ if [[ -z "$PI_SESSION_DIR" ]]; then
 fi
 PI_PID="${PI_PID:-$$}"
 STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
+SUBAGENTS_FILE="${PI_SESSION_DIR}/${PI_PID}-subagents.json"
 PANEL_TMPDIR="${TMPDIR:-/tmp}"
 [[ -d "$PANEL_TMPDIR" && -w "$PANEL_TMPDIR" ]] || PANEL_TMPDIR="/tmp"
-TEMPLATE_FILE="${PANEL_TMPDIR}/pi-${PI_PID}-status-panel-template-$$"
+PANEL_WORKDIR=$(mktemp -d "${PANEL_TMPDIR%/}/pi-${PI_PID}-status-panel.XXXXXX") || exit 1
+chmod 700 "$PANEL_WORKDIR" 2>/dev/null || true
+TEMPLATE_FILE="${PANEL_WORKDIR}/template"
 TEMPLATE_BUILD_PID=""
 
 # Style this tmux pane directly so reopened panels get the same background even
@@ -95,6 +99,7 @@ cleanup() {
     TEMPLATE_BUILD_PID=""
   fi
   rm -f "$TEMPLATE_FILE" "$TEMPLATE_FILE.tmp" 2>/dev/null || true
+  rmdir "$PANEL_WORKDIR" 2>/dev/null || true
   if [[ $PANEL_MODE_ACTIVE -eq 1 ]]; then
     printf '\033[?1006l\033[?1000l'
     [[ -n "$ORIGINAL_STTY" ]] && stty "$ORIGINAL_STTY" 2>/dev/null || true
@@ -206,6 +211,59 @@ build_panel_template() {
       [[ "$turns" != "0" ]] && tok_line+="  ${turns} turn$([[ "$turns" != "1" ]] && echo 's')"
       tok_line+="${RESET}"
       p "$tok_line"
+    fi
+  fi
+  p ""
+
+  # ── Background subagents ─────────────────────────────
+  if [[ -f "$SUBAGENTS_FILE" ]]; then
+    local subagents_json subagent_count
+    subagents_json=$(cat "$SUBAGENTS_FILE" 2>/dev/null)
+    subagent_count=$(echo "$subagents_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('active',[])))" 2>/dev/null || echo "0")
+    if [[ "$subagent_count" -gt 0 ]]; then
+      hr
+      p " ${BOLD}Agents${RESET} ${PALE_CYAN}${subagent_count} active${RESET}"
+      hr
+      p ""
+
+      local subagent_lines
+      subagent_lines=$(echo "$subagents_json" | python3 -c "
+import sys,json,textwrap
+width=max(20, int(sys.argv[1]))
+data=json.load(sys.stdin)
+reset='\033[0m'
+dim='\033[2m'
+cyan='\033[38;5;159m'
+green='\033[38;5;114m'
+yellow='\033[38;5;228m'
+red='\033[38;5;217m'
+for ji, job in enumerate(data.get('active', [])):
+    jid=str(job.get('id',''))
+    if len(jid) > 22: jid=jid[:10]+'…'+jid[-8:]
+    print(f' {cyan}●{reset} {jid}')
+    for agent in job.get('agents', []):
+        state=str(agent.get('state','running'))
+        icon={'queued':'○','running':'▸','completed':'✓','failed':'✗','aborted':'■'}.get(state,'○')
+        color={'queued':dim,'running':yellow,'completed':green,'failed':red,'aborted':red}.get(state,dim)
+        name=' '.join(str(agent.get('name','agent')).split())
+        model=' '.join(str(agent.get('model','pending')).split())
+        thinking=' '.join(str(agent.get('thinkingLevel','pending')).split())
+        label=f'{name} · {model} · {thinking}'
+        wrapped=textwrap.wrap(label, width=max(8,width-5), break_long_words=False, break_on_hyphens=False) or ['']
+        print(f'   {color}{icon}{reset} {wrapped[0]}')
+        for line in wrapped[1:2]:
+            print(f'     {dim}{line}{reset}')
+        activity=' '.join(str(agent.get('activity','')).split())
+        if activity:
+            for line in textwrap.wrap(activity, width=max(8,width-6), break_long_words=False, break_on_hyphens=False)[:2]:
+                print(f'     {dim}{line}{reset}')
+    if ji < len(data.get('active', []))-1:
+        print('')
+" "$content_cols" 2>/dev/null)
+      while IFS= read -r aline; do
+        p "$aline"
+      done <<< "$subagent_lines"
+      p ""
     fi
   fi
   p ""

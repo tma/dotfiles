@@ -207,6 +207,9 @@ function listFiles(files: Set<string>, limit: number = 3): string {
 // ── extension ────────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	const disableChildUi = ["1", "true", "yes"].includes(process.env.PI_DISABLE_MUX_UI?.toLowerCase() ?? "");
+	if (disableChildUi) return;
+
 	pi.events.on(attentionNotificationEvent, (event: AttentionNotification) => {
 		notify(event.title, event.body, event.subtitle);
 		if (event.logMessage) {

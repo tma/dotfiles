@@ -30,7 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RealFSProvider, VM } from "@earendil-works/gondolin";
 import { Agent, fetch as undiciFetch } from "undici";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
 	createBashTool,
@@ -62,6 +62,18 @@ const ONE_PASSWORD_AGENT = path.join(
 	os.homedir(),
 	"Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
 );
+
+export interface GondolinToolProvider {
+	readonly hostCwd: string;
+	readonly tools: readonly ToolDefinition<any>[];
+}
+
+let activeToolProvider: GondolinToolProvider | undefined;
+
+/** Returns tools bound to the parent Gondolin VM and its authoritative host workspace. */
+export function getGondolinToolProvider(): GondolinToolProvider | undefined {
+	return activeToolProvider;
+}
 
 /**
  * Optional SSH egress config, kept outside this repository because it names
@@ -591,6 +603,7 @@ export default function (pi: ExtensionAPI) {
 
 	let vm: VM | undefined;
 	let vmStarting: Promise<VM> | undefined;
+	let toolProvider: GondolinToolProvider | undefined;
 	let shellPath = "/bin/sh";
 	const sshEgress = loadSshEgressConfig();
 
@@ -643,6 +656,8 @@ export default function (pi: ExtensionAPI) {
 		const activeVm = vm;
 		vm = undefined;
 		vmStarting = undefined;
+		if (activeToolProvider === toolProvider) activeToolProvider = undefined;
+		toolProvider = undefined;
 		if (!activeVm) return;
 		await activeVm.close();
 	});
@@ -666,79 +681,78 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		...localRead,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createReadTool(GUEST_WORKSPACE, {
-				operations: createGondolinReadOps(activeVm, localCwd),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+	const gondolinTools: ToolDefinition<any>[] = [
+		{
+			...localRead,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createReadTool(GUEST_WORKSPACE, {
+					operations: createGondolinReadOps(activeVm, localCwd),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localWrite,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createWriteTool(GUEST_WORKSPACE, {
-				operations: createGondolinWriteOps(activeVm, localCwd),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+		{
+			...localWrite,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createWriteTool(GUEST_WORKSPACE, {
+					operations: createGondolinWriteOps(activeVm, localCwd),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localEdit,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createEditTool(GUEST_WORKSPACE, {
-				operations: createGondolinEditOps(activeVm, localCwd),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+		{
+			...localEdit,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createEditTool(GUEST_WORKSPACE, {
+					operations: createGondolinEditOps(activeVm, localCwd),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localBash,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createBashTool(GUEST_WORKSPACE, {
-				operations: createGondolinBashOps(activeVm, localCwd, shellPath),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+		{
+			...localBash,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createBashTool(GUEST_WORKSPACE, {
+					operations: createGondolinBashOps(activeVm, localCwd, shellPath),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localLs,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createLsTool(GUEST_WORKSPACE, {
-				operations: createGondolinLsOps(activeVm, localCwd),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+		{
+			...localLs,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createLsTool(GUEST_WORKSPACE, {
+					operations: createGondolinLsOps(activeVm, localCwd),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localFind,
-		async execute(id, params, signal, onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			const tool = createFindTool(GUEST_WORKSPACE, {
-				operations: createGondolinFindOps(activeVm, localCwd),
-			});
-			return tool.execute(id, params, signal, onUpdate);
+		{
+			...localFind,
+			async execute(id, params: any, signal, onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				const tool = createFindTool(GUEST_WORKSPACE, {
+					operations: createGondolinFindOps(activeVm, localCwd),
+				});
+				return tool.execute(id, params, signal, onUpdate);
+			},
 		},
-	});
-
-	pi.registerTool({
-		...localGrep,
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const activeVm = await ensureVm(ctx);
-			return executeGondolinGrep(activeVm, localCwd, params, signal);
+		{
+			...localGrep,
+			async execute(_id, params: any, signal, _onUpdate, ctx) {
+				const activeVm = await ensureVm(ctx);
+				return executeGondolinGrep(activeVm, localCwd, params, signal);
+			},
 		},
-	});
+	];
+	toolProvider = { hostCwd: localCwd, tools: gondolinTools };
+	activeToolProvider = toolProvider;
+	for (const tool of gondolinTools) pi.registerTool(tool);
 
 	pi.on("user_bash", async (_event, ctx) => {
 		const activeVm = await ensureVm(ctx);

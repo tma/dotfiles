@@ -110,11 +110,12 @@ export default function (pi: ExtensionAPI) {
 				? `Analyze the codebase and create a structured implementation plan for this task. Write the plan to ${planPath}.
 
 ## Instructions
-1. First, explore the codebase to understand the architecture, patterns, and relevant code (use read, grep, find, ls directly — do NOT delegate this).
-2. Then write the plan file to ${planPath} using the exact format below.
-3. Treat ${planPath} as local working state only. It must never be committed.
-4. The plan must be detailed enough that any agent can execute a task from it without additional context.
-5. Record all considerations, trade-offs, and rejected alternatives — the plan is documentation.${existingNote}
+1. Coordinate this work rather than doing a substantial planning pass in the main session.
+2. Launch an asynchronous scout/planner workflow to explore the codebase and produce the plan. Use a writer child only to save the resulting plan to ${planPath}.
+3. Return control immediately after launch; never call bg_wait. Inspect status and the saved plan on a later turn or completion notification.
+4. Treat ${planPath} as local working state only. It must never be committed.
+5. The plan must be detailed enough that any agent can execute a task from it without additional context.
+6. Record all considerations, trade-offs, and rejected alternatives — the plan is documentation.${existingNote}
 
 ## Plan format
 ${PLAN_FORMAT}
@@ -124,11 +125,12 @@ ${task}`
 				: `Formalize the plan we've been discussing into a structured plan file. Write it to ${planPath}.
 
 ## Instructions
-1. Review our conversation and extract the plan we've been working on.
-2. If needed, explore the codebase for additional context (file paths, patterns, current behavior).
-3. Write the plan file to ${planPath} capturing ALL intentions, considerations, and decisions from our discussion.
-4. Treat ${planPath} as local working state only. It must never be committed.
-5. Each task must be self-contained — an agent should be able to implement it from the plan alone.${existingNote}
+1. Coordinate this work rather than drafting a substantial plan in the main session.
+2. Launch an asynchronous planner workflow with the relevant conversation context. Have a scout gather any missing codebase details and a writer save the final plan to ${planPath}.
+3. Return control immediately after launch; never call bg_wait. Inspect status and the saved plan on a later turn or completion notification.
+4. Capture ALL intentions, considerations, and decisions from our discussion.
+5. Treat ${planPath} as local working state only. It must never be committed.
+6. Each task must be self-contained — an agent should be able to implement it from the plan alone.${existingNote}
 
 ## Plan format
 ${PLAN_FORMAT}

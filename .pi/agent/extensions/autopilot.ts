@@ -22,13 +22,14 @@ function buildAutopilotPrompt(
 - Stay in this worktree. Do NOT create, switch, or remove git worktrees unless the user explicitly asks.`;
 
 	const executionRules = `## Execution rules
-1. Do the initial planning pass yourself in this context window (use read, grep, find, ls directly — do NOT delegate the initial planning pass).
+1. Act as the coordinator. Delegate codebase analysis and planning to scout/planner subagents; do not perform a substantial planning pass in the main session.
 2. Use todo_write when the work spans 3+ steps or multiple files.
-3. After the plan exists, execute it using the subagent tool where that helps: parallel for independent work, chain for dependent work, single agent when appropriate.
-4. Follow the plan's Execution Strategy section during execution.
-5. If you learn something important while implementing, update ${planPath} before continuing so the plan stays accurate for this worktree.
-6. Run reasonable verification commands for the touched codepaths when available, and fix failures you introduced.
-7. Do NOT stop after planning. Continue through execution until the task is complete or genuinely blocked.`;
+3. Delegate implementation, verification, and review to asynchronous subagents. Use a background chain for dependent stages and parallel tasks for independent lanes.
+4. Follow the plan's Execution Strategy section. Keep one writer per shared worktree and use isolated worktrees for intentional parallel writers.
+5. If new information changes the plan, have a child update ${planPath} before dependent work continues.
+6. Require reasonable verification for touched codepaths and inspect child output, diffs, and checks before accepting completion.
+7. Never block the main session or call bg_wait. After launching useful background work, report what is running and yield so the user can continue interacting.
+8. On later turns and completion notifications, inspect live subagent status and continue coordination until the task is complete or genuinely blocked.`;
 
 	if (task) {
 		const overwriteNote = existingPlan
