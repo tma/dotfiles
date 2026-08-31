@@ -48,7 +48,14 @@ SESSION_ANIM_TOKEN="__PI_SESSION_ANIM__"
 PANEL_TEMPLATE=""
 LAST_COLS=0
 LAST_ROWS=0
+LAST_REFRESH_SECOND=-1
+PANEL_RESIZED=1
+SCROLL_OFFSET=0
+MAX_SCROLL_OFFSET=0
+SCROLL_STEP=3
 PANEL_PAD_X="${PI_STATUS_PANEL_PAD_X:-1}"
+PANEL_PAD_BOTTOM="${PI_STATUS_PANEL_PAD_BOTTOM:-3}"
+[[ "$PANEL_PAD_BOTTOM" =~ ^[0-9]+$ ]] || PANEL_PAD_BOTTOM=3
 PANEL_BG="${PI_STATUS_PANEL_BG:-#171a21}"
 # Stats file scoped per project directory (matches notify.ts)
 if [[ -z "$PI_SESSION_DIR" ]]; then
@@ -57,6 +64,10 @@ if [[ -z "$PI_SESSION_DIR" ]]; then
 fi
 PI_PID="${PI_PID:-$$}"
 STATS_FILE="${PI_SESSION_DIR}/${PI_PID}-stats.json"
+PANEL_TMPDIR="${TMPDIR:-/tmp}"
+[[ -d "$PANEL_TMPDIR" && -w "$PANEL_TMPDIR" ]] || PANEL_TMPDIR="/tmp"
+TEMPLATE_FILE="${PANEL_TMPDIR}/pi-${PI_PID}-status-panel-template-$$"
+TEMPLATE_BUILD_PID=""
 
 # Style this tmux pane directly so reopened panels get the same background even
 # before the Pi extension runtime has been reloaded.
@@ -64,11 +75,38 @@ if [[ -n "$TMUX" && -n "$TMUX_PANE" ]]; then
   tmux set-option -pt "$TMUX_PANE" window-style "bg=${PANEL_BG}" 2>/dev/null || true
 fi
 
-# Hide cursor during draws
-tput civis 2>/dev/null || true
-cleanup() { tput cnorm 2>/dev/null || true; }
+# Use an alternate screen and mouse reporting so the panel can maintain its own
+# stable viewport while still accepting wheel events.
+PANEL_MODE_ACTIVE=0
+ORIGINAL_STTY=""
+enter_panel_mode() {
+  if [[ -t 0 ]]; then
+    ORIGINAL_STTY=$(stty -g 2>/dev/null || true)
+    [[ -n "$ORIGINAL_STTY" ]] && stty -echo -icanon min 1 time 0 2>/dev/null || true
+  fi
+  printf '\033[?1049h\033[?1000h\033[?1006h'
+  tput civis 2>/dev/null || true
+  PANEL_MODE_ACTIVE=1
+}
+cleanup() {
+  if [[ -n "$TEMPLATE_BUILD_PID" ]]; then
+    kill "$TEMPLATE_BUILD_PID" 2>/dev/null || true
+    wait "$TEMPLATE_BUILD_PID" 2>/dev/null || true
+    TEMPLATE_BUILD_PID=""
+  fi
+  rm -f "$TEMPLATE_FILE" "$TEMPLATE_FILE.tmp" 2>/dev/null || true
+  if [[ $PANEL_MODE_ACTIVE -eq 1 ]]; then
+    printf '\033[?1006l\033[?1000l'
+    [[ -n "$ORIGINAL_STTY" ]] && stty "$ORIGINAL_STTY" 2>/dev/null || true
+    printf '\033[?1049l'
+    PANEL_MODE_ACTIVE=0
+  fi
+  tput cnorm 2>/dev/null || true
+}
 trap cleanup EXIT
-trap 'cleanup; clear; exit 0' INT TERM
+trap 'exit 0' INT TERM
+trap 'PANEL_RESIZED=1' WINCH
+enter_panel_mode
 
 build_panel_template() {
   local session_anim="${1:-$SESSION_ANIM_TOKEN}"
@@ -433,6 +471,33 @@ for i, t in enumerate(tasks):
   PANEL_TEMPLATE="$buf"
 }
 
+start_template_refresh() {
+  local cols="$1"
+  local rows="$2"
+  [[ -n "$TEMPLATE_BUILD_PID" ]] && return
+
+  (
+    trap - EXIT INT TERM WINCH
+    build_panel_template "$SESSION_ANIM_TOKEN" "$cols" "$rows"
+    printf '%s' "$PANEL_TEMPLATE" > "$TEMPLATE_FILE.tmp"
+    mv "$TEMPLATE_FILE.tmp" "$TEMPLATE_FILE"
+  ) >/dev/null 2>&1 &
+  TEMPLATE_BUILD_PID=$!
+}
+
+collect_template_refresh() {
+  [[ -z "$TEMPLATE_BUILD_PID" ]] && return
+  if [[ -f "$TEMPLATE_FILE" ]]; then
+    wait "$TEMPLATE_BUILD_PID" 2>/dev/null || true
+    PANEL_TEMPLATE=$(<"$TEMPLATE_FILE")
+    rm -f "$TEMPLATE_FILE"
+    TEMPLATE_BUILD_PID=""
+  elif ! kill -0 "$TEMPLATE_BUILD_PID" 2>/dev/null; then
+    wait "$TEMPLATE_BUILD_PID" 2>/dev/null || true
+    TEMPLATE_BUILD_PID=""
+  fi
+}
+
 session_refresh_indicator() {
   local idx=$((FRAME_COUNT % REFRESH_EVERY_FRAMES))
   local frames=(
@@ -450,25 +515,147 @@ session_refresh_indicator() {
 
 render_panel() {
   local session_anim="$1"
+  local rows="$2"
   local rendered="${PANEL_TEMPLATE//${SESSION_ANIM_TOKEN}/${session_anim}}"
-  printf '\033[H%b\033[J' "$rendered"
+  local viewport=""
+  local -a lines=()
+  local total visible_rows max_offset end i
+
+  mapfile -t lines <<< "${rendered%$'\n'}"
+  for ((i = 0; i < PANEL_PAD_BOTTOM; i++)); do
+    lines+=("\033[K")
+  done
+  total=${#lines[@]}
+  visible_rows=$rows
+  max_offset=0
+
+  if [[ $total -gt $rows ]]; then
+    max_offset=$((total - visible_rows))
+  fi
+
+  [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+  [[ $SCROLL_OFFSET -gt $max_offset ]] && SCROLL_OFFSET=$max_offset
+  MAX_SCROLL_OFFSET=$max_offset
+  end=$((SCROLL_OFFSET + visible_rows))
+  [[ $end -gt $total ]] && end=$total
+
+  for ((i = SCROLL_OFFSET; i < end; i++)); do
+    viewport+="${lines[$i]}"
+    if [[ $((i + 1)) -lt $end ]]; then
+      viewport+=$'\n'
+    fi
+  done
+
+  # Never write past the pane's last row. Doing so scrolls the terminal, so the
+  # next home-and-redraw cycle visibly jumps between scroll positions. Disable
+  # autowrap as well so an unexpectedly wide line cannot trigger the same bug.
+  printf '\033[?7l\033[H%b\033[J\033[?7h' "$viewport"
+}
+
+scroll_by() {
+  local delta="$1"
+  SCROLL_OFFSET=$((SCROLL_OFFSET + delta))
+  [[ $SCROLL_OFFSET -lt 0 ]] && SCROLL_OFFSET=0
+  [[ $SCROLL_OFFSET -gt $MAX_SCROLL_OFFSET ]] && SCROLL_OFFSET=$MAX_SCROLL_OFFSET
+}
+
+handle_input() {
+  local key="$1"
+  local sequence=""
+  local char=""
+  local page_size=$((LAST_ROWS > 2 ? LAST_ROWS - 2 : 1))
+  local i
+
+  case "$key" in
+    k) scroll_by -1 ;;
+    j) scroll_by 1 ;;
+    u) scroll_by "$((-page_size))" ;;
+    d) scroll_by "$page_size" ;;
+    g) SCROLL_OFFSET=0 ;;
+    G) SCROLL_OFFSET=$MAX_SCROLL_OFFSET ;;
+    $'\033')
+      # Read the rest of a CSI key or SGR mouse sequence already begun by ESC.
+      for ((i = 0; i < 32; i++)); do
+        IFS= read -rsn1 -t 0.01 char || break
+        sequence+="$char"
+        [[ "$char" =~ [A-Za-z~] ]] && break
+      done
+      case "$sequence" in
+        "[A") scroll_by -1 ;;
+        "[B") scroll_by 1 ;;
+        "[5~") scroll_by "$((-page_size))" ;;
+        "[6~") scroll_by "$page_size" ;;
+        "[H"|"[1~") SCROLL_OFFSET=0 ;;
+        "[F"|"[4~") SCROLL_OFFSET=$MAX_SCROLL_OFFSET ;;
+        "[<64;"*"M") scroll_by "$((-SCROLL_STEP))" ;;
+        "[<65;"*"M") scroll_by "$SCROLL_STEP" ;;
+      esac
+      ;;
+  esac
+}
+
+read_input_batch() {
+  local key=""
+  local now deadline remaining timeout
+  local handled=0
+
+  IFS= read -rsn1 -t "$ANIMATION_INTERVAL" key || return
+  handle_input "$key"
+  handled=1
+
+  # Trackpads emit dense streams of wheel events. Coalesce everything arriving
+  # in the next ~30ms into one repaint instead of rendering every event.
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    now=$((10#${EPOCHREALTIME/./}))
+    deadline=$((now + 30000))
+    while [[ $handled -lt 256 ]]; do
+      now=$((10#${EPOCHREALTIME/./}))
+      remaining=$((deadline - now))
+      [[ $remaining -le 0 ]] && break
+      printf -v timeout '0.%06d' "$remaining"
+      key=""
+      IFS= read -rsn1 -t "$timeout" key || break
+      handle_input "$key"
+      handled=$((handled + 1))
+    done
+  else
+    # Bash 4 fallback: drain a small burst without adding noticeable latency to
+    # a single key press or mouse-wheel tick.
+    while [[ $handled -lt 16 ]]; do
+      key=""
+      IFS= read -rsn1 -t 0.01 key || break
+      handle_input "$key"
+      handled=$((handled + 1))
+    done
+  fi
 }
 
 # ── Main loop ─────────────────────────────────────────
 
-clear
-while true; do
-  local_cols=$(tput cols)
-  local_rows=$(tput lines)
+local_cols=$(tput cols)
+local_rows=$(tput lines)
+build_panel_template "$SESSION_ANIM_TOKEN" "$local_cols" "$local_rows"
+LAST_COLS="$local_cols"
+LAST_ROWS="$local_rows"
+LAST_REFRESH_SECOND="$SECONDS"
+PANEL_RESIZED=0
 
-  if [[ -z "$PANEL_TEMPLATE" || $((FRAME_COUNT % REFRESH_EVERY_FRAMES)) -eq 0 || "$local_cols" != "$LAST_COLS" || "$local_rows" != "$LAST_ROWS" ]]; then
-    build_panel_template "$SESSION_ANIM_TOKEN" "$local_cols" "$local_rows"
+while true; do
+  collect_template_refresh
+
+  # Keep expensive Git/JSON work entirely off the input/render path. Completed
+  # templates are swapped in atomically on a later frame.
+  if [[ -z "$TEMPLATE_BUILD_PID" && ( "$SECONDS" != "$LAST_REFRESH_SECOND" || $PANEL_RESIZED -eq 1 ) ]]; then
+    local_cols=$(tput cols)
+    local_rows=$(tput lines)
+    start_template_refresh "$local_cols" "$local_rows"
     LAST_COLS="$local_cols"
     LAST_ROWS="$local_rows"
+    LAST_REFRESH_SECOND="$SECONDS"
+    PANEL_RESIZED=0
   fi
 
-  render_panel "$(session_refresh_indicator)"
-
+  render_panel "$(session_refresh_indicator)" "$local_rows"
   FRAME_COUNT=$((FRAME_COUNT + 1))
-  sleep "$ANIMATION_INTERVAL"
+  read_input_batch
 done
