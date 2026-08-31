@@ -68,11 +68,15 @@ export interface GondolinToolProvider {
 	readonly tools: readonly ToolDefinition<any>[];
 }
 
-let activeToolProvider: GondolinToolProvider | undefined;
+const GONDOLIN_TOOL_PROVIDER = Symbol.for("tma.pi.gondolin.tool-provider");
+
+function setGondolinToolProvider(provider: GondolinToolProvider | undefined): void {
+	(globalThis as any)[GONDOLIN_TOOL_PROVIDER] = provider;
+}
 
 /** Returns tools bound to the parent Gondolin VM and its authoritative host workspace. */
 export function getGondolinToolProvider(): GondolinToolProvider | undefined {
-	return activeToolProvider;
+	return (globalThis as any)[GONDOLIN_TOOL_PROVIDER] as GondolinToolProvider | undefined;
 }
 
 /**
@@ -656,7 +660,7 @@ export default function (pi: ExtensionAPI) {
 		const activeVm = vm;
 		vm = undefined;
 		vmStarting = undefined;
-		if (activeToolProvider === toolProvider) activeToolProvider = undefined;
+		if (getGondolinToolProvider() === toolProvider) setGondolinToolProvider(undefined);
 		toolProvider = undefined;
 		if (!activeVm) return;
 		await activeVm.close();
@@ -751,7 +755,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	];
 	toolProvider = { hostCwd: localCwd, tools: gondolinTools };
-	activeToolProvider = toolProvider;
+	setGondolinToolProvider(toolProvider);
 	for (const tool of gondolinTools) pi.registerTool(tool);
 
 	pi.on("user_bash", async (_event, ctx) => {
