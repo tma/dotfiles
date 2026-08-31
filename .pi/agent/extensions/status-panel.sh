@@ -219,7 +219,7 @@ build_panel_template() {
   if [[ -f "$SUBAGENTS_FILE" ]]; then
     local subagents_json subagent_count
     subagents_json=$(cat "$SUBAGENTS_FILE" 2>/dev/null)
-    subagent_count=$(echo "$subagents_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('active',[])))" 2>/dev/null || echo "0")
+    subagent_count=$(echo "$subagents_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for job in d.get('active',[]) for agent in job.get('agents',[]) if agent.get('state') in ('queued','running')))" 2>/dev/null || echo "0")
     if [[ "$subagent_count" -gt 0 ]]; then
       hr
       p " ${BOLD}Agents${RESET} ${PALE_CYAN}${subagent_count} active${RESET}"
@@ -237,27 +237,24 @@ cyan='\033[38;5;159m'
 green='\033[38;5;114m'
 yellow='\033[38;5;228m'
 red='\033[38;5;217m'
-for ji, job in enumerate(data.get('active', [])):
-    jid=str(job.get('id',''))
-    if len(jid) > 22: jid=jid[:10]+'…'+jid[-8:]
-    print(f' {cyan}●{reset} {jid}')
-    for agent in job.get('agents', []):
-        state=str(agent.get('state','running'))
-        icon={'queued':'○','running':'▸','completed':'✓','failed':'✗','aborted':'■'}.get(state,'○')
-        color={'queued':dim,'running':yellow,'completed':green,'failed':red,'aborted':red}.get(state,dim)
-        name=' '.join(str(agent.get('name','agent')).split())
-        model=' '.join(str(agent.get('model','pending')).split())
-        thinking=' '.join(str(agent.get('thinkingLevel','pending')).split())
-        label=f'{name} · {model} · {thinking}'
-        wrapped=textwrap.wrap(label, width=max(8,width-5), break_long_words=False, break_on_hyphens=False) or ['']
-        print(f'   {color}{icon}{reset} {wrapped[0]}')
-        for line in wrapped[1:2]:
-            print(f'     {dim}{line}{reset}')
-        activity=' '.join(str(agent.get('activity','')).split())
-        if activity:
-            for line in textwrap.wrap(activity, width=max(8,width-6), break_long_words=False, break_on_hyphens=False)[:2]:
-                print(f'     {dim}{line}{reset}')
-    if ji < len(data.get('active', []))-1:
+agents=[agent for job in data.get('active', []) for agent in job.get('agents', [])]
+for ai, agent in enumerate(agents):
+    state=str(agent.get('state','running'))
+    icon={'queued':'○','running':'▸','completed':'✓','failed':'✗','aborted':'■'}.get(state,'○')
+    color={'queued':dim,'running':yellow,'completed':green,'failed':red,'aborted':red}.get(state,dim)
+    name=' '.join(str(agent.get('name','agent')).split())
+    model=' '.join(str(agent.get('model','pending')).split())
+    thinking=' '.join(str(agent.get('thinkingLevel','pending')).split())
+    label=f'{name} · {model} · {thinking}'
+    wrapped=textwrap.wrap(label, width=max(8,width-3), break_long_words=False, break_on_hyphens=False) or ['']
+    print(f' {color}{icon}{reset} {wrapped[0]}')
+    for line in wrapped[1:2]:
+        print(f'   {dim}{line}{reset}')
+    activity=' '.join(str(agent.get('activity','')).split())
+    if activity:
+        for line in textwrap.wrap(activity, width=max(8,width-4), break_long_words=False, break_on_hyphens=False)[:2]:
+            print(f'   {dim}{line}{reset}')
+    if ai < len(agents)-1:
         print('')
 " "$content_cols" 2>/dev/null)
       while IFS= read -r aline; do

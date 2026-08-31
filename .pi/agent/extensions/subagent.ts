@@ -941,6 +941,12 @@ export default function (pi: ExtensionAPI) {
 		return `${job.id} · ${job.state} · ${job.mode} · ${done}/${job.total} done${running ? ` · ${running} running` : ""}${queued ? ` · ${queued} queued` : ""} · ${duration}`;
 	}
 
+	function formatAgentList(job: BackgroundJob): string[] {
+		return job.results.map((result) =>
+			`${safeOneLine(result.agent, 80)} · ${safeOneLine(result.model ?? "pending", 100)} · ${safeOneLine(result.thinkingLevel ?? "pending", 20)}`,
+		);
+	}
+
 	function formatJob(job: BackgroundJob, includeOutput = false): string {
 		const lines = [formatJobSummary(job)];
 		for (const result of job.results) {
@@ -1006,14 +1012,9 @@ export default function (pi: ExtensionAPI) {
 	function refreshWidget(): void {
 		writeJobsSnapshot();
 		if (!currentCtx?.hasUI) return;
-		// Keep detailed progress in the right-hand status panel. Do not occupy the
-		// above-editor area; only retain a compact footer status while jobs run.
+		// Keep agent progress only in the right-hand status panel.
 		currentCtx.ui.setWidget("subagents", undefined);
-		const active = activeJobs();
-		currentCtx.ui.setStatus(
-			"subagents",
-			active.length > 0 ? `${active.length} job${active.length === 1 ? "" : "s"} active` : undefined,
-		);
+		currentCtx.ui.setStatus("subagents", undefined);
 	}
 
 	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string): void {
@@ -1366,7 +1367,7 @@ export default function (pi: ExtensionAPI) {
 				];
 				return {
 					content: [{ type: "text", text: visible.length > 0
-						? boundStatusOutput(visible.map(formatJobSummary).join("\n"))
+						? boundStatusOutput(visible.flatMap(formatAgentList).join("\n"))
 						: "No subagent jobs have run in this session." }],
 					details: undefined,
 				};
@@ -1389,6 +1390,13 @@ export default function (pi: ExtensionAPI) {
 					? [...job.controls.keys()][0] ?? job.results.findIndex((result) => result.state === "queued")
 					: undefined;
 				const targetIndex = params.index ?? (untargetedChainIndex !== undefined && untargetedChainIndex >= 0 ? untargetedChainIndex : undefined);
+				if (targetIndex !== undefined && isTerminalResult(job.results[targetIndex])) {
+					return {
+						content: [{ type: "text", text: `Child ${targetIndex} is already ${job.results[targetIndex].state} and cannot accept input. Message: “${messagePreview}”` }],
+						details: undefined,
+						isError: true,
+					};
+				}
 				const targets = targetIndex === undefined
 					? [...job.controls.entries()]
 					: job.controls.has(targetIndex) ? [[targetIndex, job.controls.get(targetIndex)!] as const] : [];
@@ -1405,7 +1413,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					job.updatedAt = Date.now();
 					refreshWidget();
-					return { content: [{ type: "text", text: `Queued ${params.delivery ?? "steer"} input for ${queuedIndices.length} child${queuedIndices.length === 1 ? "" : "ren"} in ${job.id}. Message: “${messagePreview}”` }], details: undefined };
+					return { content: [{ type: "text", text: messagePreview }], details: undefined };
 				}
 				const deliveryResults = await Promise.all(
 					targets.map(async ([index, control]) => ({
@@ -1421,7 +1429,7 @@ export default function (pi: ExtensionAPI) {
 				refreshWidget();
 				return {
 					content: [{ type: "text", text: delivered.length > 0
-						? `Sent ${params.delivery ?? "steer"} input to ${delivered.length}/${targets.length} active child${targets.length === 1 ? "" : "ren"} in ${job.id}. Message: “${messagePreview}”`
+						? messagePreview
 						: `No active child in ${job.id} accepted the input. Message: “${messagePreview}”` }],
 					details: undefined,
 					isError: delivered.length === 0,
