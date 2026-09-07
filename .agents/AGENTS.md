@@ -16,6 +16,20 @@ Use the shortest answer that is still useful:
 - **Do not:** restate obvious context or quote long command output.
 - **Prefer:** bullets, bold labels, short sections, and whitespace.
 
+## Principles
+
+- **No magic:** Prefer explicit over clever. If something needs a comment to
+  explain, consider rewriting it so it doesn't.
+- **Read before writing:** Read the affected code and its neighbors. Look for
+  existing helpers and patterns before adding your own. Follow the project's
+  conventions.
+- **Small, focused changes:** Solve the requested problem without unrelated
+  cleanup or refactors.
+- **Minimal surface area:** Add only what's needed. No speculative abstractions,
+  dead code, or commented-out blocks.
+- **Explicit errors:** Don't swallow exceptions or disguise failures as
+  successful results. Preserve useful error context.
+
 ## Work style
 
 ### Delegate substantial work
