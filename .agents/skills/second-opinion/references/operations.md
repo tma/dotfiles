@@ -41,9 +41,9 @@ If the user asks for more than three, explain the cap and proceed with three unl
 Reviewer selection:
 
 - `auto` — prefer model families different from the current/root agent
-- `opus` — latest Opus child reviewer at max thinking (`xhigh`)
-- `gpt` — latest GPT child reviewer at max thinking (`xhigh`)
-- `grok` — latest Grok child reviewer at max thinking (`xhigh`)
+- `opus` — dynamically selected strong Claude Opus-family child reviewer with `max` thinking
+- `gpt` — dynamically selected strong GPT-family child reviewer with `max` thinking
+- `grok` — dynamically selected strong Grok-family child reviewer with `max` thinking
 - `mixed` — use multiple routed reviewers when available
 
 Focus:
@@ -61,9 +61,9 @@ For a single review, use the opposite family when the current/root family is kno
 
 | Current/root model family | Reviewer route | Pi subagent |
 |---------------------------|----------------|-------------|
-| GPT/OpenAI | Latest Opus | `second-opinion-opus` |
-| Opus/Anthropic | Latest GPT | `second-opinion-gpt` |
-| Grok/xAI | Latest Opus | `second-opinion-opus` |
+| GPT/OpenAI | Strong Claude Opus-family route | `second-opinion-opus` |
+| Opus/Anthropic | Strong GPT-family route | `second-opinion-gpt` |
+| Grok/xAI | Strong Claude Opus-family route | `second-opinion-opus` |
 
 For multiple reviews:
 
@@ -83,7 +83,7 @@ Suggested focus split when reusing one route:
 
 If the current/root model is unknown and reviewer choice matters, ask:
 
-> Which reviewer route(s) should I use: latest Opus, latest GPT, latest Grok, or mixed?
+> Which reviewer route(s) should I use: Claude Opus, GPT, Grok, or mixed?
 
 ## Review material
 
@@ -132,7 +132,7 @@ Each child task must be self-contained and include:
 Template:
 
 ```markdown
-You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on <latest Opus|latest GPT|latest Grok|configured route> at max thinking when supported.
+You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on the configured <Claude Opus|GPT|Grok> family route with max thinking when supported.
 The root agent is running on <current model family or unknown>.
 
 Review scope: <scope>

@@ -2,7 +2,8 @@
 name: scout
 description: Fast read-only explorer. Analyzes code, finds patterns, maps architecture, answers questions. Never modifies files.
 tools: read,bash,grep,find,ls
-model: github-copilot/mai-code-1.1-flash
+model: auto:cheap
+thinking: low
 maxOutputLines: 40
 ---
 

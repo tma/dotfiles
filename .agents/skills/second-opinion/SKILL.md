@@ -39,9 +39,9 @@ Do not use this skill when the harness cannot launch child/subagent reviewers, w
 
 Use the `subagent` tool with configured reviewer agents:
 
-- `second-opinion-opus` — latest available Opus model at max thinking (`xhigh`).
-- `second-opinion-gpt` — latest available GPT model at max thinking (`xhigh`).
-- `second-opinion-grok` — latest available Grok model at max thinking (`xhigh`).
+- `second-opinion-opus` — a dynamically selected strong Claude Opus-family model with `max` thinking (clamped when needed).
+- `second-opinion-gpt` — a dynamically selected strong GPT-family model with `max` thinking (clamped when needed).
+- `second-opinion-grok` — a dynamically selected strong Grok-family model with `max` thinking (clamped when needed).
 
 For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its reviewer label and focus.
 

@@ -14,7 +14,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type Message } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type ExtensionAPI,
@@ -35,17 +35,25 @@ import {
 import { type AutocompleteItem, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./gondolin/index.js";
+import {
+	AUTO_POLICIES,
+	CatalogRefreshCoordinator,
+	mergeModelPolicy,
+	resolveModelSelection,
+	THINKING_LEVELS,
+	waitWithDeadline,
+	type ModelPolicy,
+} from "./lib/model-selection.js";
 import { findPlanFile } from "./plan.js";
 
 // ─── Agent discovery ────────────────────────────────────────────────────────
 
 type AgentScope = "user" | "project" | "both";
 
-interface AgentConfig {
+interface AgentConfig extends ModelPolicy {
 	name: string;
 	description: string;
 	tools?: string[];
-	model?: string;
 	maxOutputLines?: number;
 	systemPrompt: string;
 	source: "user" | "project";
@@ -93,6 +101,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: frontmatter.model,
+			thinking: frontmatter.thinking,
+			provider: frontmatter.provider,
+			family: frontmatter.family,
 			maxOutputLines: frontmatter.maxOutputLines ? Number(frontmatter.maxOutputLines) : undefined,
 			systemPrompt: body,
 			source,
@@ -211,6 +222,7 @@ interface SingleResult {
 	usage: UsageStats;
 	model?: string;
 	thinkingLevel?: string;
+	selectionReason?: string;
 	stopReason?: string;
 	errorMessage?: string;
 	durationMs?: number;
@@ -365,22 +377,20 @@ const childLimiter = new ChildLimiter(MAX_CONCURRENCY);
 
 type OnUpdate = (partial: AgentToolResult<SubagentDetails>) => void;
 
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024;
-let childModelRuntime: Promise<ModelRuntime> | undefined;
+const catalogRefreshers = new WeakMap<ExtensionContext["modelRegistry"], CatalogRefreshCoordinator>();
 
-function parseAgentModel(value: string | undefined): { provider: string; modelId: string; thinking?: any } | undefined {
-	if (!value) return undefined;
-	const slash = value.indexOf("/");
-	if (slash <= 0 || slash === value.length - 1) return undefined;
-	let modelId = value.slice(slash + 1);
-	let thinking: any;
-	const colon = modelId.lastIndexOf(":");
-	if (colon > 0 && THINKING_LEVELS.has(modelId.slice(colon + 1))) {
-		thinking = modelId.slice(colon + 1);
-		modelId = modelId.slice(0, colon);
+async function refreshModelCatalog(ctx: ExtensionContext, policy: ModelPolicy, signal?: AbortSignal): Promise<{ notice?: string }> {
+	if (!AUTO_POLICIES.some((name) => policy.model === `auto:${name}`)) {
+		const error = ctx.modelRegistry.getError();
+		return { notice: error ? `catalog may be stale (${error})` : undefined };
 	}
-	return { provider: value.slice(0, slash), modelId, thinking };
+	let refresher = catalogRefreshers.get(ctx.modelRegistry);
+	if (!refresher) {
+		refresher = new CatalogRefreshCoordinator();
+		catalogRefreshers.set(ctx.modelRegistry, refresher);
+	}
+	return refresher.refresh(ctx.modelRegistry, !process.env.PI_OFFLINE, signal);
 }
 
 function canonicalPath(value: string): string {
@@ -407,14 +417,16 @@ function resolveAuthoritativeCwd(provider: GondolinToolProvider, defaultCwd: str
 	return provider.hostCwd;
 }
 
-async function getChildModelRuntime(ctx: ExtensionContext): Promise<ModelRuntime> {
-	if (!childModelRuntime) childModelRuntime = ModelRuntime.create();
-	const runtime = await childModelRuntime;
-	for (const providerId of ctx.modelRegistry.getRegisteredProviderIds()) {
-		const nativeProvider = ctx.modelRegistry.getRegisteredNativeProvider(providerId);
-		const config = ctx.modelRegistry.getRegisteredProviderConfig(providerId);
+async function getChildModelRuntime(ctx: ExtensionContext, signal?: AbortSignal): Promise<ModelRuntime> {
+	// A fresh runtime avoids stale registrations and cross-parent routing. Keep
+	// compatibility registrations intact: effective providers omit model headers.
+	const runtime = await ModelRuntime.create({ refreshOnCreate: false, signal });
+	signal?.throwIfAborted();
+	for (const registeredId of ctx.modelRegistry.getRegisteredProviderIds()) {
+		const nativeProvider = ctx.modelRegistry.getRegisteredNativeProvider(registeredId);
+		const config = ctx.modelRegistry.getRegisteredProviderConfig(registeredId);
 		if (nativeProvider) runtime.registerNativeProvider(nativeProvider);
-		else if (config) runtime.registerProvider(providerId, config);
+		else if (config) runtime.registerProvider(registeredId, config);
 	}
 	return runtime;
 }
@@ -482,6 +494,8 @@ async function runAgent(
 		cwd?: string;
 		step?: number;
 		controlIndex?: number;
+		launchPolicy?: ModelPolicy;
+		itemPolicy?: ModelPolicy;
 		signal?: AbortSignal;
 		onUpdate?: OnUpdate;
 		onStateChange?: (index: number, result: SingleResult) => void;
@@ -537,14 +551,36 @@ async function runAgent(
 		releaseSlot = await childLimiter.acquire(opts.signal);
 		if (opts.signal?.aborted) throw new Error("Subagent aborted before start");
 
-		const modelSpec = parseAgentModel(agent.model);
-		const model = modelSpec
-			? opts.parentCtx.modelRegistry.find(modelSpec.provider, modelSpec.modelId)
-			: opts.parentCtx.model;
-		if (!model) throw new Error(modelSpec
-			? `Configured model is unavailable: ${modelSpec.provider}/${modelSpec.modelId}`
-			: "Parent session has no model selected");
-		const modelRuntime = await getChildModelRuntime(opts.parentCtx);
+		const policy = mergeModelPolicy(agent, opts.launchPolicy, opts.itemPolicy);
+		const refresh = await refreshModelCatalog(opts.parentCtx, policy, opts.signal);
+		const selection = await resolveModelSelection({
+			policy,
+			availableModels: opts.parentCtx.modelRegistry.getAvailable(),
+			allModels: opts.parentCtx.modelRegistry.getAll(),
+			parentModel: opts.parentCtx.model,
+			parentThinkingLevel: opts.parentCtx.thinkingLevel,
+			authenticate: async (candidate) => {
+				const auth = await opts.parentCtx.modelRegistry.getApiKeyAndHeaders(candidate);
+				return auth.ok ? { ok: true as const } : { ok: false as const, error: auth.error };
+			},
+			getSupportedThinkingLevels,
+			clampThinkingLevel,
+			catalogNotice: refresh.notice,
+			signal: opts.signal,
+		});
+		opts.signal?.throwIfAborted();
+		const model = selection.model;
+		result.model = `${model.provider}/${model.id}`;
+		result.thinkingLevel = selection.thinkingLevel;
+		const overrideSources = Object.entries(policy.sources)
+			.filter(([, source]) => source !== "agent")
+			.map(([field, source]) => `${field} from ${source}`);
+		result.selectionReason = `${selection.reason}${overrideSources.length > 0 ? `; ${overrideSources.join(", ")}` : ""}`;
+		const modelRuntime = await waitWithDeadline((signal) => getChildModelRuntime(opts.parentCtx, signal), {
+			signal: opts.signal,
+			label: "Child model runtime setup",
+		});
+		opts.signal?.throwIfAborted();
 		const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir());
 		const loader = new DefaultResourceLoader({
 			cwd: effectiveCwd,
@@ -573,12 +609,13 @@ async function runAgent(
 			}],
 		});
 		await loader.reload();
+		opts.signal?.throwIfAborted();
 
 		const created = await createAgentSession({
 			cwd: effectiveCwd,
 			agentDir: getAgentDir(),
 			model,
-			thinkingLevel: modelSpec?.thinking ?? opts.parentCtx.thinkingLevel,
+			thinkingLevel: selection.thinkingLevel as any,
 			modelRuntime,
 			tools: requestedTools,
 			customTools,
@@ -587,8 +624,12 @@ async function runAgent(
 			settingsManager,
 		});
 		session = created.session;
+		opts.signal?.throwIfAborted();
 		await session.bindExtensions({ mode: "print" });
 		result.model = session.model ? `${session.model.provider}/${session.model.id}` : `${model.provider}/${model.id}`;
+		if (session.thinkingLevel !== result.thinkingLevel) {
+			result.selectionReason += `; session clamped thinking ${result.thinkingLevel} to ${session.thinkingLevel}`;
+		}
 		result.thinkingLevel = session.thinkingLevel;
 		updateState("running");
 		emitUpdate();
@@ -703,6 +744,11 @@ function isRunning(r: SingleResult): boolean {
 	return r.state === "running";
 }
 
+function selectionSummary(r: SingleResult): string {
+	if (!r.model) return "model selection pending";
+	return `${r.model} · thinking ${r.thinkingLevel ?? "pending"}${r.selectionReason ? ` · ${r.selectionReason}` : ""}`;
+}
+
 function renderCollapsedResult(r: SingleResult, theme: any): string {
 	const icon = renderResultIcon(r, theme);
 	const toolCalls = getToolCallSummary(r.messages);
@@ -737,7 +783,8 @@ function renderCollapsedResult(r: SingleResult, theme: any): string {
 		}
 	}
 
-	const usage = formatUsage(r.usage, r.model);
+	if (r.model) text += `\n${theme.fg("dim", selectionSummary(r))}`;
+	const usage = formatUsage(r.usage);
 	if (usage) text += `\n${theme.fg("dim", usage)}`;
 	return text;
 }
@@ -750,6 +797,12 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 
 	if (r.exitCode !== 0 && r.errorMessage) {
 		c.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
+	}
+
+	if (r.model) {
+		c.addChild(new Spacer(1));
+		c.addChild(new Text(theme.fg("muted", "─── Model selection ───"), 0, 0));
+		c.addChild(new Text(theme.fg("dim", selectionSummary(r)), 0, 0));
 	}
 
 	c.addChild(new Spacer(1));
@@ -772,7 +825,7 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 		c.addChild(new Markdown(truncateOutput(output).trim(), 0, 0, getMarkdownTheme()));
 	}
 
-	const usage = formatUsage(r.usage, r.model);
+	const usage = formatUsage(r.usage);
 	if (usage) {
 		c.addChild(new Spacer(1));
 		c.addChild(new Text(theme.fg("dim", usage), 0, 0));
@@ -823,16 +876,25 @@ export default function (pi: ExtensionAPI) {
 
 	// ─── Tool schemas ─────────────────────────────────────────────────────
 
+	const ModelPolicyFields = {
+		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin" })),
+		thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Requested thinking level" })),
+		provider: Type.Optional(Type.String({ description: "Exact provider constraint" })),
+		family: Type.Optional(Type.String({ description: "Normalized model-family token sequence constraint, such as claude-opus" })),
+	};
+
 	const TaskItem = Type.Object({
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task to delegate" }),
 		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		...ModelPolicyFields,
 	});
 
 	const ChainItem = Type.Object({
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task with optional {previous} placeholder" }),
 		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		...ModelPolicyFields,
 	});
 
 	const SubagentParams = Type.Object({
@@ -854,6 +916,7 @@ export default function (pi: ExtensionAPI) {
 		tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks to run in parallel" })),
 		chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential chain steps" })),
 		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		...ModelPolicyFields,
 	});
 
 	const jobs = new Map<string, BackgroundJob>();
@@ -875,6 +938,15 @@ export default function (pi: ExtensionAPI) {
 
 	function isCurrentOwner(job: BackgroundJob): boolean {
 		return job.ownerSessionId === currentSessionId && job.ownerSessionFile === currentSessionFile;
+	}
+
+	function modelPolicyFrom(value: any): ModelPolicy {
+		return {
+			model: value?.model,
+			thinking: value?.thinking,
+			provider: value?.provider,
+			family: value?.family,
+		};
 	}
 
 	function makePlaceholder(agent: string, task: string, step?: number): SingleResult {
@@ -943,7 +1015,7 @@ export default function (pi: ExtensionAPI) {
 
 	function formatAgentList(job: BackgroundJob): string[] {
 		return job.results.map((result) =>
-			`${safeOneLine(result.agent, 80)} · ${safeOneLine(result.model ?? "pending", 100)} · ${safeOneLine(result.thinkingLevel ?? "pending", 20)}`,
+			`${safeOneLine(result.agent, 80)} · ${safeOneLine(selectionSummary(result), 500)}`,
 		);
 	}
 
@@ -953,6 +1025,7 @@ export default function (pi: ExtensionAPI) {
 			const icon = result.state === "queued" ? "○" : result.state === "running" ? "●" : isFailedResult(result) ? "✗" : "✓";
 			const step = result.step ? ` step ${result.step}` : "";
 			lines.push(`${icon} ${result.agent}${step}: ${latestActivity(result).slice(0, 240)}`);
+			lines.push(`  ${safeOneLine(selectionSummary(result), 500)}`);
 			if (includeOutput && result.exitCode !== -1) {
 				const output = getFinalOutput(result.messages) || result.errorMessage || result.stderr;
 				if (output.trim()) lines.push(truncateOutput(output.trim()));
@@ -1148,6 +1221,7 @@ export default function (pi: ExtensionAPI) {
 		agents: AgentConfig[],
 	) {
 			const makeDetails = (mode: SubagentDetails["mode"]) => (results: SingleResult[]): SubagentDetails => ({ mode, results });
+			const launchPolicy = modelPolicyFrom(params);
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -1201,6 +1275,8 @@ export default function (pi: ExtensionAPI) {
 						onControlReady,
 						onControlClosed,
 						makeDetails: makeDetails("chain"),
+						launchPolicy,
+						itemPolicy: modelPolicyFrom(step),
 						parentCtx: ctx,
 					});
 					results[i] = r;
@@ -1269,6 +1345,8 @@ export default function (pi: ExtensionAPI) {
 						onControlReady,
 						onControlClosed,
 						makeDetails: makeDetails("parallel"),
+						launchPolicy,
+						itemPolicy: modelPolicyFrom(task),
 						parentCtx: ctx,
 					}),
 				);
@@ -1307,6 +1385,7 @@ export default function (pi: ExtensionAPI) {
 					onControlReady,
 					onControlClosed,
 					makeDetails: makeDetails("single"),
+					launchPolicy,
 					parentCtx: ctx,
 				});
 
@@ -1340,6 +1419,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Launch specialized agents in the background so the main session remains responsive.",
 			"Launch modes: single (agent + task), parallel (tasks[]), chain (steps with {previous}).",
+			"Model, thinking, provider, and family can be shared launch defaults or per-task/per-step overrides.",
 			"Actions: launch (default), status, send (steer/follow-up input to running children), stop.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
 			"Available agents are defined in ~/.pi/agent/agents/ and .pi/agents/ as markdown files.",
@@ -1672,6 +1752,7 @@ export default function (pi: ExtensionAPI) {
 					const preview = output ? (output.length > 80 ? output.slice(0, 80) + "…" : output) : "(no output)";
 					text += `\n${ri} ${theme.fg("muted", stepLabel)}${theme.fg("accent", r.agent)}${duration} ${theme.fg("dim", preview)}`;
 				}
+				if (r.model) text += `\n  ${theme.fg("dim", selectionSummary(r))}`;
 			}
 			const usage = formatUsage(total);
 			if (usage) text += `\n${theme.fg("dim", `Total: ${usage}`)}`;
