@@ -84,6 +84,7 @@ interface SessionStats {
 	filesEdited: string[];
 	filesCreated: string[];
 	commandsRun: number;
+	sessionName: string;
 	subagent: {
 		mode: "single" | "parallel" | "chain" | null;
 		agents: string[];
@@ -239,6 +240,15 @@ export default function (pi: ExtensionAPI) {
 	let agentState: "idle" | "working" | "error" = "idle";
 	let subagentInfo: SessionStats["subagent"] = null;
 	let currentCtx: { getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined } | null = null;
+	let sessionName = "";
+
+	function syncSessionStatus(): void {
+		if (sessionName) {
+			cmuxSetStatus("session", sessionName, "text.alignleft", "#64d2ff");
+		} else {
+			cmuxClearStatus("session");
+		}
+	}
 
 	function flushStats(): void {
 		const usage = currentCtx?.getContextUsage?.();
@@ -258,6 +268,7 @@ export default function (pi: ExtensionAPI) {
 			filesEdited: [...filesEdited],
 			filesCreated: [...filesCreated],
 			commandsRun,
+			sessionName,
 			subagent: subagentInfo,
 			updatedAt: Date.now(),
 		});
@@ -311,6 +322,7 @@ export default function (pi: ExtensionAPI) {
 		commandsRun = 0;
 		agentState = "idle";
 		subagentInfo = null;
+		sessionName = pi.getSessionName() ?? "";
 
 		// Bootstrap from existing session entries (matches Pi's footer logic)
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -328,11 +340,19 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		cmuxLog(`Session started${currentModel ? ` (${currentModel})` : ""}`);
+		syncSessionStatus();
 		cmuxSetStatus("pi", "idle", "terminal.fill", "#8e8e93");
 		flushStats();
 	});
 
+	pi.on("session_info_changed", async (event) => {
+		sessionName = event.name ?? "";
+		syncSessionStatus();
+		flushStats();
+	});
+
 	pi.on("session_shutdown", async () => {
+		cmuxClearStatus("session");
 		cmuxClearStatus("pi");
 		cmuxClearProgress();
 		cmuxClearTabColor();
@@ -358,6 +378,7 @@ export default function (pi: ExtensionAPI) {
 		errorsThisLoop = 0;
 		agentState = "idle";
 		subagentInfo = null;
+		sessionName = pi.getSessionName() ?? "";
 
 		// Bootstrap from existing session entries
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -376,6 +397,7 @@ export default function (pi: ExtensionAPI) {
 
 		cmuxClearLog();
 		cmuxLog(`Switched session (${event.reason})`);
+		syncSessionStatus();
 		flushStats();
 	});
 

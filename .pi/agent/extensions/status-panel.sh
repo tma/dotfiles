@@ -161,9 +161,23 @@ build_panel_template() {
         *)       session_indicator="${SOFT_GRAY}· · ·${RESET}" ;;
       esac
 
+      local name_file="${PI_SESSION_DIR}/${PI_PID}-session-name.txt"
+      local session_name=""
+      if [[ -f "$name_file" ]]; then
+        session_name=$(tr -d '\n' < "$name_file" 2>/dev/null || true)
+      fi
+      if [[ -z "$session_name" ]]; then
+        session_name=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sessionName') or '')" 2>/dev/null || true)
+      fi
+      local title="${session_name:-Session}"
+      local max_title=$((content_cols - 6))
+      if [[ $max_title -gt 8 && ${#title} -gt $max_title ]]; then
+        title="${title:0:$((max_title - 1))}…"
+      fi
+
       p ""
       hr
-      p " ${BOLD}Session${RESET} ${session_indicator}"
+      p " ${BOLD}${title}${RESET} ${session_indicator}"
       hr
       p ""
 
