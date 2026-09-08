@@ -221,7 +221,7 @@ function isModelEligible(model: RawModel): boolean {
 function getApi(id: string): CopilotApi {
 	if (/^claude-fable-/.test(id)) return "openai-completions";
 	if (/^claude-/.test(id)) return "anthropic-messages";
-	if (/^(gpt-5|grok-|mai-)/.test(id)) return "openai-responses";
+	if (/^(gpt-[5-9]|grok-|mai-)/.test(id)) return "openai-responses";
 	if (/^(gpt-4|gemini|kimi)/.test(id)) return "openai-completions";
 
 	console.error(`${TAG} unknown model id family for "${id}"; defaulting api to openai-completions`);
@@ -241,7 +241,7 @@ function getCompat(raw: RawModel): Record<string, boolean> {
 		return { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false };
 	}
 
-	if (/^gpt-5/.test(id)) {
+	if (/^gpt-[5-9]/.test(id)) {
 		return { supportsOpenAIGrammarTools: true };
 	}
 
@@ -267,7 +267,7 @@ function getThinkingLevelMap(raw: RawModel): ProviderModelConfig["thinkingLevelM
 		};
 	}
 
-	if (raw.id.startsWith("gpt-5")) {
+	if (/^gpt-[5-9]/.test(raw.id)) {
 		return { off: null, minimal: "low", xhigh: "xhigh" };
 	}
 
