@@ -1929,7 +1929,8 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				text = `${theme.fg("toolTitle", theme.bold("agent "))}${theme.fg("accent", args.agent || "?")}`;
 			}
-			const box = new Box(1, 1, (value) => theme.bg("toolPendingBg", value));
+			const box = new Box(1, 0, (value) => theme.bg("toolPendingBg", value));
+			box.addChild(new Spacer(1));
 			box.addChild(new Text(text, 0, 0));
 			return box;
 		},
@@ -1958,8 +1959,9 @@ export default function (pi: ExtensionAPI) {
 				body = new Text(details.results.map((child) => renderCollapsedResult(child, theme)).join("\n"), 0, 0);
 			}
 			const hasError = Boolean(context?.isError || details?.results.some(isFailedResult));
-			const box = new Box(1, 1, (value) => theme.bg(hasError ? "toolErrorBg" : "toolPendingBg", value));
+			const box = new Box(1, 0, (value) => theme.bg(hasError ? "toolErrorBg" : "toolPendingBg", value));
 			box.addChild(body);
+			box.addChild(new Spacer(1));
 			return box;
 		},
 	});

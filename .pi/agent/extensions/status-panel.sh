@@ -53,6 +53,7 @@ PANEL_RESIZED=1
 SCROLL_OFFSET=0
 MAX_SCROLL_OFFSET=0
 SCROLL_STEP=3
+GOAL_EXPANDED=0
 PANEL_PAD_X="${PI_STATUS_PANEL_PAD_X:-1}"
 PANEL_PAD_BOTTOM="${PI_STATUS_PANEL_PAD_BOTTOM:-3}"
 [[ "$PANEL_PAD_BOTTOM" =~ ^[0-9]+$ ]] || PANEL_PAD_BOTTOM=3
@@ -117,6 +118,7 @@ build_panel_template() {
   local session_anim="${1:-$SESSION_ANIM_TOKEN}"
   local cols="${2:-$(tput cols)}"
   local rows="${3:-$(tput lines)}"
+  local goal_expanded="${4:-$GOAL_EXPANDED}"
   local buf=""
   local pad_x="$PANEL_PAD_X"
   [[ "$pad_x" =~ ^[0-9]+$ ]] || pad_x=1
@@ -323,6 +325,7 @@ for ai, agent in enumerate(agents):
       goal_lines=$(echo "$todos_json" | python3 -c "
 import sys,json,textwrap
 width=max(10, int(sys.argv[1]))
+expanded=str(sys.argv[2] if len(sys.argv) > 2 else '0') == '1'
 d=json.load(sys.stdin)
 g=d.get('goal') or {}
 status=str(g.get('status','active'))
@@ -335,17 +338,34 @@ dim='\033[2m'
 co=colors.get(status,'')
 ic=icons.get(status,'●')
 wrap_width=max(8, width - 4)
+def with_ellipsis(text):
+    trimmed=text.rstrip()
+    if not trimmed:
+        return '…'
+    if len(trimmed) >= wrap_width:
+        return trimmed[:max(1, wrap_width - 1)].rstrip() + '…'
+    return trimmed + '…'
+def preview(lines, limit):
+    if len(lines) <= limit:
+        return lines
+    out=lines[:limit]
+    out[-1]=with_ellipsis(out[-1])
+    return out
 wrapped=textwrap.wrap(objective, width=wrap_width, break_long_words=True, break_on_hyphens=False) or ['']
 print(f' {co}{ic}{reset} {wrapped[0]}')
 for line in wrapped[1:]:
     print(f'   {line}')
 if note:
     print('')
+    hint='e: collapse' if expanded else 'e: expand'
+    print(f'   {dim}Description ({hint}){reset}')
     note_wrapped=textwrap.wrap(note, width=wrap_width, break_long_words=True, break_on_hyphens=False) or ['']
+    if not expanded:
+        note_wrapped=preview(note_wrapped, 2)
     print(f'   {dim}{note_wrapped[0]}{reset}')
     for line in note_wrapped[1:]:
         print(f'   {dim}{line}{reset}')
-" "$content_cols" 2>/dev/null)
+" "$content_cols" "$goal_expanded" 2>/dev/null)
       while IFS= read -r gline; do
         p "$gline"
       done <<< "$goal_lines"
@@ -569,11 +589,12 @@ for i, t in enumerate(tasks):
 start_template_refresh() {
   local cols="$1"
   local rows="$2"
+  local goal_expanded="${3:-$GOAL_EXPANDED}"
   [[ -n "$TEMPLATE_BUILD_PID" ]] && return
 
   (
     trap - EXIT INT TERM WINCH
-    build_panel_template "$SESSION_ANIM_TOKEN" "$cols" "$rows"
+    build_panel_template "$SESSION_ANIM_TOKEN" "$cols" "$rows" "$goal_expanded"
     printf '%s' "$PANEL_TEMPLATE" > "$TEMPLATE_FILE.tmp"
     mv "$TEMPLATE_FILE.tmp" "$TEMPLATE_FILE"
   ) >/dev/null 2>&1 &
@@ -668,6 +689,14 @@ handle_input() {
     d) scroll_by "$page_size" ;;
     g) SCROLL_OFFSET=0 ;;
     G) SCROLL_OFFSET=$MAX_SCROLL_OFFSET ;;
+    e)
+      if [[ "$GOAL_EXPANDED" == "1" ]]; then
+        GOAL_EXPANDED=0
+      else
+        GOAL_EXPANDED=1
+      fi
+      PANEL_RESIZED=1
+      ;;
     $'\033')
       # Read the rest of a CSI key or SGR mouse sequence already begun by ESC.
       for ((i = 0; i < 32; i++)); do
@@ -729,7 +758,7 @@ read_input_batch() {
 
 local_cols=$(tput cols)
 local_rows=$(tput lines)
-build_panel_template "$SESSION_ANIM_TOKEN" "$local_cols" "$local_rows"
+build_panel_template "$SESSION_ANIM_TOKEN" "$local_cols" "$local_rows" "$GOAL_EXPANDED"
 LAST_COLS="$local_cols"
 LAST_ROWS="$local_rows"
 LAST_REFRESH_SECOND="$SECONDS"
@@ -743,7 +772,7 @@ while true; do
   if [[ -z "$TEMPLATE_BUILD_PID" && ( "$SECONDS" != "$LAST_REFRESH_SECOND" || $PANEL_RESIZED -eq 1 ) ]]; then
     local_cols=$(tput cols)
     local_rows=$(tput lines)
-    start_template_refresh "$local_cols" "$local_rows"
+    start_template_refresh "$local_cols" "$local_rows" "$GOAL_EXPANDED"
     LAST_COLS="$local_cols"
     LAST_ROWS="$local_rows"
     LAST_REFRESH_SECOND="$SECONDS"
