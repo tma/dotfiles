@@ -32,7 +32,7 @@ import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
-import { type AutocompleteItem, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { type AutocompleteItem, Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./gondolin/index.js";
 import {
@@ -44,6 +44,7 @@ import {
 	waitWithDeadline,
 	type ModelPolicy,
 } from "./lib/model-selection.js";
+import { cleanGeneratedSessionName, heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
 import { findPlanFile } from "./plan.js";
 
 // ─── Agent discovery ────────────────────────────────────────────────────────
@@ -148,6 +149,10 @@ function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 
 const MAX_PARALLEL = 8;
 const MAX_CONCURRENCY = 4;
+const TITLE_MAX_WORDS = 6;
+const TITLE_MAX_CHARS = 48;
+const TITLE_PROMPT_CHARS = 1000;
+const TITLE_TIMEOUT_MS = 5000;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -214,6 +219,8 @@ type ChildState = "queued" | "running" | "completed" | "failed" | "aborted";
 
 interface SingleResult {
 	agent: string;
+	agentType: string;
+	sessionName: string;
 	task: string;
 	state: ChildState;
 	exitCode: number;
@@ -271,6 +278,73 @@ function isFailedResult(result: SingleResult): boolean {
 
 function isTerminalResult(result: SingleResult): boolean {
 	return result.state === "completed" || result.state === "failed" || result.state === "aborted";
+}
+
+function compactState(state: ChildState): "queued" | "running" | "done" | "failed" | "stopped" {
+	if (state === "completed") return "done";
+	if (state === "aborted") return "stopped";
+	return state;
+}
+
+function safeOneLine(value: string, max = 240): string {
+	const clean = sanitizeTitleText(value).replace(/\s+/g, " ").trim();
+	return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+function formatChildIdentity(result: SingleResult): string {
+	const title = safeOneLine(result.sessionName || "Subagent Task", 80);
+	const type = safeOneLine(result.agentType || result.agent || "agent", 40);
+	const model = safeOneLine(result.model ?? "model pending", 120);
+	const thinking = safeOneLine(result.thinkingLevel ?? "pending", 20);
+	return `${title} [${type}] · ${model} · thinking ${thinking}`;
+}
+
+function compactHeaderLine(result: SingleResult, max = 240): string {
+	const name = safeOneLine(result.sessionName || "Subagent Task", 64);
+	const type = safeOneLine(result.agentType || result.agent || "agent", 40);
+	const state = compactState(result.state);
+	const model = safeOneLine(result.model ?? "model pending", 120);
+	const thinking = safeOneLine(result.thinkingLevel ?? "pending", 20);
+	return safeOneLine(`${name} · ${type} · ${state} · ${model} · ${thinking}`, max);
+}
+
+function compactActionsLine(result: SingleResult, max = 240): string | null {
+	const calls = getToolCallSummary(result.messages)
+		.map((call) => safeOneLine(call, 60))
+		.filter(Boolean);
+	if (calls.length === 0) return null;
+	const recent = calls.slice(-3);
+	const line = safeOneLine(recent.join(" · "), max);
+	return line.length > 0 ? line : null;
+}
+
+function latestActivity(result: SingleResult): string {
+	const actions = compactActionsLine(result, 240);
+	if (actions) return actions;
+	if (isFailedResult(result)) return safeOneLine(result.errorMessage || result.stderr.trim() || result.state);
+	if (result.state === "completed") {
+		const output = getFinalOutput(result.messages).trim().split("\n")[0];
+		return safeOneLine(output || "completed");
+	}
+	return compactState(result.state);
+}
+
+function formatAgentList(results: SingleResult[]): string[] {
+	const lines: string[] = [];
+	for (const result of results) {
+		lines.push(compactHeaderLine(result, 240));
+		const actions = compactActionsLine(result, 240);
+		if (actions) lines.push(`  ${actions}`);
+	}
+	return lines;
+}
+
+function diagnosticParts(result: SingleResult): string[] {
+	const parts: string[] = [];
+	if (result.stopReason && result.stopReason !== "stop") parts.push(result.stopReason);
+	if (result.errorMessage?.trim()) parts.push(result.errorMessage.trim());
+	if (result.stderr.trim()) parts.push(result.stderr.trim());
+	return parts;
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -431,6 +505,52 @@ async function getChildModelRuntime(ctx: ExtensionContext, signal?: AbortSignal)
 	return runtime;
 }
 
+async function selectRefinementModel(ctx: ExtensionContext, signal?: AbortSignal) {
+	const selection = await waitWithDeadline(
+		(titleSignal) => resolveModelSelection({
+			policy: { model: "auto:cheap", thinking: "low" },
+			availableModels: ctx.modelRegistry.getAvailable(),
+			allModels: ctx.modelRegistry.getAll(),
+			parentModel: ctx.model,
+			parentThinkingLevel: ctx.thinkingLevel,
+			authenticate: async (candidate) => {
+				const auth = await waitWithDeadline(
+					() => ctx.modelRegistry.getApiKeyAndHeaders(candidate),
+					{ signal: titleSignal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming model auth" },
+				);
+				return auth.ok ? { ok: true as const } : { ok: false as const, error: auth.error };
+			},
+			getSupportedThinkingLevels,
+			clampThinkingLevel,
+			signal: titleSignal,
+			timeoutMs: TITLE_TIMEOUT_MS,
+		}),
+		{ signal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming model selection" },
+	);
+	return selection.model;
+}
+
+async function refineSessionName(ctx: ExtensionContext, task: string, signal?: AbortSignal): Promise<string | null> {
+	const model = await selectRefinementModel(ctx, signal);
+	const registry = ctx.modelRegistry as any;
+	if (typeof registry.complete !== "function") return null;
+	const promptText = task.length > TITLE_PROMPT_CHARS ? `${task.slice(0, TITLE_PROMPT_CHARS)}…` : task;
+	const response = await waitWithDeadline(
+		(titleSignal) => registry.complete(model, {
+			systemPrompt: "You name coding-agent sessions. Reply with ONLY a short Title Case name, 2 to 6 words. No quotes, no punctuation, no explanation.",
+			messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
+		}, { signal: titleSignal }),
+		{ signal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming completion" },
+	);
+	if (!response || response.stopReason === "error" || response.stopReason === "aborted") return null;
+	const textParts = Array.isArray(response.content)
+		? response.content.filter((part: any): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text)
+		: [];
+	const raw = textParts.join(" ").trim();
+	if (!raw) return null;
+	return cleanGeneratedSessionName(raw, { maxWords: TITLE_MAX_WORDS, maxChars: TITLE_MAX_CHARS });
+}
+
 function truncateUtf8(value: string, maxBytes: number): string {
 	const bytes = Buffer.from(value);
 	if (bytes.byteLength <= maxBytes) return value;
@@ -501,6 +621,7 @@ async function runAgent(
 		onStateChange?: (index: number, result: SingleResult) => void;
 		onControlReady?: (index: number, control: AgentControl) => void;
 		onControlClosed?: (index: number) => void;
+		canApplyAsync?: () => boolean;
 		makeDetails: (results: SingleResult[]) => SubagentDetails;
 		parentCtx: ExtensionContext;
 	},
@@ -508,6 +629,8 @@ async function runAgent(
 	const agent = agents.find((candidate) => candidate.name === agentName);
 	const result: SingleResult = {
 		agent: agentName,
+		agentType: agentName,
+		sessionName: heuristicSessionName(task, { maxWords: TITLE_MAX_WORDS, maxChars: TITLE_MAX_CHARS }) ?? "Subagent Task",
 		task,
 		state: "queued",
 		exitCode: -1,
@@ -523,6 +646,9 @@ async function runAgent(
 	let unsubscribe: (() => void) | undefined;
 	let abortListener: (() => void) | undefined;
 	let controlRegistered = false;
+	let titleController: AbortController | undefined;
+	let titleTimer: ReturnType<typeof setTimeout> | undefined;
+	let parentTitleAbortListener: (() => void) | undefined;
 
 	const updateState = (state: ChildState) => {
 		result.state = state;
@@ -626,6 +752,33 @@ async function runAgent(
 		session = created.session;
 		opts.signal?.throwIfAborted();
 		await session.bindExtensions({ mode: "print" });
+		session.setSessionName(result.sessionName);
+		titleController = new AbortController();
+		titleTimer = setTimeout(() => titleController?.abort(), TITLE_TIMEOUT_MS);
+		if (opts.signal) {
+			const onParentAbort = () => titleController?.abort();
+			opts.signal.addEventListener("abort", onParentAbort, { once: true });
+			parentTitleAbortListener = () => opts.signal?.removeEventListener("abort", onParentAbort);
+		}
+		void refineSessionName(opts.parentCtx, task, titleController.signal)
+			.then((refined) => {
+				if (!refined || !session) return;
+				if (opts.signal?.aborted || isTerminalResult(result)) return;
+				if (opts.canApplyAsync && !opts.canApplyAsync()) return;
+				result.sessionName = refined;
+				session.setSessionName(refined);
+				emitUpdate();
+			})
+			.catch((error) => {
+				if (titleController?.signal.aborted || opts.signal?.aborted || isTerminalResult(result)) return;
+				const message = error instanceof Error ? error.message : String(error);
+				result.stderr = `${result.stderr}${result.stderr ? "\n" : ""}Title refinement failed: ${message}`;
+				emitUpdate();
+			})
+			.finally(() => {
+				if (titleTimer) clearTimeout(titleTimer);
+				titleTimer = undefined;
+			});
 		result.model = session.model ? `${session.model.provider}/${session.model.id}` : `${model.provider}/${model.id}`;
 		if (session.thinkingLevel !== result.thinkingLevel) {
 			result.selectionReason += `; session clamped thinking ${result.thinkingLevel} to ${session.thinkingLevel}`;
@@ -697,6 +850,10 @@ async function runAgent(
 	} finally {
 		result.durationMs = Date.now() - startedAt;
 		abortListener?.();
+		if (titleTimer) clearTimeout(titleTimer);
+		titleTimer = undefined;
+		titleController?.abort();
+		parentTitleAbortListener?.();
 		opts.onControlClosed?.(controlIndex);
 		unsubscribe?.();
 		await shutdownChildSession(session);
@@ -751,41 +908,13 @@ function selectionSummary(r: SingleResult): string {
 
 function renderCollapsedResult(r: SingleResult, theme: any): string {
 	const icon = renderResultIcon(r, theme);
-	const toolCalls = getToolCallSummary(r.messages);
-	const output = getFinalOutput(r.messages);
-	const duration = r.durationMs ? theme.fg("dim", ` ${formatDuration(r.durationMs)}`) : "";
-
-	let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${duration}`;
-
-	if (r.state === "queued") {
-		text += ` ${theme.fg("muted", "(queued…)")}`;
-	} else if (isRunning(r)) {
-		// Show what the agent is currently doing
-		const lastCall = toolCalls[toolCalls.length - 1];
-		if (lastCall) {
-			text += `\n${theme.fg("muted", "→ ")}${theme.fg("dim", lastCall)}`;
-		} else {
-			text += ` ${theme.fg("muted", "(starting…)")}`;
-		}
-		if (toolCalls.length > 1) {
-			text += theme.fg("dim", ` (${toolCalls.length} tools)`);
-		}
-	} else if (r.exitCode !== 0 && r.errorMessage) {
-		text += `\n${theme.fg("error", r.errorMessage)}`;
-	} else if (toolCalls.length === 0 && !output) {
-		text += ` ${theme.fg("muted", "(no output)")}`;
-	} else {
-		// Show last few tool calls
-		const shown = toolCalls.slice(-5);
-		if (toolCalls.length > 5) text += `\n${theme.fg("muted", `… ${toolCalls.length - 5} earlier`)}`;
-		for (const call of shown) {
-			text += `\n${theme.fg("muted", "→ ")}${theme.fg("dim", call)}`;
-		}
-	}
-
-	if (r.model) text += `\n${theme.fg("dim", selectionSummary(r))}`;
-	const usage = formatUsage(r.usage);
-	if (usage) text += `\n${theme.fg("dim", usage)}`;
+	const name = sanitizeTitleText(r.sessionName || "Subagent Task") || "Subagent Task";
+	const type = sanitizeTitleText(r.agentType || r.agent || "agent") || "agent";
+	const model = sanitizeTitleText(r.model ?? "model pending") || "model pending";
+	const thinking = sanitizeTitleText(r.thinkingLevel ?? "pending") || "pending";
+	let text = `${icon} ${theme.fg("toolTitle", theme.bold(name))} ${theme.fg("muted", "·")} ${theme.fg("accent", type)} ${theme.fg("muted", "·")} ${theme.fg("accent", compactState(r.state))} ${theme.fg("muted", "·")} ${theme.fg("dim", model)} ${theme.fg("muted", "·")} ${theme.fg("dim", thinking)}`;
+	const actions = compactActionsLine(r, 180);
+	if (actions) text += `\n${theme.fg("dim", actions)}`;
 	return text;
 }
 
@@ -793,7 +922,11 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 	const c = new Container();
 	const icon = renderResultIcon(r, theme);
 	const duration = r.durationMs ? ` ${formatDuration(r.durationMs)}` : "";
-	c.addChild(new Text(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("dim", duration)}`, 0, 0));
+	const title = sanitizeTitleText(r.sessionName || "Subagent Task") || "Subagent Task";
+	const type = sanitizeTitleText(r.agentType || r.agent || "agent") || "agent";
+	const modelThinking = `${sanitizeTitleText(r.model ?? "model pending")} · thinking ${sanitizeTitleText(r.thinkingLevel ?? "pending")}`;
+	c.addChild(new Text(`${icon} ${theme.fg("toolTitle", theme.bold(title))} ${theme.fg("accent", `[${type}]`)}${theme.fg("dim", duration)}`, 0, 0));
+	c.addChild(new Text(theme.fg("dim", modelThinking), 0, 0));
 
 	if (r.exitCode !== 0 && r.errorMessage) {
 		c.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -930,6 +1063,8 @@ export default function (pi: ExtensionAPI) {
 	let shuttingDown = false;
 	let lastProgressFingerprint = "";
 	const pendingCompletions = new Set<string>();
+	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
+	const deliveredCompletions = new Set<string>();
 	const PROGRESS_INTERVAL_MS = 60_000;
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_ACTIVE_JOBS = 20;
@@ -950,8 +1085,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function makePlaceholder(agent: string, task: string, step?: number): SingleResult {
+		const fallbackName = heuristicSessionName(task, { maxWords: TITLE_MAX_WORDS, maxChars: TITLE_MAX_CHARS }) ?? `Task ${step ?? 1}`;
 		return {
 			agent,
+			agentType: agent,
+			sessionName: fallbackName,
 			task,
 			state: "queued",
 			exitCode: -1,
@@ -992,47 +1130,19 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	function safeOneLine(value: string, max = 240): string {
-		const clean = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
-		return clean.length > max ? `${clean.slice(0, max)}…` : clean;
-	}
-
-	function latestActivity(result: SingleResult): string {
-		const calls = getToolCallSummary(result.messages);
-		const call = calls[calls.length - 1];
-		if (result.state === "queued") return "waiting for a process-wide slot";
-		if (result.state === "running") return safeOneLine(call || "starting");
-		if (isFailedResult(result)) return safeOneLine(result.errorMessage || result.stderr.trim() || result.state);
-		const output = getFinalOutput(result.messages).trim().split("\n")[0];
-		return safeOneLine(output || "completed");
-	}
-
-	function formatJobSummary(job: BackgroundJob): string {
-		const { done, running, queued } = jobCounts(job);
-		const duration = formatDuration((job.endedAt ?? Date.now()) - job.createdAt);
-		return `${job.id} · ${job.state} · ${job.mode} · ${done}/${job.total} done${running ? ` · ${running} running` : ""}${queued ? ` · ${queued} queued` : ""} · ${duration}`;
-	}
-
-	function formatAgentList(job: BackgroundJob): string[] {
-		return job.results.map((result) =>
-			`${safeOneLine(result.agent, 80)} · ${safeOneLine(selectionSummary(result), 500)}`,
-		);
-	}
-
 	function formatJob(job: BackgroundJob, includeOutput = false): string {
-		const lines = [formatJobSummary(job)];
-		for (const result of job.results) {
-			const icon = result.state === "queued" ? "○" : result.state === "running" ? "●" : isFailedResult(result) ? "✗" : "✓";
-			const step = result.step ? ` step ${result.step}` : "";
-			lines.push(`${icon} ${result.agent}${step}: ${latestActivity(result).slice(0, 240)}`);
-			lines.push(`  ${safeOneLine(selectionSummary(result), 500)}`);
-			if (includeOutput && result.exitCode !== -1) {
-				const output = getFinalOutput(result.messages) || result.errorMessage || result.stderr;
-				if (output.trim()) lines.push(truncateOutput(output.trim()));
+		const lines = formatAgentList(job.results);
+		if (includeOutput) {
+			for (const result of job.results) {
+				if (!isTerminalResult(result)) continue;
+				const output = getFinalOutput(result.messages).trim();
+				const error = diagnosticParts(result).join("; ");
+				if (output) lines.push(`  output: ${safeOneLine(output, 500)}`);
+				if (error) lines.push(`  error: ${safeOneLine(error, 500)}`);
 			}
 		}
-		if (job.deliveryFailures.length > 0) lines.push(`Input delivery: ${job.deliveryFailures.slice(-3).join("; ")}`);
-		if (job.error) lines.push(`Error: ${job.error}`);
+		if (job.deliveryFailures.length > 0) lines.push(`input delivery: ${job.deliveryFailures.slice(-3).join("; ")}`);
+		if (job.error) lines.push(`error: ${safeOneLine(job.error, 500)}`);
 		return truncateUtf8(lines.join("\n"), MAX_STATUS_OUTPUT_BYTES);
 	}
 
@@ -1061,9 +1171,12 @@ export default function (pi: ExtensionAPI) {
 			total: job.total,
 			...jobCounts(job),
 			agents: job.results.map((result) => ({
+				sessionName: safeOneLine(result.sessionName || "Subagent Task", 80),
+				agentType: safeOneLine(result.agentType || result.agent, 40),
+				identity: safeOneLine(formatChildIdentity(result), 240),
 				name: safeOneLine(result.agent, 80),
 				state: result.state,
-				model: safeOneLine(result.model ?? "pending", 100),
+				model: safeOneLine(result.model ?? "pending", 120),
 				thinkingLevel: safeOneLine(result.thinkingLevel ?? "pending", 20),
 				activity: latestActivity(result).slice(0, 240),
 			})),
@@ -1090,39 +1203,146 @@ export default function (pi: ExtensionAPI) {
 		currentCtx.ui.setStatus("subagents", undefined);
 	}
 
-	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string): void {
-		if (shuttingDown || ownerSessionId !== currentSessionId || ownerSessionFile !== currentSessionFile) return;
+	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string): boolean {
+		if (shuttingDown || ownerSessionId !== currentSessionId || ownerSessionFile !== currentSessionFile) return false;
 		try {
 			pi.sendMessage({
 				customType,
 				content: [{ type: "text", text }],
 				display: false,
 			}, { triggerTurn: true, deliverAs: "followUp" });
+			return true;
 		} catch {
 			// Session replacement can invalidate a background callback.
+			return false;
 		}
+	}
+
+	function boundCoordinatorOutput(text: string): string {
+		const bytes = Buffer.from(text);
+		if (bytes.byteLength <= MAX_STATUS_OUTPUT_BYTES) return text;
+		const keep = Math.max(0, MAX_STATUS_OUTPUT_BYTES - 160);
+		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Truncated coordinator update: showing first ${keep} of ${bytes.byteLength} bytes]`;
+	}
+
+	function completionKey(jobId: string, index: number): string {
+		return `${jobId}:${index}`;
+	}
+
+	function cloneResultSnapshot(result: SingleResult): SingleResult {
+		let messages: Message[] = [];
+		try {
+			messages = JSON.parse(JSON.stringify(result.messages)) as Message[];
+		} catch {
+			messages = [];
+		}
+		return {
+			...result,
+			messages,
+			usage: { ...result.usage },
+		};
+	}
+
+	function boundCompletionBlock(text: string): string {
+		const MAX_COMPLETION_BLOCK_BYTES = Math.max(2048, Math.floor(MAX_STATUS_OUTPUT_BYTES / 2));
+		const bytes = Buffer.from(text);
+		if (bytes.byteLength <= MAX_COMPLETION_BLOCK_BYTES) return text;
+		const keep = Math.max(0, MAX_COMPLETION_BLOCK_BYTES - 192);
+		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Child completion truncated. Use subagent action=status for full transcript.]`;
+	}
+
+	function formatChildCompletion(job: BackgroundJob, index: number, result: SingleResult): string {
+		const step = result.step ? `step ${result.step}` : `child ${index + 1}/${job.total}`;
+		const output = (getFinalOutput(result.messages) || "").trim() || "(no output)";
+		const errors = diagnosticParts(result).map((part) => safeOneLine(part, 500));
+		const lines = [
+			`${job.id} · ${job.mode} · ${step}`,
+			`identity: ${formatChildIdentity(result)}`,
+			`state: ${result.state}`,
+			`usage: ${formatUsage(result.usage) || "none"}`,
+			"output:",
+			output,
+		];
+		if (errors.length > 0) {
+			lines.push("error:");
+			lines.push(errors.join("; "));
+		}
+		return boundCompletionBlock(lines.join("\n"));
 	}
 
 	function flushCompletions(): void {
 		completionTimer = null;
-		const completed = [...pendingCompletions]
-			.map((id) => jobs.get(id))
-			.filter((job): job is BackgroundJob => job !== undefined && isCurrentOwner(job));
+		const pendingKeys = [...pendingCompletions];
 		pendingCompletions.clear();
-		if (completed.length === 0) return;
-		const summaries = completed.map((job) => formatJob(job)).join("\n\n");
-		const owner = completed[0]!;
-		sendCoordinatorMessage(
-			owner.ownerSessionId,
-			owner.ownerSessionFile,
-			"subagent-completion",
-			`Background subagent work changed state. Inspect the relevant job with subagent action=status before reporting or accepting it.\n\n${summaries}`,
-		);
+		const entries: Array<{ key: string; ownerSessionId: string; ownerSessionFile?: string; block: string }> = [];
+		for (const key of pendingKeys) {
+			if (deliveredCompletions.has(key)) continue;
+			const snap = pendingCompletionSnapshots.get(key);
+			if (!snap) continue;
+			const job = jobs.get(snap.jobId);
+			if (!job || !isCurrentOwner(job)) continue;
+			entries.push({
+				key,
+				ownerSessionId: snap.ownerSessionId,
+				ownerSessionFile: snap.ownerSessionFile,
+				block: formatChildCompletion(job, snap.index, snap.result),
+			});
+		}
+		if (entries.length === 0) return;
+
+		const separator = "\n\n---\n\n";
+		const maxBytes = MAX_STATUS_OUTPUT_BYTES;
+		const batches: Array<{ ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string }> = [];
+		let current: { ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string } | null = null;
+		for (const entry of entries) {
+			const nextText = current ? `${current.text}${separator}${entry.block}` : entry.block;
+			if (current && (Buffer.byteLength(nextText) > maxBytes || current.ownerSessionId !== entry.ownerSessionId || current.ownerSessionFile !== entry.ownerSessionFile)) {
+				batches.push(current);
+				current = null;
+			}
+			if (!current) {
+				current = { ownerSessionId: entry.ownerSessionId, ownerSessionFile: entry.ownerSessionFile, keys: [entry.key], text: entry.block };
+			} else {
+				current.keys.push(entry.key);
+				current.text = `${current.text}${separator}${entry.block}`;
+			}
+		}
+		if (current) batches.push(current);
+
+		for (const batch of batches) {
+			const sent = sendCoordinatorMessage(batch.ownerSessionId, batch.ownerSessionFile, "subagent-completion", batch.text);
+			if (!sent) {
+				for (const key of batch.keys) {
+					const snap = pendingCompletionSnapshots.get(key);
+					if (!snap) continue;
+					const job = jobs.get(snap.jobId);
+					if (!job) continue;
+					recordDeliveryFailure(job, `completion delivery failed for child ${snap.index}`);
+					if (isCurrentOwner(job) && !shuttingDown) pendingCompletions.add(key);
+				}
+				continue;
+			}
+			for (const key of batch.keys) {
+				deliveredCompletions.add(key);
+				pendingCompletionSnapshots.delete(key);
+			}
+		}
+
+		if (pendingCompletions.size > 0 && !completionTimer) completionTimer = setTimeout(flushCompletions, 500);
 	}
 
-	function queueCompletion(job: BackgroundJob): void {
-		if (shuttingDown || !isCurrentOwner(job)) return;
-		pendingCompletions.add(job.id);
+	function queueCompletion(job: BackgroundJob, index: number, result: SingleResult): void {
+		if (shuttingDown || !isCurrentOwner(job) || !isTerminalResult(result)) return;
+		const key = completionKey(job.id, index);
+		if (deliveredCompletions.has(key)) return;
+		pendingCompletionSnapshots.set(key, {
+			jobId: job.id,
+			ownerSessionId: job.ownerSessionId,
+			ownerSessionFile: job.ownerSessionFile,
+			index,
+			result: cloneResultSnapshot(result),
+		});
+		pendingCompletions.add(key);
 		if (!completionTimer) completionTimer = setTimeout(flushCompletions, 250);
 	}
 
@@ -1137,7 +1357,7 @@ export default function (pi: ExtensionAPI) {
 			active[0].ownerSessionId,
 			active[0].ownerSessionFile,
 			"subagent-progress",
-			`Background subagents are still active. Inspect them with subagent action=status and give the user a concise material-progress update.\n\n${summaries}`,
+			boundCoordinatorOutput(`Background subagents are still active. Material progress snapshot:\n\n${summaries}`),
 		);
 	}
 
@@ -1187,6 +1407,18 @@ export default function (pi: ExtensionAPI) {
 		job.updatedAt = Date.now();
 	}
 
+	function clearCompletionTracking(jobId: string): void {
+		for (const key of [...pendingCompletions]) {
+			if (key.startsWith(`${jobId}:`)) pendingCompletions.delete(key);
+		}
+		for (const key of [...pendingCompletionSnapshots.keys()]) {
+			if (key.startsWith(`${jobId}:`)) pendingCompletionSnapshots.delete(key);
+		}
+		for (const key of [...deliveredCompletions]) {
+			if (key.startsWith(`${jobId}:`)) deliveredCompletions.delete(key);
+		}
+	}
+
 	function pruneJobs(): void {
 		const terminal = [...jobs.values()]
 			.filter((job) => job.state !== "running" && job.state !== "stopping")
@@ -1206,7 +1438,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		while (jobs.size > MAX_RETAINED_JOBS && terminal.length > 0) {
-			jobs.delete(terminal.shift()!.id);
+			const removed = terminal.shift()!;
+			jobs.delete(removed.id);
+			clearCompletionTracking(removed.id);
 		}
 	}
 
@@ -1217,6 +1451,7 @@ export default function (pi: ExtensionAPI) {
 		onStateChange: ((index: number, result: SingleResult) => void) | undefined,
 		onControlReady: ((index: number, control: AgentControl) => void) | undefined,
 		onControlClosed: ((index: number) => void) | undefined,
+		canApplyAsync: (() => boolean) | undefined,
 		ctx: ExtensionContext,
 		agents: AgentConfig[],
 	) {
@@ -1274,6 +1509,7 @@ export default function (pi: ExtensionAPI) {
 						onStateChange,
 						onControlReady,
 						onControlClosed,
+						canApplyAsync,
 						makeDetails: makeDetails("chain"),
 						launchPolicy,
 						itemPolicy: modelPolicyFrom(step),
@@ -1287,7 +1523,7 @@ export default function (pi: ExtensionAPI) {
 								...results[pendingIndex],
 								state: "aborted",
 								exitCode: 1,
-								stopReason: "aborted",
+								stopReason: "skipped",
 								errorMessage: "Chain stopped before this step",
 							};
 							onStateChange?.(pendingIndex, results[pendingIndex]);
@@ -1344,6 +1580,7 @@ export default function (pi: ExtensionAPI) {
 						},
 						onControlReady,
 						onControlClosed,
+						canApplyAsync,
 						makeDetails: makeDetails("parallel"),
 						launchPolicy,
 						itemPolicy: modelPolicyFrom(task),
@@ -1384,6 +1621,7 @@ export default function (pi: ExtensionAPI) {
 					onStateChange,
 					onControlReady,
 					onControlClosed,
+					canApplyAsync,
 					makeDetails: makeDetails("single"),
 					launchPolicy,
 					parentCtx: ctx,
@@ -1435,7 +1673,10 @@ export default function (pi: ExtensionAPI) {
 					if (!job) {
 						return { content: [{ type: "text", text: `No unique subagent job matches "${params.id}".` }], details: undefined, isError: true };
 					}
-					return { content: [{ type: "text", text: boundStatusOutput(formatJob(job, true)) }], details: undefined };
+					return {
+						content: [{ type: "text", text: boundStatusOutput(`job ${job.id}\n${formatJob(job, true)}`) }],
+						details: { mode: job.mode, results: [...job.results], jobId: job.id, state: job.state } satisfies SubagentDetails,
+					};
 				}
 
 				const ordered = [...jobs.values()]
@@ -1445,11 +1686,12 @@ export default function (pi: ExtensionAPI) {
 					...ordered.filter((job) => job.state === "running" || job.state === "stopping"),
 					...ordered.filter((job) => job.state !== "running" && job.state !== "stopping").slice(0, 10),
 				];
+				const combined = visible.flatMap((job) => job.results);
 				return {
 					content: [{ type: "text", text: visible.length > 0
-						? boundStatusOutput(visible.flatMap(formatAgentList).join("\n"))
+						? boundStatusOutput(visible.map((job) => `job ${job.id}`).join("\n") + `\n${formatAgentList(combined).join("\n")}`)
 						: "No subagent jobs have run in this session." }],
-					details: undefined,
+					details: visible.length > 0 ? { mode: combined.length > 1 ? "parallel" : "single", results: combined } satisfies SubagentDetails : undefined,
 				};
 			}
 
@@ -1603,9 +1845,8 @@ export default function (pi: ExtensionAPI) {
 				job.abortController.signal,
 				undefined,
 				(index, result) => {
-					job.results[index] = job.state === "stopping" && !isTerminalResult(result)
-						? { ...result, state: "aborted", exitCode: 1, stopReason: "aborted", errorMessage: "Subagent stopping" }
-						: result;
+					job.results[index] = result;
+					if (isTerminalResult(result)) queueCompletion(job, index, result);
 					job.updatedAt = Date.now();
 					if (isCurrentOwner(job)) refreshWidget();
 				},
@@ -1622,11 +1863,17 @@ export default function (pi: ExtensionAPI) {
 					job.updatedAt = Date.now();
 					if (isCurrentOwner(job)) refreshWidget();
 				},
+				() => isCurrentOwner(job) && !shuttingDown,
 				ctx,
 				agents,
 			);
 			job.execution = dispatch.then(async (result) => {
-				if (result.details?.results) job.results = result.details.results;
+				if (result.details?.results) {
+					job.results = result.details.results;
+					for (let index = 0; index < job.results.length; index++) {
+						queueCompletion(job, index, job.results[index]);
+					}
+				}
 				await Promise.allSettled([...job.deliveryPromises]);
 				for (const input of job.pendingInputs) {
 					recordDeliveryFailure(job, `child ${input.index} finished before queued ${input.delivery} input was delivered`);
@@ -1636,127 +1883,84 @@ export default function (pi: ExtensionAPI) {
 					? "stopped"
 					: result.isError || job.results.some(isFailedResult) ? "failed" : "completed";
 			}).catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				job.error = message;
+				for (let index = 0; index < job.results.length; index++) {
+					if (isTerminalResult(job.results[index])) continue;
+					job.results[index] = {
+						...job.results[index],
+						state: job.abortController.signal.aborted ? "aborted" : "failed",
+						exitCode: 1,
+						stopReason: job.abortController.signal.aborted ? "aborted" : "error",
+						errorMessage: job.abortController.signal.aborted ? "Subagent stopped before launch" : message,
+					};
+					queueCompletion(job, index, job.results[index]);
+				}
 				job.state = job.abortController.signal.aborted ? "stopped" : "failed";
-				job.error = error instanceof Error ? error.message : String(error);
 			}).finally(() => {
 				job.endedAt = Date.now();
 				job.updatedAt = job.endedAt;
 				if (isCurrentOwner(job)) refreshWidget();
 				stopProgressReporterIfIdle();
-				queueCompletion(job);
 				pruneJobs();
 			});
 
+			const compact = shape.results.map((result) => compactHeaderLine(result, 200)).join("\n");
 			return {
-				content: [{ type: "text", text: `Started ${job.id} in the background (${shape.mode}, ${shape.total} task${shape.total === 1 ? "" : "s"}). Return control to the user now. Use action=status to inspect it; do not wait or poll tightly.` }],
+				content: [{ type: "text", text: `job ${job.id}\n${compact}` }],
 				details: { mode: shape.mode, results: shape.results, jobId: job.id, state: "running" } satisfies SubagentDetails,
 			};
 		},
+		renderShell: "self",
 
 		// ── Render: tool call header ──
 		renderCall(args, theme) {
+			let text: string;
 			if (args.action) {
-				const target = args.id ? ` ${args.id}` : "";
-				return new Text(`${theme.fg("toolTitle", theme.bold("agents "))}${theme.fg("accent", args.action)}${theme.fg("dim", target)}`, 0, 0);
-			}
-			if (args.chain?.length) {
+				text = `${theme.fg("toolTitle", theme.bold("agents "))}${theme.fg("accent", args.action)}`;
+			} else if (args.chain?.length) {
 				const agents = args.chain.map((s: any) => s.agent);
 				const flow = agents.map((a: string) => theme.fg("accent", a)).join(theme.fg("muted", " → "));
-				return new Text(`${theme.fg("toolTitle", theme.bold("agents "))}${flow}`, 0, 0);
-			}
-			if (args.tasks?.length) {
+				text = `${theme.fg("toolTitle", theme.bold("agents "))}${flow}`;
+			} else if (args.tasks?.length) {
 				const agents = args.tasks.map((t: any) => t.agent);
 				const list = agents.map((a: string) => theme.fg("accent", a)).join(theme.fg("muted", " | "));
-				return new Text(`${theme.fg("toolTitle", theme.bold("agents "))}${list}`, 0, 0);
+				text = `${theme.fg("toolTitle", theme.bold("agents "))}${list}`;
+			} else {
+				text = `${theme.fg("toolTitle", theme.bold("agent "))}${theme.fg("accent", args.agent || "?")}`;
 			}
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("agent "))}${theme.fg("accent", args.agent || "?")}`,
-				0,
-				0,
-			);
+			const box = new Box(1, 1, (value) => theme.bg("toolPendingBg", value));
+			box.addChild(new Text(text, 0, 0));
+			return box;
 		},
 
 		// ── Render: tool result ──
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, { expanded }, theme, context) {
 			const details = result.details as SubagentDetails | undefined;
+			let body: Container | Text;
 			if (!details || details.results.length === 0) {
 				const text = result.content[0];
-				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
-			}
-
-			// Single
-			if (details.mode === "single" && details.results.length === 1) {
-				return expanded
+				body = new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+			} else if (details.mode === "single" && details.results.length === 1) {
+				body = expanded
 					? renderExpandedResult(details.results[0], theme)
 					: new Text(renderCollapsedResult(details.results[0], theme), 0, 0);
-			}
-
-			// Chain / Parallel
-			const total = details.results.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage());
-			const totalDuration = details.results.reduce((sum, r) => sum + (r.durationMs || 0), 0);
-			const ok = details.results.filter((r) => r.exitCode === 0).length;
-			const icon = ok === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
-			const modeLabel = details.mode === "chain" ? "chain" : "agents";
-
-			if (expanded) {
+			} else if (expanded) {
 				const c = new Container();
-				c.addChild(new Text(
-					`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))} ${theme.fg("accent", `${ok}/${details.results.length}`)} ${theme.fg("dim", formatDuration(totalDuration))}`,
-					0, 0,
-				));
-
-				for (const r of details.results) {
-					c.addChild(new Spacer(1));
-					const stepLabel = r.step ? `Step ${r.step}: ` : "";
-					c.addChild(new Text(theme.fg("muted", `─── ${stepLabel}`) + theme.fg("accent", r.agent) + ` ${renderResultIcon(r, theme)}`, 0, 0));
-					c.addChild(renderExpandedResult(r, theme));
+				let first = true;
+				for (const child of details.results) {
+					if (!first) c.addChild(new Spacer(1));
+					first = false;
+					c.addChild(renderExpandedResult(child, theme));
 				}
-
-				const usage = formatUsage(total);
-				if (usage) {
-					c.addChild(new Spacer(1));
-					c.addChild(new Text(theme.fg("dim", `Total: ${usage}`), 0, 0));
-				}
-
-				return c;
+				body = c;
+			} else {
+				body = new Text(details.results.map((child) => renderCollapsedResult(child, theme)).join("\n"), 0, 0);
 			}
-
-			// Collapsed multi-result
-			const running = details.results.filter((r) => r.state === "running").length;
-			const queued = details.results.filter((r) => r.state === "queued").length;
-			const done = details.results.filter(isTerminalResult).length;
-			const headerIcon = running > 0 || queued > 0
-				? theme.fg("warning", "●")
-				: ok === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
-			const status = running > 0 || queued > 0
-				? `${done}/${details.results.length} done${running ? `, ${running} running` : ""}${queued ? `, ${queued} queued` : ""}`
-				: `${ok}/${details.results.length}`;
-
-			let text = `${headerIcon} ${theme.fg("toolTitle", theme.bold(modeLabel))} ${theme.fg("accent", status)} ${theme.fg("dim", formatDuration(totalDuration))}`;
-			for (const r of details.results) {
-				const ri = renderResultIcon(r, theme);
-				const stepLabel = r.step ? `Step ${r.step}: ` : "";
-				const duration = r.durationMs ? theme.fg("dim", ` ${formatDuration(r.durationMs)}`) : "";
-
-				if (r.state === "queued") {
-					text += `\n${ri} ${theme.fg("muted", stepLabel)}${theme.fg("accent", r.agent)} ${theme.fg("muted", "(queued…)")}`;
-				} else if (isRunning(r)) {
-					const lastCall = getToolCallSummary(r.messages).slice(-1)[0];
-					const tools = getToolCallSummary(r.messages).length;
-					const activity = lastCall
-						? `${theme.fg("dim", lastCall)}${tools > 1 ? theme.fg("muted", ` (${tools} tools)`) : ""}`
-						: theme.fg("muted", "(starting…)");
-					text += `\n${ri} ${theme.fg("muted", stepLabel)}${theme.fg("accent", r.agent)} ${activity}`;
-				} else {
-					const output = getFinalOutput(r.messages);
-					const preview = output ? (output.length > 80 ? output.slice(0, 80) + "…" : output) : "(no output)";
-					text += `\n${ri} ${theme.fg("muted", stepLabel)}${theme.fg("accent", r.agent)}${duration} ${theme.fg("dim", preview)}`;
-				}
-				if (r.model) text += `\n  ${theme.fg("dim", selectionSummary(r))}`;
-			}
-			const usage = formatUsage(total);
-			if (usage) text += `\n${theme.fg("dim", `Total: ${usage}`)}`;
-			return new Text(text, 0, 0);
+			const hasError = Boolean(context?.isError || details?.results.some(isFailedResult));
+			const box = new Box(1, 1, (value) => theme.bg(hasError ? "toolErrorBg" : "toolPendingBg", value));
+			box.addChild(body);
+			return box;
 		},
 	});
 
@@ -1780,7 +1984,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			message: {
 				customType: "subagent-status-reminder",
-				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Inspect them with subagent action=status before answering the user, and report only material changes.`,
+				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Self-contained child completions are delivered automatically; inspect details directly, and use subagent action=status only when the user asks for status, details are missing, or control actions are needed.`,
 				display: false,
 			},
 		};
@@ -1793,6 +1997,8 @@ export default function (pi: ExtensionAPI) {
 		progressTimer = null;
 		completionTimer = null;
 		pendingCompletions.clear();
+		pendingCompletionSnapshots.clear();
+		deliveredCompletions.clear();
 		const ownerSessionId = ctx.sessionManager.getSessionId();
 		const ownerSessionFile = ctx.sessionManager.getSessionFile();
 		const ownedJobs = [...jobs.values()].filter((job) =>
@@ -1814,6 +2020,7 @@ export default function (pi: ExtensionAPI) {
 			job.state = "stopped";
 			job.endedAt ??= Date.now();
 			jobs.delete(job.id);
+			clearCompletionTracking(job.id);
 		}
 		try { if (jobsFile) fs.unlinkSync(jobsFile); } catch {}
 		jobsFile = "";

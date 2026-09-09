@@ -12,7 +12,14 @@ Run resolver and launcher smoke tests together:
 node --experimental-strip-types --test .pi/agent/tests/*.test.ts
 ```
 
-The launcher tests also need Node's `node:module.stripTypeScriptTypes` API. They execute the actual launcher functions with fake session, storage, and sandbox boundaries. No model calls are made.
+The launcher and runtime tests also need Node's `node:module.stripTypeScriptTypes` API. They execute the actual exported subagent extension and launcher helpers with fake session, storage, and sandbox boundaries. No model calls are made.
+
+Coverage now includes:
+- completion lifecycle delivery from real `registerTool.execute` paths (parallel early completion, retry after failed coordinator send, owner/session shutdown guards, and per-child de-duplication);
+- `before_agent_start` reminder content and completion error formatting behavior;
+- runAgent naming lifecycle (fallback title, optional refinement update, abort cleanup for timers/listeners);
+- compact main-session status formatting (session name + agent type + lifecycle + model + thinking, optional recent action line) without job IDs;
+- status-panel embedded Python rendering at narrow widths with sanitization checks.
 
 Real-Pi integration tests skip with a setup message unless `PI_TEST_NODE_MODULES` is set. Point it at an existing external `node_modules` directory containing `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and their runtime dependencies:
 

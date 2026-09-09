@@ -242,32 +242,58 @@ build_panel_template() {
 
       local subagent_lines
       subagent_lines=$(echo "$subagents_json" | python3 -c "
-import sys,json,textwrap
+import re,sys,json
 width=max(20, int(sys.argv[1]))
 data=json.load(sys.stdin)
 reset='\033[0m'
 dim='\033[2m'
-cyan='\033[38;5;159m'
 green='\033[38;5;114m'
 yellow='\033[38;5;228m'
 red='\033[38;5;217m'
+ansi_re=re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\\\)|\x1b[@-_]')
+control_re=re.compile(r'[\x00-\x1f\x7f-\x9f]')
+def sanitize(value):
+    text=str(value or '')
+    text=ansi_re.sub(' ', text)
+    text=control_re.sub(' ', text)
+    return ' '.join(text.split())
+def fit(text, budget):
+    clean=sanitize(text)
+    if budget <= 0:
+        return ''
+    if len(clean) <= budget:
+        return clean
+    if budget == 1:
+        return '…'
+    return clean[:budget-1].rstrip() + '…'
+def line_with_preserved_tail(parts, width_limit, min_head=6):
+    head, *tail_parts = parts
+    tail=' · '.join(tail_parts)
+    if not tail:
+        return fit(head, width_limit)
+    tail_clean=sanitize(tail)
+    reserved=min(len(tail_clean), max(6, width_limit - min_head))
+    head_budget=max(min_head, width_limit - reserved - 3)
+    head_part=fit(head, head_budget)
+    tail_budget=max(6, width_limit - len(head_part) - 3)
+    tail_part=fit(tail_clean, tail_budget)
+    if not head_part:
+        return tail_part
+    return f'{head_part} · {tail_part}'
 agents=[agent for job in data.get('active', []) for agent in job.get('agents', [])]
+maxw=max(8,width-3)
 for ai, agent in enumerate(agents):
-    state=str(agent.get('state','running'))
-    icon={'queued':'○','running':'▸','completed':'✓','failed':'✗','aborted':'■'}.get(state,'○')
-    color={'queued':dim,'running':yellow,'completed':green,'failed':red,'aborted':red}.get(state,dim)
-    name=' '.join(str(agent.get('name','agent')).split())
-    model=' '.join(str(agent.get('model','pending')).split())
-    thinking=' '.join(str(agent.get('thinkingLevel','pending')).split())
-    label=f'{name} · {model} · {thinking}'
-    wrapped=textwrap.wrap(label, width=max(8,width-3), break_long_words=False, break_on_hyphens=False) or ['']
-    print(f' {color}{icon}{reset} {wrapped[0]}')
-    for line in wrapped[1:2]:
-        print(f'   {dim}{line}{reset}')
-    activity=' '.join(str(agent.get('activity','')).split())
-    if activity:
-        for line in textwrap.wrap(activity, width=max(8,width-4), break_long_words=False, break_on_hyphens=False)[:2]:
-            print(f'   {dim}{line}{reset}')
+    raw_state=sanitize(agent.get('state','running')) or 'running'
+    icon={'queued':'○','running':'▸','completed':'✓','failed':'✗','aborted':'■'}.get(raw_state,'○')
+    color={'queued':dim,'running':yellow,'completed':green,'failed':red,'aborted':red}.get(raw_state,dim)
+    title=sanitize(agent.get('sessionName') or agent.get('name') or 'Subagent Task')
+    atype=sanitize(agent.get('agentType') or agent.get('name') or 'agent')
+    model=sanitize(agent.get('model','pending')) or 'pending'
+    thinking=sanitize(agent.get('thinkingLevel','pending')) or 'pending'
+    header=line_with_preserved_tail([title, atype, raw_state], maxw)
+    detail=line_with_preserved_tail([model, thinking], maxw, min_head=8)
+    print(f' {color}{icon}{reset} {header}')
+    print(f'   {dim}{detail}{reset}')
     if ai < len(agents)-1:
         print('')
 " "$content_cols" 2>/dev/null)

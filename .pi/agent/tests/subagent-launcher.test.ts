@@ -13,6 +13,12 @@ function functionSource(name: string, nested = false): string {
 	return match[0];
 }
 
+function constSource(name: string): string {
+	const match = source.match(new RegExp(`^const ${name} = [^;]+;`, "m"));
+	assert.ok(match, `Launcher must define ${name}`);
+	return match[0];
+}
+
 test("slash commands retain literal flags, multiline tasks, and original prompt endings", async () => {
 	const commands = new Map<string, any>();
 	const messages: string[] = [];
@@ -69,6 +75,8 @@ function launcher(
 	// disk/UI/sandbox/session boundaries. A fake session cannot make model calls.
 	const dependencies = {
 		...selection, agents, ctx, MAX_PARALLEL: 8,
+		heuristicSessionName: (text: string) => text.split(/\n/).map((line) => line.trim()).find(Boolean) ?? "Subagent Task",
+		waitWithDeadline: async (operation: any, options: any) => operation(options?.signal),
 		getSupportedThinkingLevels: () => selection.THINKING_LEVELS,
 		clampThinkingLevel: (_model: any, level: string) => level,
 		catalogRefreshers: new WeakMap(),
@@ -85,6 +93,7 @@ function launcher(
 			return { session: {
 				model: options.model, thinkingLevel: options.thinkingLevel, isIdle: true,
 				bindExtensions: async () => {}, subscribe: () => () => {}, dispose: () => {},
+				setSessionName: () => {},
 				prompt: async () => {},
 			} };
 		},
@@ -92,11 +101,16 @@ function launcher(
 	};
 	const code = [
 		...Object.keys(dependencies).map((name) => `const ${name} = dependencies.${name};`),
-		...["emptyUsage", "isFailedResult", "isTerminalResult", "refreshModelCatalog", "shutdownChildSession", "runAgent"].map((name) => functionSource(name)),
+		constSource("TITLE_MAX_WORDS"),
+		constSource("TITLE_MAX_CHARS"),
+		constSource("TITLE_PROMPT_CHARS"),
+		constSource("TITLE_TIMEOUT_MS"),
+		"const cleanGeneratedSessionName = (value) => value;",
+		...["emptyUsage", "isFailedResult", "isTerminalResult", "refreshModelCatalog", "selectRefinementModel", "refineSessionName", "shutdownChildSession", "runAgent"].map((name) => functionSource(name)),
 		...["modelPolicyFrom", "makePlaceholder", "executeDispatch"].map((name) => functionSource(name, true)),
 	].join("\n");
 	const dispatch = new Function("dependencies", `${stripTypeScriptTypes(code)}
-		return (params, signal) => executeDispatch(params, signal, undefined, undefined, undefined, undefined, ctx, agents);
+		return (params, signal) => executeDispatch(params, signal, undefined, undefined, undefined, undefined, undefined, ctx, agents);
 	`)(dependencies);
 	return { dispatch, created, refreshes, catalog, setError: (value: string) => { error = value; } };
 }
@@ -166,3 +180,201 @@ for (const model of ["agent/gpt-5-mini", "auto:cheap"]) {
 		assert.deepEqual(run.created, []);
 	});
 }
+
+test("compact status line includes session name, type, lifecycle, model, and thinking with optional second action line", () => {
+	const code = stripTypeScriptTypes(`(() => {
+		const sanitizeTitleText = (v) => String(v).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, " ").replace(/\\s+/g, " ").trim();
+		${functionSource("compactState")}
+		const shortenPath = (value) => String(value);
+		${functionSource("getToolCallSummary")}
+		${functionSource("safeOneLine")}
+		${functionSource("compactHeaderLine")}
+		${functionSource("compactActionsLine")}
+		${functionSource("formatAgentList")}
+		return { compactHeaderLine, compactActionsLine, formatAgentList };
+	})()`);
+	const helpers = new Function(`return ${code};`)();
+	const result = {
+		sessionName: "Subagent Naming Fix",
+		agentType: "coder",
+		agent: "coder",
+		state: "running",
+		model: "github-copilot/gpt-5.3-codex",
+		thinkingLevel: "medium",
+		messages: [{
+			role: "assistant",
+			content: [
+				{ type: "toolCall", name: "read", arguments: { path: "/workspace/.pi/agent/extensions/subagent.ts" } },
+				{ type: "toolCall", name: "edit", arguments: { path: "/workspace/.pi/agent/extensions/status-panel.sh" } },
+				{ type: "toolCall", name: "bash", arguments: { command: "node --experimental-strip-types --test .pi/agent/tests/*.test.ts" } },
+			],
+		}],
+	};
+	const header = helpers.compactHeaderLine(result);
+	assert.equal(header, "Subagent Naming Fix · coder · running · github-copilot/gpt-5.3-codex · medium");
+	const actions = helpers.compactActionsLine(result);
+	assert.ok(actions?.includes("read /workspace/.pi/agent/extensions/subagent.ts"));
+	assert.ok(actions?.includes("edit /workspace/.pi/agent/extensions/status-panel.sh"));
+	assert.ok(actions?.includes("$ node --experimental-strip-types --test .pi/agent/tests/"));
+	const list = helpers.formatAgentList([result]);
+	assert.equal(list.length, 2);
+	assert.equal(list[0], header);
+	assert.ok(!list.join("\n").includes("agent-"));
+	assert.ok(!list.join("\n").includes("starting"));
+});
+
+test("compact status omits action line when no real commands exist", () => {
+	const code = stripTypeScriptTypes(`(() => {
+		const sanitizeTitleText = (v) => String(v).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, " ").replace(/\\s+/g, " ").trim();
+		${functionSource("compactState")}
+		const shortenPath = (value) => String(value);
+		${functionSource("getToolCallSummary")}
+		${functionSource("safeOneLine")}
+		${functionSource("compactHeaderLine")}
+		${functionSource("compactActionsLine")}
+		${functionSource("formatAgentList")}
+		return { formatAgentList };
+	})()`);
+	const { formatAgentList } = new Function(`return ${code};`)();
+	const lines = formatAgentList([{
+		sessionName: "Plan Task",
+		agentType: "planner",
+		agent: "planner",
+		state: "queued",
+		model: "pending",
+		thinkingLevel: "pending",
+		messages: [],
+	}]);
+	assert.deepEqual(lines, ["Plan Task · planner · queued · pending · pending"]);
+});
+
+function runAgentHarness(refinement: { value?: string; delayMs?: number } = {}) {
+	const sessions: any[] = [];
+	const ctx = {
+		cwd: "/test",
+		model: { provider: "parent", id: "gpt" },
+		thinkingLevel: "medium",
+		scopedModels: [{ model: { provider: "parent", id: "gpt" } }],
+		modelRegistry: {
+			getAvailable: () => [{ provider: "agent", id: "mini" }],
+			getAll: () => [{ provider: "agent", id: "mini" }],
+			getError: () => undefined,
+			getRegisteredProviderIds: () => [],
+			getRegisteredNativeProvider: () => undefined,
+			getRegisteredProviderConfig: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true }),
+			refresh: async () => ({ aborted: false, errors: new Map() }),
+			complete: async () => {
+				if (refinement.delayMs) await new Promise((resolve) => setTimeout(resolve, refinement.delayMs));
+				return { stopReason: "stop", content: refinement.value ? [{ type: "text", text: refinement.value }] : [] };
+			},
+		},
+	};
+	const dependencies = {
+		MAX_CHILD_TRANSCRIPT_BYTES: 16 * 1024,
+		TITLE_MAX_WORDS: 6,
+		TITLE_MAX_CHARS: 48,
+		TITLE_PROMPT_CHARS: 1000,
+		TITLE_TIMEOUT_MS: 5000,
+		sanitizeTitleText: (value: string) => String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim(),
+		heuristicSessionName: (text: string) => text.split(/\s+/).slice(0, 2).join(" "),
+		cleanGeneratedSessionName: (value: string) => value,
+		mergeModelPolicy: () => ({ sources: {} }),
+		refreshModelCatalog: async () => ({}),
+		resolveModelSelection: async () => ({ model: { provider: "agent", id: "mini" }, thinkingLevel: "low", reason: "ok" }),
+		getSupportedThinkingLevels: () => selection.THINKING_LEVELS,
+		clampThinkingLevel: (_m: any, level: string) => level,
+		getChildModelRuntime: async () => ({}),
+		waitWithDeadline: async (operation: any, options: any) => operation(options?.signal),
+		SettingsManager: { create: () => ({}) },
+		DefaultResourceLoader: class { async reload() {} },
+		getAgentDir: () => "/tmp",
+		SessionManager: { inMemory: () => ({}) },
+		createAgentSession: async (options: any) => {
+			const events: any[] = [];
+			let listener: ((event: any) => void) | undefined;
+			let aborted = false;
+			const session = {
+				model: options.model,
+				thinkingLevel: options.thinkingLevel,
+				isIdle: true,
+				isStreaming: false,
+				bindExtensions: async () => {},
+				setSessionName: (value: string) => events.push(value),
+				subscribe: (cb: (event: any) => void) => { listener = cb; return () => { listener = undefined; events.push("__unsubscribed__"); }; },
+				followUp: async () => {},
+				steer: async () => {},
+				abort: async () => { aborted = true; },
+				dispose: () => { events.push("__disposed__"); },
+				prompt: async () => {
+					session.isStreaming = true;
+					listener?.({ type: "agent_start" });
+					await new Promise((resolve) => setTimeout(resolve, 40));
+					listener?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "done" }],
+							stopReason: aborted ? "aborted" : "stop",
+							errorMessage: aborted ? "Subagent stopped" : undefined,
+						},
+					});
+					session.isStreaming = false;
+				},
+			};
+			sessions.push(events);
+			return { session };
+		},
+		getGondolinToolProvider: () => ({ hostCwd: "/test", tools: [{ name: "read" }] }),
+		resolveAuthoritativeCwd: () => "/test",
+		childLimiter: { acquire: async () => () => {} },
+		getFinalOutput: () => "done",
+		truncateOutput: (value: string) => value,
+		catalogRefreshers: new WeakMap(),
+		ctx,
+		agents: [{ name: "coder", description: "Coder", systemPrompt: "", source: "project", filePath: "", tools: ["read"] }],
+	};
+	const code = [
+		...Object.keys(dependencies).map((name) => `const ${name} = dependencies.${name};`),
+		...[
+			"emptyUsage", "isFailedResult", "isTerminalResult", "truncateUtf8", "messageBytes", "compactTranscriptMessage", "appendBoundedMessage",
+			"selectRefinementModel", "refineSessionName", "shutdownChildSession", "runAgent",
+		].map((name) => functionSource(name)),
+	].join("\n");
+	const runAgent = new Function("dependencies", `${stripTypeScriptTypes(code)}\nreturn runAgent;`)(dependencies);
+	return { runAgent, sessions, ctx, agents: dependencies.agents };
+}
+
+test("runAgent sets fallback title immediately and optional refinement updates only the child session name", async () => {
+	const harness = runAgentHarness({ value: "Refined Child Name" });
+	const updates: any[] = [];
+	const result = await harness.runAgent("/test", harness.agents, "coder", "fix naming now", {
+		controlIndex: 0,
+		makeDetails: (results: any[]) => ({ mode: "single", results }),
+		onUpdate: (value: any) => updates.push(value),
+		parentCtx: harness.ctx,
+	});
+	assert.equal(result.state, "completed");
+	assert.deepEqual(harness.sessions[0].slice(0, 2), ["fix naming", "Refined Child Name"]);
+	assert.ok(harness.sessions[0].includes("__unsubscribed__"));
+	assert.ok(harness.sessions[0].includes("__disposed__"));
+	assert.ok(updates.some((update) => update.details?.results?.[0]?.sessionName === "Refined Child Name"));
+});
+
+test("runAgent parent abort keeps fallback name, cleans listeners, and ignores late title refinement", async () => {
+	const harness = runAgentHarness({ value: "Late Name", delayMs: 100 });
+	const controller = new AbortController();
+	const execution = harness.runAgent("/test", harness.agents, "coder", "abort path", {
+		controlIndex: 0,
+		signal: controller.signal,
+		makeDetails: (results: any[]) => ({ mode: "single", results }),
+		parentCtx: harness.ctx,
+	});
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	controller.abort();
+	const result = await execution;
+	assert.equal(result.state, "aborted");
+	assert.deepEqual(harness.sessions[0].filter((value: string) => !value.startsWith("__")), ["abort path"]);
+	assert.ok(harness.sessions[0].includes("__unsubscribed__"));
+	assert.ok(harness.sessions[0].includes("__disposed__"));
+});

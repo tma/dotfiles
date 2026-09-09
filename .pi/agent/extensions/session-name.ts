@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { complete, type Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { cleanGeneratedSessionName, heuristicSessionName } from "./lib/session-title.js";
 
 const MAX_WORDS = 6;
 const MAX_CHARS = 48;
@@ -108,33 +109,6 @@ function firstUserText(branch: SessionEntry[]): string | undefined {
 	return undefined;
 }
 
-function titleize(text: string): string | null {
-	const words = text
-		.replace(/["'`]/g, "")
-		.replace(/[.!?]+$/g, "")
-		.replace(/\s+/g, " ")
-		.trim()
-		.split(" ")
-		.filter(Boolean)
-		.slice(0, MAX_WORDS);
-	if (words.length === 0) return null;
-	const name = words
-		.map((word) => {
-			if (/^[A-Z0-9]{2,}$/.test(word) || word.includes("-") || word.includes("/")) return word;
-			return word.charAt(0).toUpperCase() + word.slice(1);
-		})
-		.join(" ");
-	if (name.length <= MAX_CHARS) return name;
-	return `${name.slice(0, MAX_CHARS - 1).trimEnd()}…`;
-}
-
-function heuristicName(text: string): string | null {
-	const firstLine = text
-		.split(/\n/)
-		.map((line) => line.trim())
-		.find((line) => line.length > 0);
-	return titleize(firstLine ?? text);
-}
 
 function cheapScore(id: string): number {
 	const lower = id.toLowerCase();
@@ -170,14 +144,6 @@ function findCheapModel(ctx: ExtensionContext) {
 	return best?.model;
 }
 
-function cleanTitle(raw: string): string | null {
-	const firstLine = raw
-		.split(/\n/)
-		.map((line) => line.trim())
-		.find((line) => line.length > 0);
-	if (!firstLine) return null;
-	return titleize(firstLine.replace(/^(title|name)\s*:\s*/i, ""));
-}
 
 async function generateLlmTitle(ctx: ExtensionContext, prompt: string, signal: AbortSignal): Promise<string | null> {
 	const model = findCheapModel(ctx);
@@ -203,7 +169,7 @@ async function generateLlmTitle(ctx: ExtensionContext, prompt: string, signal: A
 		.map((part) => part.text)
 		.join(" ")
 		.trim();
-	return raw ? cleanTitle(raw) : null;
+	return raw ? cleanGeneratedSessionName(raw, { maxWords: MAX_WORDS, maxChars: MAX_CHARS }) : null;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -218,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const autoName = (ctx: ExtensionContext, prompt: string): void => {
-		const fallback = heuristicName(prompt);
+		const fallback = heuristicSessionName(prompt, { maxWords: MAX_WORDS, maxChars: MAX_CHARS });
 		titleAbort?.abort();
 		const controller = new AbortController();
 		titleAbort = controller;

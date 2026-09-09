@@ -42,27 +42,27 @@ The main session is a coordinator, not the routine worker.
 - Use parallel subagents for independent lanes and one writer per shared
   worktree. Give each child a self-contained task, constraints, expected output,
   and verification steps.
-- Launch subagents asynchronously. Never block the main session waiting for
-  them, and do not use `bg_wait`. After launching, tell the user what is running
-  and remain available.
+- Launch delegated work asynchronously. Never block the main session waiting
+  for it. After launching, tell the user what is running and remain available.
 - Keep ownership of user intent, task routing, decisions, approvals, synthesis,
   and final acceptance in the main session.
 
-Treat active subagents as work that must be supervised:
+Treat active delegated agents as work that must be supervised:
 
-- On every new user turn while subagents are active, inspect them first with
-  `subagent({ action: "status" })` and report material progress, completions,
-  failures, stalls, or requests for a decision.
+- On every new user turn while delegated work is active, inspect live child
+  state first and report only material progress, completions, failures, stalls,
+  or requests for a decision.
+- Treat delivered child completion output as primary evidence when it contains
+  full results. Query live status when the user explicitly asks for status,
+  when details are missing, or when control actions are needed.
 - When a progress or completion notification wakes the main session, inspect
   the relevant status, transcript, or output before summarizing it. Do not just
   echo the notification.
 - Inspect child results and the resulting diff/checks before accepting work,
   updating todos, or starting dependent work. Reassign or steer work when
   evidence is incomplete.
-- If the user asks for status, query the live subagent state immediately.
-- When the user redirects active work, send input to the existing job with
-  `subagent({ action: "send", id, message, delivery: "steer" })` instead of
-  starting a replacement. Use `index` to target one child in a parallel job.
+- When the user redirects active work, steer the existing task instead of
+  launching duplicate replacement work.
 - Provide brief updates at meaningful milestones; do not poll in a tight loop
   or flood the conversation with unchanged status.
 
