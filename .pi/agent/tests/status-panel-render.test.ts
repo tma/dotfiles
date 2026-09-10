@@ -115,3 +115,19 @@ echo "$GOAL_EXPANDED:$PANEL_RESIZED:$SCROLL_OFFSET"
 	assert.equal(first, "1:1:5");
 	assert.equal(second, "0:1:5");
 });
+
+test("agent action line stays narrow, advances quiet activity age, and cannot inject shell-decoded escapes", async () => {
+	const script = await readFile(new URL("../extensions/status-panel.sh", import.meta.url), "utf8");
+	const python = script.match(/subagent_lines=\$\(echo "\$subagents_json" \| python3 -c "([\s\S]*?)" "\$content_cols" 2>\/dev\/null\)/)![1];
+	const payload = { active: [{ agents: [{ sessionName: "Check", agentType: "coder", state: "running", model: "provider/model", thinkingLevel: "low", action: "bash test \\033]52;payload", lastActivityAt: 1000 }] }] };
+	const result = spawnSync("python3", ["-c", `import time; time.time=lambda: 121\n${python}`, "44"], { input: JSON.stringify(payload), encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	const lines = stripAnsi(result.stdout).trimEnd().split("\n");
+	assert.equal(lines.length, 3);
+	assert.match(lines[2], /activity 120s ago · bash test/);
+	assert.doesNotMatch(result.stdout, /stalled|failed/);
+	const decoded = spawnSync("bash", ["-c", 'printf "%b" "$1"', "bash", result.stdout], { encoding: "utf8" });
+	assert.ok(stripAnsi(decoded.stdout).trimEnd().split("\n").every((line) => line.length <= 44));
+	assert.doesNotMatch(decoded.stdout, /\x1b\]52/);
+	assert.match(decoded.stdout, /\\033/);
+});

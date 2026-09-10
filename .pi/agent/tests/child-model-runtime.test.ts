@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { loadInspector } from "./helpers/subagent-inspector.ts";
 import { CatalogRefreshCoordinator } from "../extensions/lib/model-selection.ts";
 
 // Real-Pi tests are optional; an explicitly configured but invalid installation fails.
@@ -48,6 +49,30 @@ test("real Pi child runtime integration", {
 			contextWindow: 8192, maxTokens: 1024,
 		};
 	}
+
+	await t.test("native child path is pending until the first real assistant entry and survives reopening", async () => {
+		const home = await mkdtemp(join(tmpdir(), "pi-child-session-test-"));
+		try {
+			const { createChildSession } = loadInspector({ SessionManager, os: { homedir: () => home } });
+			const manager = createChildSession(process.cwd(), "owner", "/tmp/parent.jsonl");
+			const file = manager.getSessionFile();
+			assert.ok(file);
+			manager.appendMessage({ role: "user", content: "Task: inspect", timestamp: Date.now() });
+			await assert.rejects(stat(file), /ENOENT/);
+			manager.appendMessage({
+				role: "assistant", content: [{ type: "text", text: "inspected" }], timestamp: Date.now(),
+				provider: "test", model: "test", api: "openai-completions", stopReason: "stop",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			});
+			const saved = await readFile(file, "utf8");
+			assert.equal(SessionManager.open(file).getSessionFile(), file);
+			assert.equal(await readFile(file, "utf8"), saved);
+			assert.match(saved, /Task: inspect/);
+			assert.match(saved, /inspected/);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
 
 	await t.test("child runtime preserves compatibility per-model auth headers", async () => {
 		const parent = await memoryRuntime();

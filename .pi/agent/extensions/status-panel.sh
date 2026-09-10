@@ -244,7 +244,7 @@ build_panel_template() {
 
       local subagent_lines
       subagent_lines=$(echo "$subagents_json" | python3 -c "
-import re,sys,json
+import re,sys,json,time
 width=max(20, int(sys.argv[1]))
 data=json.load(sys.stdin)
 reset='\033[0m'
@@ -296,6 +296,14 @@ for ai, agent in enumerate(agents):
     detail=line_with_preserved_tail([model, thinking], maxw, min_head=8)
     print(f' {color}{icon}{reset} {header}')
     print(f'   {dim}{detail}{reset}')
+    action=sanitize(agent.get('action') or agent.get('activity'))
+    last=agent.get('lastActivityAt')
+    if action:
+        age=max(0, int((time.time()*1000-last)/1000)) if isinstance(last, (int,float)) else None
+        freshness=f'activity {age}s ago · ' if age is not None else ''
+        # The shell later prints with %b; do not interpret escapes in tool arguments.
+        activity=fit(freshness+action, maxw).replace(chr(92), chr(92)*2)
+        print(f'   {dim}{activity}{reset}')
     if ai < len(agents)-1:
         print('')
 " "$content_cols" 2>/dev/null)

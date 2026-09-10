@@ -26,7 +26,6 @@ import {
 	getMarkdownTheme,
 	ModelRuntime,
 	parseFrontmatter,
-	SessionManager,
 	SettingsManager,
 	truncateHead,
 	DEFAULT_MAX_BYTES,
@@ -45,6 +44,19 @@ import {
 	type ModelPolicy,
 } from "./lib/model-selection.js";
 import { cleanGeneratedSessionName, heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
+import {
+	childDetail,
+	createChildSession,
+	detailPage,
+	finishInspection,
+	inspectionActivity,
+	newInspection,
+	savedChildSessions,
+	showInspector,
+	terminalText,
+	trackChildEvent,
+	type ChildInspection,
+} from "./lib/subagent-inspector.js";
 import { findPlanFile } from "./plan.js";
 
 // ─── Agent discovery ────────────────────────────────────────────────────────
@@ -234,6 +246,10 @@ interface SingleResult {
 	errorMessage?: string;
 	durationMs?: number;
 	step?: number;
+	inspection?: ChildInspection;
+	sessionFile?: string;
+	sessionSaved?: boolean;
+	persistenceError?: string;
 }
 
 interface SubagentDetails {
@@ -309,6 +325,7 @@ function compactHeaderLine(result: SingleResult, max = 240): string {
 }
 
 function compactActionsLine(result: SingleResult, max = 240): string | null {
+	if (result.inspection) return safeOneLine(inspectionActivity(result.inspection), max);
 	const calls = getToolCallSummary(result.messages)
 		.map((call) => safeOneLine(call, 60))
 		.filter(Boolean);
@@ -638,11 +655,14 @@ async function runAgent(
 		stderr: "",
 		usage: emptyUsage(),
 		step: opts.step,
+		inspection: newInspection(),
 	};
 	const controlIndex = opts.controlIndex ?? (opts.step ? opts.step - 1 : 0);
 	const startedAt = Date.now();
 	let releaseSlot: (() => void) | undefined;
 	let session: AgentSession | undefined;
+	let childSession: ReturnType<typeof createChildSession> | undefined;
+	let lastEventUpdate = 0;
 	let unsubscribe: (() => void) | undefined;
 	let abortListener: (() => void) | undefined;
 	let controlRegistered = false;
@@ -655,6 +675,7 @@ async function runAgent(
 		opts.onStateChange?.(controlIndex, result);
 	};
 	const emitUpdate = () => {
+		if (result.sessionFile) result.sessionSaved = fs.existsSync(result.sessionFile);
 		opts.onStateChange?.(controlIndex, result);
 		opts.onUpdate?.({
 			content: [{ type: "text", text: getFinalOutput(result.messages) || `(${result.state}…)` }],
@@ -737,6 +758,13 @@ async function runAgent(
 		await loader.reload();
 		opts.signal?.throwIfAborted();
 
+		try {
+			childSession = createChildSession(effectiveCwd, opts.parentCtx.sessionManager.getSessionId(), opts.parentCtx.sessionManager.getSessionFile());
+			result.sessionFile = childSession.getSessionFile();
+		} catch (error) {
+			result.persistenceError = `Cannot create native child session: ${error instanceof Error ? error.message : String(error)}`;
+			throw new Error(result.persistenceError);
+		}
 		const created = await createAgentSession({
 			cwd: effectiveCwd,
 			agentDir: getAgentDir(),
@@ -746,7 +774,7 @@ async function runAgent(
 			tools: requestedTools,
 			customTools,
 			resourceLoader: loader,
-			sessionManager: SessionManager.inMemory(effectiveCwd),
+			sessionManager: childSession,
 			settingsManager,
 		});
 		session = created.session;
@@ -798,7 +826,15 @@ async function runAgent(
 					},
 				});
 			}
-			if (event.type !== "message_end" || !event.message) return;
+			const changed = trackChildEvent(result.inspection!, event);
+			if (event.type !== "message_end" || !event.message) {
+				// Streaming events update the inspector immediately; limit disk/sidebar writes.
+				if (changed && (event.type !== "message_update" && event.type !== "tool_execution_update" || Date.now() - lastEventUpdate >= 500)) {
+					lastEventUpdate = Date.now();
+					emitUpdate();
+				}
+				return;
+			}
 			const message = event.message as Message;
 			if (message.role === "assistant" || message.role === "toolResult") appendBoundedMessage(result, message);
 			if (message.role === "assistant") {
@@ -857,6 +893,18 @@ async function runAgent(
 		opts.onControlClosed?.(controlIndex);
 		unsubscribe?.();
 		await shutdownChildSession(session);
+		if (childSession) {
+			try {
+				childSession.appendCustomEntry("subagent-outcome", { state: result.state, error: result.errorMessage });
+				result.sessionSaved = Boolean(result.sessionFile && fs.existsSync(result.sessionFile));
+			} catch (error) {
+				result.persistenceError = `Native session may be incomplete: ${error instanceof Error ? error.message : String(error)}`;
+				result.errorMessage = result.persistenceError;
+				result.state = "failed";
+				result.exitCode = 1;
+			}
+		}
+		if (result.inspection) finishInspection(result.inspection);
 		releaseSlot?.();
 		emitUpdate();
 	}
@@ -1038,6 +1086,8 @@ export default function (pi: ExtensionAPI) {
 			Type.Literal("stop"),
 		], { description: "Launch work, inspect background jobs, send input, or stop one. Defaults to launch." })),
 		id: Type.Optional(Type.String({ description: "Background job id or unique id prefix" })),
+		view: Type.Optional(StringEnum(["summary", "detail"] as const, { description: "status detail requires id and index; bounded 16KiB transcript page, no thinking content" })),
+		offset: Type.Optional(Type.Integer({ minimum: 0, description: "Character offset returned by the previous detail page; default 0" })),
 		message: Type.Optional(Type.String({ description: "Input to send to an existing running subagent" })),
 		delivery: Type.Optional(Type.Union([
 			Type.Literal("steer"),
@@ -1061,6 +1111,7 @@ export default function (pi: ExtensionAPI) {
 	let progressTimer: ReturnType<typeof setInterval> | null = null;
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let shuttingDown = false;
+	let inspectorController: AbortController | undefined;
 	let lastProgressFingerprint = "";
 	const pendingCompletions = new Set<string>();
 	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
@@ -1134,6 +1185,7 @@ export default function (pi: ExtensionAPI) {
 		const lines = formatAgentList(job.results);
 		if (includeOutput) {
 			for (const result of job.results) {
+				if (result.sessionFile) lines.push(`  native session (${result.sessionSaved ? "file exists; read-only" : "pending; no saved transcript yet"}): ${terminalText(result.sessionFile)}`);
 				if (!isTerminalResult(result)) continue;
 				const output = getFinalOutput(result.messages).trim();
 				const error = diagnosticParts(result).join("; ");
@@ -1179,6 +1231,8 @@ export default function (pi: ExtensionAPI) {
 				model: safeOneLine(result.model ?? "pending", 120),
 				thinkingLevel: safeOneLine(result.thinkingLevel ?? "pending", 20),
 				activity: latestActivity(result).slice(0, 240),
+				lastActivityAt: result.inspection?.lastActivityAt,
+				action: result.inspection?.tools.filter((tool) => tool.endedAt === undefined).map((tool) => safeOneLine(`${tool.name} ${tool.args}`, 160)).join(" · "),
 			})),
 		}));
 		const tempFile = `${jobsFile}.${process.pid}.${Date.now()}.tmp`;
@@ -1248,7 +1302,7 @@ export default function (pi: ExtensionAPI) {
 		const bytes = Buffer.from(text);
 		if (bytes.byteLength <= MAX_COMPLETION_BLOCK_BYTES) return text;
 		const keep = Math.max(0, MAX_COMPLETION_BLOCK_BYTES - 192);
-		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Child completion truncated. Use subagent action=status for full transcript.]`;
+		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Child completion truncated. Use subagent action=status view=detail with id and index; the native session holds the full transcript.]`;
 	}
 
 	function formatChildCompletion(job: BackgroundJob, index: number, result: SingleResult): string {
@@ -1259,6 +1313,7 @@ export default function (pi: ExtensionAPI) {
 			`${job.id} · ${job.mode} · ${step}`,
 			`identity: ${formatChildIdentity(result)}`,
 			`state: ${result.state}`,
+			`native session (${result.sessionSaved ? "file exists; read-only" : "pending; no saved transcript yet"}): ${result.sessionFile ?? "not allocated"}`,
 			`usage: ${formatUsage(result.usage) || "none"}`,
 			"output:",
 			output,
@@ -1649,6 +1704,89 @@ export default function (pi: ExtensionAPI) {
 			};
 	}
 
+	async function controlJob(params: { action: string; id?: string; message?: string; delivery?: "steer" | "followUp"; index?: number }): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined; isError?: boolean }> {
+		if (params.action === "send") {
+			const job = resolveJob(params.id);
+			const message = params.message?.trim();
+			if (!job || job.state !== "running") {
+				return { content: [{ type: "text", text: "Sending input requires a running job id." }], details: undefined, isError: true };
+			}
+			if (!message) {
+				return { content: [{ type: "text", text: "Sending input requires a non-empty message." }], details: undefined, isError: true };
+			}
+			const messagePreview = safeOneLine(message, 160);
+			if (params.index !== undefined && (!Number.isInteger(params.index) || params.index < 0 || params.index >= job.total)) {
+				return { content: [{ type: "text", text: `Child index ${params.index} is outside this ${job.total}-child job.` }], details: undefined, isError: true };
+			}
+			const untargetedChainIndex = job.mode === "chain" && params.index === undefined
+				? [...job.controls.keys()][0] ?? job.results.findIndex((result) => result.state === "queued")
+				: undefined;
+			const targetIndex = params.index ?? (untargetedChainIndex !== undefined && untargetedChainIndex >= 0 ? untargetedChainIndex : undefined);
+			if (targetIndex !== undefined && isTerminalResult(job.results[targetIndex])) {
+				return {
+					content: [{ type: "text", text: `Child ${targetIndex} is already ${job.results[targetIndex].state} and cannot accept input. Message: “${messagePreview}”` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+			const targets = targetIndex === undefined
+				? [...job.controls.entries()]
+				: job.controls.has(targetIndex) ? [[targetIndex, job.controls.get(targetIndex)!] as const] : [];
+			if (targets.length === 0) {
+				const queuedIndices = targetIndex !== undefined
+					? [targetIndex]
+					: job.results.map((result, index) => result.state === "queued" ? index : -1).filter((index) => index >= 0);
+				if (queuedIndices.length === 0) {
+					recordDeliveryFailure(job, `no child accepted ${params.delivery ?? "steer"} input`);
+					return { content: [{ type: "text", text: `No active or queued child in ${job.id} can accept the input. Message: “${messagePreview}”` }], details: undefined, isError: true };
+				}
+				for (const index of queuedIndices) {
+					job.pendingInputs.push({ message, delivery: params.delivery ?? "steer", index });
+				}
+				job.updatedAt = Date.now();
+				refreshWidget();
+				return { content: [{ type: "text", text: `Queued ${params.delivery ?? "steer"} for child ${queuedIndices.join(", ")}; not yet delivered. Message: “${messagePreview}”` }], details: undefined };
+			}
+			const deliveryResults = await Promise.all(
+				targets.map(async ([index, control]) => ({
+					index,
+					accepted: await control.send(message, params.delivery ?? "steer").catch((error) => {
+						recordDeliveryFailure(job, `child ${index}: ${error instanceof Error ? error.message : String(error)}`);
+						return false;
+					}),
+				})),
+			);
+			const delivered = deliveryResults.filter((result) => result.accepted);
+			for (const result of deliveryResults) {
+				if (!result.accepted) recordDeliveryFailure(job, `child ${result.index} did not accept ${params.delivery ?? "steer"} input`);
+			}
+			job.updatedAt = Date.now();
+			refreshWidget();
+			return {
+				content: [{ type: "text", text: delivered.length > 0
+					? `Accepted ${params.delivery ?? "steer"} by child ${delivered.map((item) => item.index).join(", ")}${delivered.length < targets.length ? "; other children rejected input" : ""}. Message: “${messagePreview}”`
+					: `No active child in ${job.id} accepted the input. Message: “${messagePreview}”` }],
+				details: undefined,
+				isError: delivered.length !== targets.length,
+			};
+		}
+
+		if (params.action === "stop") {
+			const job = resolveJob(params.id);
+			if (!job) {
+				return { content: [{ type: "text", text: "Stopping a job requires an exact or unique id prefix." }], details: undefined, isError: true };
+			}
+			if (job.state !== "running") {
+				return { content: [{ type: "text", text: `${job.id} is already ${job.state}.` }], details: undefined };
+			}
+			markJobStopping(job, "Subagent stopped by coordinator");
+			refreshWidget();
+			return { content: [{ type: "text", text: `Stop requested for ${job.id}.` }], details: undefined };
+		}
+
+		throw new Error("Unknown control action");
+	}
+
 	// ─── Subagent tool ────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -1658,16 +1796,26 @@ export default function (pi: ExtensionAPI) {
 			"Launch specialized agents in the background so the main session remains responsive.",
 			"Launch modes: single (agent + task), parallel (tasks[]), chain (steps with {previous}).",
 			"Model, thinking, provider, and family can be shared launch defaults or per-task/per-step overrides.",
-			"Actions: launch (default), status, send (steer/follow-up input to running children), stop.",
+			"Actions: launch (default), status, send (steer/follow-up input to running children), stop (whole job).",
+			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
 			"Available agents are defined in ~/.pi/agent/agents/ and .pi/agents/ as markdown files.",
 		].join(" "),
 		parameters: SubagentParams,
 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if (shuttingDown || ctx.sessionManager.getSessionId() !== currentSessionId || ctx.sessionManager.getSessionFile() !== currentSessionFile) {
+				throw new Error("Subagent context no longer owns the current session");
+			}
 			currentCtx = ctx;
 
 			if (params.action === "status") {
+				if (params.view === "detail") {
+					const job = resolveJob(params.id);
+					if (!job) throw new Error("Detail requires a current-session job id or unique prefix");
+					if (!Number.isInteger(params.index) || params.index! < 0 || params.index! >= job.results.length) throw new Error("Detail requires a valid zero-based child index");
+					return { content: [{ type: "text", text: detailPage(`job ${job.id} · child ${params.index}\n${childDetail(job.results[params.index!])}`, params.offset) }], details: undefined };
+				}
 				if (params.id) {
 					const job = resolveJob(params.id);
 					if (!job) {
@@ -1695,80 +1843,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if (params.action === "send") {
-				const job = resolveJob(params.id);
-				const message = params.message?.trim();
-				if (!job || job.state !== "running") {
-					return { content: [{ type: "text", text: "Sending input requires a running job id." }], details: undefined, isError: true };
-				}
-				if (!message) {
-					return { content: [{ type: "text", text: "Sending input requires a non-empty message." }], details: undefined, isError: true };
-				}
-				const messagePreview = safeOneLine(message, 160);
-				if (params.index !== undefined && params.index >= job.total) {
-					return { content: [{ type: "text", text: `Child index ${params.index} is outside this ${job.total}-child job.` }], details: undefined, isError: true };
-				}
-				const untargetedChainIndex = job.mode === "chain" && params.index === undefined
-					? [...job.controls.keys()][0] ?? job.results.findIndex((result) => result.state === "queued")
-					: undefined;
-				const targetIndex = params.index ?? (untargetedChainIndex !== undefined && untargetedChainIndex >= 0 ? untargetedChainIndex : undefined);
-				if (targetIndex !== undefined && isTerminalResult(job.results[targetIndex])) {
-					return {
-						content: [{ type: "text", text: `Child ${targetIndex} is already ${job.results[targetIndex].state} and cannot accept input. Message: “${messagePreview}”` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				const targets = targetIndex === undefined
-					? [...job.controls.entries()]
-					: job.controls.has(targetIndex) ? [[targetIndex, job.controls.get(targetIndex)!] as const] : [];
-				if (targets.length === 0) {
-					const queuedIndices = targetIndex !== undefined
-						? [targetIndex]
-						: job.results.map((result, index) => result.state === "queued" ? index : -1).filter((index) => index >= 0);
-					if (queuedIndices.length === 0) {
-						recordDeliveryFailure(job, `no child accepted ${params.delivery ?? "steer"} input`);
-						return { content: [{ type: "text", text: `No active or queued child in ${job.id} can accept the input. Message: “${messagePreview}”` }], details: undefined, isError: true };
-					}
-					for (const index of queuedIndices) {
-						job.pendingInputs.push({ message, delivery: params.delivery ?? "steer", index });
-					}
-					job.updatedAt = Date.now();
-					refreshWidget();
-					return { content: [{ type: "text", text: messagePreview }], details: undefined };
-				}
-				const deliveryResults = await Promise.all(
-					targets.map(async ([index, control]) => ({
-						index,
-						accepted: await control.send(message, params.delivery ?? "steer").catch(() => false),
-					})),
-				);
-				const delivered = deliveryResults.filter((result) => result.accepted);
-				for (const result of deliveryResults) {
-					if (!result.accepted) recordDeliveryFailure(job, `child ${result.index} did not accept ${params.delivery ?? "steer"} input`);
-				}
-				job.updatedAt = Date.now();
-				refreshWidget();
-				return {
-					content: [{ type: "text", text: delivered.length > 0
-						? messagePreview
-						: `No active child in ${job.id} accepted the input. Message: “${messagePreview}”` }],
-					details: undefined,
-					isError: delivered.length === 0,
-				};
-			}
-
-			if (params.action === "stop") {
-				const job = resolveJob(params.id);
-				if (!job) {
-					return { content: [{ type: "text", text: "Stopping a job requires an exact or unique id prefix." }], details: undefined, isError: true };
-				}
-				if (job.state !== "running") {
-					return { content: [{ type: "text", text: `${job.id} is already ${job.state}.` }], details: undefined };
-				}
-				markJobStopping(job, "Subagent stopped by coordinator");
-				refreshWidget();
-				return { content: [{ type: "text", text: `Stop requested for ${job.id}.` }], details: undefined };
+			if (params.action === "send" || params.action === "stop") {
+				const response = await controlJob({ ...params, action: params.action });
+				if (response.isError) throw new Error(response.content[0].text);
+				return response;
 			}
 
 			const { agents } = discoverAgents(ctx.cwd, "both");
@@ -1969,6 +2047,14 @@ export default function (pi: ExtensionAPI) {
 	// ─── Background job lifecycle ─────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		inspectorController?.abort();
+		if (progressTimer) clearInterval(progressTimer);
+		if (completionTimer) clearTimeout(completionTimer);
+		progressTimer = null;
+		completionTimer = null;
+		pendingCompletions.clear();
+		pendingCompletionSnapshots.clear();
+		for (const job of activeJobs()) markJobStopping(job, "Parent session replaced");
 		shuttingDown = false;
 		currentCtx = ctx;
 		currentSessionId = ctx.sessionManager.getSessionId();
@@ -1994,6 +2080,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		shuttingDown = true;
+		inspectorController?.abort();
 		if (progressTimer) clearInterval(progressTimer);
 		if (completionTimer) clearTimeout(completionTimer);
 		progressTimer = null;
@@ -2033,6 +2120,68 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = null;
 		currentSessionId = "";
 		currentSessionFile = undefined;
+	});
+
+	function ownsContext(ctx: ExtensionContext): boolean {
+		return !shuttingDown && ctx.sessionManager.getSessionId() === currentSessionId && ctx.sessionManager.getSessionFile() === currentSessionFile;
+	}
+
+	async function inspectAgents(args: string, ctx: ExtensionContext): Promise<void> {
+		if (!ownsContext(ctx)) return;
+		if (inspectorController) { ctx.ui.notify("Agent inspector is already open", "info"); return; }
+		const controller = new AbortController();
+		inspectorController = controller;
+		const ownerId = currentSessionId;
+		const ownerFile = currentSessionFile;
+		const stillOwned = () => !controller.signal.aborted && ownsContext(ctx) && ownerId === currentSessionId && ownerFile === currentSessionFile;
+		try {
+			if (args.trim() === "saved") {
+				const paths = await savedChildSessions(ctx.cwd, ownerId, ownerFile);
+				if (stillOwned()) await showInspector(ctx, () => [{ id: "saved", index: 0, label: "Saved native session paths (read-only)", detail: () => paths, readOnly: true }], controller.signal);
+				return;
+			}
+			const direct = args.trim();
+			let action: { action: "steer" | "followUp" | "stop"; id: string; index?: number; message?: string } | undefined;
+			if (direct) {
+				const stop = direct.match(/^stop\s+(\S+)$/);
+				const send = direct.match(/^(steer|follow-up)\s+(\S+)\s+(\d+)\s+([\s\S]+)$/);
+				if (stop) action = { action: "stop", id: stop[1] };
+				else if (send) action = { action: send[1] === "steer" ? "steer" : "followUp", id: send[2], index: Number(send[3]), message: send[4] };
+				else throw new Error("Usage: /agents | /agents saved | /agents steer|follow-up <job> <zero-based index> <message> | /agents stop <job>");
+			} else {
+				action = await showInspector(ctx, () => [...jobs.values()].filter(isCurrentOwner).flatMap((job) => job.results.map((result, index) => ({
+					id: job.id, index,
+					label: `${job.id} [${index}] ${compactHeaderLine(result, 180)}`,
+					detail: () => `job ${job.id} · child ${index} · job ${job.state}\n${childDetail(result)}`,
+				}))), controller.signal);
+			}
+			if (!action || !stillOwned()) return;
+			const job = resolveJob(action.id);
+			if (!job || job.state !== "running") throw new Error("Control requires a current-session running job");
+			if (action.action === "stop") {
+				if (!await ctx.ui.confirm("Stop subagent job?", `Stop all children in ${job.id}?`, { signal: controller.signal })) return;
+			} else if (!action.message) {
+				action.message = await ctx.ui.input(`Child ${action.index}: ${action.action}`, "Message to child", { signal: controller.signal });
+				if (action.message === undefined) return;
+			}
+			if (!stillOwned()) return;
+			const response = await controlJob({ action: action.action === "stop" ? "stop" : "send", id: job.id, index: action.index, delivery: action.action === "followUp" ? "followUp" : "steer", message: action.message });
+			if (stillOwned()) ctx.ui.notify(terminalText(response.content[0].text), response.isError ? "error" : "info");
+		} catch (error) {
+			if (stillOwned()) ctx.ui.notify(terminalText(error instanceof Error ? error.message : String(error)), "error");
+		} finally {
+			controller.abort();
+			if (inspectorController === controller) inspectorController = undefined;
+		}
+	}
+
+	pi.registerCommand("agents", {
+		description: "Inspect children (Ctrl+Shift+A); /agents saved, steer|follow-up <job> <index> <message>, stop <job>",
+		handler: inspectAgents,
+	});
+	pi.registerShortcut("ctrl+shift+a", {
+		description: "Inspect subagents while the main model is running",
+		handler: (ctx) => inspectAgents("", ctx),
 	});
 
 	// ─── /run <agent> <task> ──────────────────────────────────────────────

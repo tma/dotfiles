@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { fakeChildSession, inspector } from "./helpers/subagent-inspector.ts";
 import * as selection from "../extensions/lib/model-selection.ts";
 
 const source = await readFile(new URL("../extensions/subagent.ts", import.meta.url), "utf8");
@@ -63,6 +64,7 @@ function launcher(
 	const refreshes: boolean[] = [];
 	let error: string | undefined;
 	const ctx = {
+		sessionManager: { getSessionId: () => "owner", getSessionFile: () => "/tmp/owner.jsonl" },
 		cwd: "/test", model: catalog[0], thinkingLevel: "medium",
 		scopedModels: [{ model: catalog[0] }],
 		modelRegistry: {
@@ -74,6 +76,9 @@ function launcher(
 	// Exercise actual dispatch -> runAgent -> resolver wiring, replacing only
 	// disk/UI/sandbox/session boundaries. A fake session cannot make model calls.
 	const dependencies = {
+		...inspector,
+		createChildSession: fakeChildSession,
+		fs: { existsSync: () => false },
 		...selection, agents, ctx, MAX_PARALLEL: 8,
 		heuristicSessionName: (text: string) => text.split(/\n/).map((line) => line.trim()).find(Boolean) ?? "Subagent Task",
 		waitWithDeadline: async (operation: any, options: any) => operation(options?.signal),
@@ -87,7 +92,6 @@ function launcher(
 		SettingsManager: { create: () => ({}) },
 		DefaultResourceLoader: class { async reload() {} },
 		getAgentDir: () => "/unused",
-		SessionManager: { inMemory: () => ({}) },
 		createAgentSession: async (options: any) => {
 			created.push(options);
 			return { session: {
@@ -252,6 +256,7 @@ function runAgentHarness(refinement: { value?: string; delayMs?: number } = {}) 
 	const sessions: any[] = [];
 	const ctx = {
 		cwd: "/test",
+		sessionManager: { getSessionId: () => "owner", getSessionFile: () => "/tmp/owner.jsonl" },
 		model: { provider: "parent", id: "gpt" },
 		thinkingLevel: "medium",
 		scopedModels: [{ model: { provider: "parent", id: "gpt" } }],
@@ -271,6 +276,9 @@ function runAgentHarness(refinement: { value?: string; delayMs?: number } = {}) 
 		},
 	};
 	const dependencies = {
+		...inspector,
+		createChildSession: fakeChildSession,
+		fs: { existsSync: () => false },
 		MAX_CHILD_TRANSCRIPT_BYTES: 16 * 1024,
 		TITLE_MAX_WORDS: 6,
 		TITLE_MAX_CHARS: 48,
@@ -289,7 +297,6 @@ function runAgentHarness(refinement: { value?: string; delayMs?: number } = {}) 
 		SettingsManager: { create: () => ({}) },
 		DefaultResourceLoader: class { async reload() {} },
 		getAgentDir: () => "/tmp",
-		SessionManager: { inMemory: () => ({}) },
 		createAgentSession: async (options: any) => {
 			const events: any[] = [];
 			let listener: ((event: any) => void) | undefined;

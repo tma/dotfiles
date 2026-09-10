@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { fakeChildSession, inspector } from "./helpers/subagent-inspector.ts";
 
 class Text {
 	text: string;
@@ -46,15 +47,25 @@ type SessionScript = {
 	text?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	events?: any[];
+	sendError?: string;
 };
 
 function createHarness(options: {
 	scripts?: Record<string, SessionScript>;
 	sendFailures?: number;
 	sessionIds?: { current: string; file: string };
+	persistenceError?: string;
+	appendError?: string;
+	sessionSaved?: boolean;
 } = {}) {
 	const handlers = new Map<string, Function[]>();
 	const tools: any[] = [];
+	const commands = new Map<string, any>();
+	const shortcuts = new Map<string, any>();
+	const inputs: any[] = [];
+	const notices: any[] = [];
+	const storage: any[] = [];
 	const messages: Array<{ payload: any; opts: any }> = [];
 	let sendFailures = options.sendFailures ?? 0;
 	const scripts = options.scripts ?? {};
@@ -65,8 +76,14 @@ function createHarness(options: {
 		.replace("constructor(private readonly limit: number) {}", "constructor(limit) { this.limit = limit; }");
 	const js = stripTypeScriptTypes(withoutImports).replace(/export default function\s*\(\s*pi[^)]*\)/, "function __default(pi)");
 	const deps = {
+		...inspector,
+		createChildSession: (...args: any[]) => {
+			storage.push(args);
+			if (options.persistenceError) throw new Error(options.persistenceError);
+			return { ...fakeChildSession(), appendCustomEntry: () => { if (options.appendError) throw new Error(options.appendError); } };
+		},
 		fs: {
-			existsSync: (p: string) => p.endsWith("/agents"),
+			existsSync: (p: string) => p.endsWith("/agents") || Boolean(options.sessionSaved && p.endsWith("native-child.jsonl")),
 			readdirSync: () => [
 				{ name: "coder.md", isFile: () => true, isSymbolicLink: () => false },
 				{ name: "scout.md", isFile: () => true, isSymbolicLink: () => false },
@@ -96,6 +113,7 @@ function createHarness(options: {
 		createAgentSession: async (sessionOptions: any) => {
 			let listener: ((event: any) => void) | undefined;
 			let aborted = false;
+			let currentScript: SessionScript = {};
 			const scriptFor = (task: string) => scripts[task] ?? {};
 			const session = {
 				model: sessionOptions.model,
@@ -105,8 +123,8 @@ function createHarness(options: {
 				bindExtensions: async () => {},
 				setSessionName: () => {},
 				subscribe: (cb: (event: any) => void) => { listener = cb; return () => { listener = undefined; }; },
-				steer: async () => {},
-				followUp: async () => {},
+				steer: async (message: string) => { if (currentScript.sendError) throw new Error(currentScript.sendError); inputs.push({ message, delivery: "steer" }); },
+				followUp: async (message: string) => { if (currentScript.sendError) throw new Error(currentScript.sendError); inputs.push({ message, delivery: "followUp" }); },
 				abort: async () => { aborted = true; },
 				dispose: () => {},
 				prompt: async (promptText: string) => {
@@ -114,6 +132,8 @@ function createHarness(options: {
 					listener?.({ type: "agent_start" });
 					const task = promptText.replace(/^Task:\s*/, "");
 					const script = scriptFor(task);
+					currentScript = script;
+					for (const event of script.events ?? []) listener?.(event);
 					if (script.delayMs) await sleep(script.delayMs);
 					if (!aborted) {
 						listener?.({
@@ -143,7 +163,6 @@ function createHarness(options: {
 				: { name: "coder", description: "Coder", tools: "read,bash,edit,write" },
 			body: "system",
 		}),
-		SessionManager: { inMemory: () => ({}) },
 		SettingsManager: { create: () => ({}) },
 		truncateHead: (text: string) => ({ content: text, truncated: false }),
 		DEFAULT_MAX_BYTES: 64 * 1024,
@@ -176,8 +195,8 @@ function createHarness(options: {
 			list.push(handler);
 			handlers.set(event, list);
 		},
-		registerCommand: () => {},
-		registerShortcut: () => {},
+		registerCommand: (name: string, command: any) => commands.set(name, command),
+		registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut),
 		sendUserMessage: () => {},
 		sendMessage: (payload: any, opts: any) => {
 			if (sendFailures > 0) {
@@ -191,8 +210,9 @@ function createHarness(options: {
 
 	const ctx = {
 		cwd: "/workspace",
+		mode: "tui",
 		hasUI: false,
-		ui: { setWidget: () => {}, setStatus: () => {}, notify: () => {} },
+		ui: { setWidget: () => {}, setStatus: () => {}, notify: (message: string, level: string) => notices.push({ message, level }), confirm: async () => false, input: async () => "input" },
 		model: { provider: "p", id: "m" },
 		thinkingLevel: "low",
 		scopedModels: [{ model: { provider: "p", id: "m" } }],
@@ -226,7 +246,7 @@ function createHarness(options: {
 		await emit("session_shutdown");
 	}
 
-	return { tools, emit, shutdown, ctx, messages, owner, handlers };
+	return { tools, emit, shutdown, ctx, messages, owner, handlers, commands, shortcuts, inputs, notices, storage };
 }
 
 const theme = {
@@ -438,4 +458,105 @@ test("owner switch and shutdown prevent stale completion delivery", async (t) =>
 	await runtime.emit("session_shutdown");
 	await sleep(500);
 	assert.equal(runtime.messages.length, 0);
+});
+
+test("live detail uses real event wiring, requires child index, and rejects previous owners", async (t) => {
+	const runtime = withHarness(t, { scripts: { live: { delayMs: 150, events: [
+		{ type: "message_update", message: { content: [{ type: "text", text: "checking now" }, { type: "thinking", thinking: "hidden" }] }, assistantMessageEvent: { type: "text_delta", delta: "checking now" } },
+		{ type: "tool_execution_start", toolCallId: "read1", toolName: "read", args: { path: "/workspace/exact.ts", offset: 21 } },
+		{ type: "tool_execution_update", toolCallId: "read1", partialResult: { content: [{ type: "text", text: "partial result\x1b]52;bad\x07" }] } },
+	] } } });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	const launch = await tool.execute("id", { agent: "coder", task: "live" }, undefined, undefined, runtime.ctx);
+	await sleep(30);
+	const request = (params: any) => tool.execute("id", { action: "status", id: launch.details.jobId, ...params }, undefined, undefined, runtime.ctx);
+	const summary = await request({});
+	assert.doesNotMatch(summary.content[0].text, /partial result|checking now/);
+	const detail = await request({ view: "detail", index: 0 });
+	assert.match(detail.content[0].text, /checking now/);
+	assert.match(detail.content[0].text, /\/workspace\/exact.ts/);
+	assert.match(detail.content[0].text, /partial result/);
+	assert.doesNotMatch(detail.content[0].text, /hidden|\x1b|\x07/);
+	assert.match(detail.content[0].text, /pending; no saved transcript yet/);
+	assert.equal(detail.details, undefined);
+	for (const index of [undefined, -1, 1, 0.5]) await assert.rejects(request({ view: "detail", index }), /child index/);
+	assert.deepEqual(runtime.storage[0], ["/workspace", "s1", "/tmp/s1/session.json"]);
+	runtime.owner.current = "s2";
+	runtime.owner.file = "/tmp/s2/session.json";
+	await runtime.emit("session_start");
+	await assert.rejects(request({ view: "detail", index: 0 }), /current-session job/);
+	await assert.rejects(tool.execute("id", { action: "send", id: launch.details.jobId, message: "wrong owner", index: 0 }, undefined, undefined, runtime.ctx), /running job/);
+});
+
+test("direct controls report queueing, real acceptance, dispatch errors and stop confirmation", async (t) => {
+	const runtime = withHarness(t, { scripts: { hold: { delayMs: 300 }, reject: { delayMs: 300, sendError: "queue rejected" } } });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	const launch = await tool.execute("id", { tasks: [{ agent: "coder", task: "hold" }, { agent: "scout", task: "reject" }] }, undefined, undefined, runtime.ctx);
+	const id = launch.details.jobId;
+	const queued = await tool.execute("id", { action: "send", id, index: 0, message: "queued" }, undefined, undefined, runtime.ctx);
+	assert.match(queued.content[0].text, /not yet delivered/);
+	await sleep(30);
+	assert.ok(runtime.inputs.some((input) => input.message === "queued"));
+	const command = runtime.commands.get("agents");
+	assert.ok(runtime.shortcuts.has("ctrl+shift+a"));
+	await command.handler(`follow-up ${id} 0 check\n  exact spacing`, runtime.ctx);
+	assert.deepEqual(runtime.inputs.at(-1), { message: "check\n  exact spacing", delivery: "followUp" });
+	assert.match(runtime.notices.at(-1).message, /Accepted followUp/);
+	await command.handler(`steer ${id} 1 reject this`, runtime.ctx);
+	assert.equal(runtime.notices.at(-1).level, "error");
+	assert.match(runtime.notices.at(-1).message, /No active child/);
+	for (const index of [-1, 0.5, 2]) await assert.rejects(tool.execute("id", { action: "send", id, index, message: "invalid" }, undefined, undefined, runtime.ctx), /outside/);
+	await assert.rejects(tool.execute("id", { action: "send", id, message: "partial" }, undefined, undefined, runtime.ctx), /other children rejected/);
+	const status = await tool.execute("id", { action: "status", id }, undefined, undefined, runtime.ctx);
+	assert.match(status.content[0].text, /queue rejected/);
+	await command.handler(`stop ${id}`, runtime.ctx);
+	assert.equal((await tool.execute("id", { action: "status", id }, undefined, undefined, runtime.ctx)).details.state, "running");
+	runtime.ctx.ui.confirm = async () => true;
+	await command.handler(`stop ${id}`, runtime.ctx);
+	assert.match(runtime.notices.at(-1).message, /Stop requested/);
+});
+
+test("session replacement during confirmation cancels old-owner controls", async (t) => {
+	const runtime = withHarness(t, { scripts: { hold: { delayMs: 200 } } });
+	await runtime.emit("session_start");
+	const launch = await runtime.tools[0].execute("id", { agent: "coder", task: "hold" }, undefined, undefined, runtime.ctx);
+	let confirm!: (value: boolean) => void;
+	runtime.ctx.ui.confirm = () => new Promise((resolve) => { confirm = resolve; });
+	const pending = runtime.commands.get("agents").handler(`stop ${launch.details.jobId}`, runtime.ctx);
+	await sleep(10);
+	runtime.owner.current = "s2";
+	runtime.owner.file = "/tmp/s2/session.json";
+	await runtime.emit("session_start");
+	confirm(true);
+	await pending;
+	assert.deepEqual(runtime.notices, []);
+});
+
+for (const failure of ["persistenceError", "appendError"] as const) test(`native ${failure} fails clearly without pretending a transcript was saved`, async (t) => {
+	const runtime = withHarness(t, { [failure]: "disk unavailable" });
+	await runtime.emit("session_start");
+	const launch = await runtime.tools[0].execute("id", { agent: "coder", task: "save" }, undefined, undefined, runtime.ctx);
+	await sleep(30);
+	const status = await runtime.tools[0].execute("id", { action: "status", id: launch.details.jobId, view: "detail", index: 0 }, undefined, undefined, runtime.ctx);
+	assert.match(status.content[0].text, /PERSISTENCE ERROR:.*disk unavailable/);
+	assert.match(status.content[0].text, /state: failed/);
+	assert.doesNotMatch(status.content[0].text, /file exists/);
+});
+
+for (const state of ["aborted", "failed"]) test(`runAgent cleanup labels an unfinished tool interrupted when ${state}`, async (t) => {
+	const runtime = withHarness(t, { scripts: { hold: { delayMs: 60, stopReason: state === "failed" ? "error" : "stop", events: [
+		{ type: "tool_execution_start", toolCallId: "unfinished", toolName: "bash", args: { command: "test" } },
+	] } } });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	const launch = await tool.execute("id", { agent: "coder", task: "hold" }, undefined, undefined, runtime.ctx);
+	await sleep(20);
+	if (state === "aborted") await tool.execute("id", { action: "stop", id: launch.details.jobId }, undefined, undefined, runtime.ctx);
+	await sleep(80);
+	const detail = await tool.execute("id", { action: "status", id: launch.details.jobId, view: "detail", index: 0 }, undefined, undefined, runtime.ctx);
+	assert.match(detail.content[0].text, new RegExp(`state: ${state}`));
+	assert.match(detail.content[0].text, /bash · \d+s · interrupted/);
+	assert.doesNotMatch(detail.content[0].text, /bash · \d+s · done/);
 });
