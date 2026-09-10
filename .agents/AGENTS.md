@@ -34,11 +34,17 @@ Use the shortest answer that is still useful:
 
 ### Delegate substantial work
 
-The main session is a coordinator, not the routine worker.
+The main session is primarily a coordinator: delegate substantial work,
+supervise subagents, and own decisions and final acceptance.
 
-- Do only very short, atomic work directly in the main session.
-- Delegate every medium or large investigation, plan, implementation, test run,
-  or review to subagents. If unsure, delegate.
+- Delegate substantial investigations, plans, implementations, long-running
+  test runs, and reviews, or independent work that benefits from parallel
+  execution.
+- Handle simple tasks directly. Do not launch subagents for simple questions,
+  quick lookups, small localized edits, or focused checks that take only a few
+  tool calls, unless the user explicitly asks for delegation.
+- If scope is unclear, start with a brief direct inspection. Delegate only when
+  the work is clearly substantial or benefits from parallel execution.
 - Use parallel subagents for independent lanes and one writer per shared
   worktree. Give each child a self-contained task, constraints, expected output,
   and verification steps.
