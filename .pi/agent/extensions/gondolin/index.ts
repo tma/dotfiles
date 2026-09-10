@@ -703,6 +703,9 @@ export default function (pi: ExtensionAPI) {
 	async function startVm(_ctx?: ExtensionContext): Promise<VM> {
 		const imageDir = fileURLToPath(new URL("./image", import.meta.url));
 		const created = await VM.create({
+			cpus: 4,
+			memory: "4G",
+			rootfs: { mode: "cow", size: "8G" },
 			sessionLabel: `pi ${path.basename(localCwd)}`,
 			fetch: createMatchedFetch(),
 			env: guestEnvOverrides(),
