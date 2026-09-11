@@ -954,6 +954,89 @@ function selectionSummary(r: SingleResult): string {
 	return `${r.model} · thinking ${r.thinkingLevel ?? "pending"}${r.selectionReason ? ` · ${r.selectionReason}` : ""}`;
 }
 
+const COLLAPSED_STATUS_CHILD_LIMIT = 3;
+const COLLAPSED_STATUS_MAX_BYTES = 2048;
+
+function firstTextContent(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	for (const part of content) {
+		if (part && typeof part === "object" && (part as any).type === "text" && typeof (part as any).text === "string") {
+			return (part as any).text;
+		}
+	}
+	return "";
+}
+
+function summarizeStatusCounts(results: SingleResult[]): string {
+	const counts: Record<ReturnType<typeof compactState>, number> = {
+		queued: 0,
+		running: 0,
+		done: 0,
+		failed: 0,
+		stopped: 0,
+	};
+	for (const result of results) counts[compactState(result.state)]++;
+	const parts = [`${results.length} child${results.length === 1 ? "" : "ren"}`];
+	for (const state of ["running", "queued", "done", "failed", "stopped"] as const) {
+		if (!counts[state]) continue;
+		parts.push(`${counts[state]} ${state}`);
+	}
+	return parts.join(" · ");
+}
+
+function statusDiagnostics(statusText: string, details: SubagentDetails | undefined): string[] {
+	const fromStatus = statusText
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => /^(input delivery:|error:|PERSISTENCE ERROR:)/i.test(line));
+	if (fromStatus.length > 0) return fromStatus.map((line) => safeOneLine(line, 220));
+	if (!details) return [];
+	const fallback: string[] = [];
+	for (const result of details.results) {
+		if (!isFailedResult(result)) continue;
+		const parts = diagnosticParts(result);
+		if (parts.length === 0) continue;
+		const label = safeOneLine(result.sessionName || result.agent || "child", 40);
+		fallback.push(`${label}: ${safeOneLine(parts.join("; "), 170)}`);
+		if (fallback.length >= 2) break;
+	}
+	return fallback;
+}
+
+function renderCollapsedStatus(
+	statusText: string,
+	details: SubagentDetails | undefined,
+	view: "summary" | "detail" | undefined,
+	theme: any,
+): string {
+	const lines: string[] = [];
+	if (view === "detail") {
+		const header = safeOneLine(statusText.split("\n").find((line) => line.trim().length > 0) ?? "Status detail", 180);
+		lines.push(`${theme.fg("toolTitle", theme.bold("status detail"))} ${theme.fg("muted", header)}`);
+		for (const diagnostic of statusDiagnostics(statusText, details).slice(0, 2)) lines.push(theme.fg("error", diagnostic));
+		lines.push(theme.fg("dim", "Expand to view the detail page."));
+		return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+	}
+
+	if (!details || details.results.length === 0) {
+		const summary = safeOneLine(statusText || "(no output)", 220);
+		lines.push(`${theme.fg("toolTitle", theme.bold("status"))} ${theme.fg("muted", summary)}`);
+		if (statusText.includes("\n")) lines.push(theme.fg("dim", "Expand for full status output."));
+		return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+	}
+
+	lines.push(`${theme.fg("toolTitle", theme.bold("status"))} ${theme.fg("muted", summarizeStatusCounts(details.results))}`);
+	for (const child of details.results.slice(0, COLLAPSED_STATUS_CHILD_LIMIT)) {
+		lines.push(`${renderResultIcon(child, theme)} ${theme.fg("dim", compactHeaderLine(child, 180))}`);
+	}
+	if (details.results.length > COLLAPSED_STATUS_CHILD_LIMIT) {
+		lines.push(theme.fg("dim", `… ${details.results.length - COLLAPSED_STATUS_CHILD_LIMIT} more children`));
+	}
+	for (const diagnostic of statusDiagnostics(statusText, details).slice(0, 2)) lines.push(theme.fg("error", diagnostic));
+	lines.push(theme.fg("dim", "Expand for full status output."));
+	return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+}
+
 function renderCollapsedResult(r: SingleResult, theme: any): string {
 	const icon = renderResultIcon(r, theme);
 	const name = sanitizeTitleText(r.sessionName || "Subagent Task") || "Subagent Task";
@@ -2016,10 +2099,16 @@ export default function (pi: ExtensionAPI) {
 		// ── Render: tool result ──
 		renderResult(result, { expanded }, theme, context) {
 			const details = result.details as SubagentDetails | undefined;
+			const args = (context?.args ?? {}) as { action?: string; view?: "summary" | "detail" };
+			const isStatus = args.action === "status";
+			const statusText = firstTextContent(result.content);
 			let body: Container | Text;
-			if (!details || details.results.length === 0) {
-				const text = result.content[0];
-				body = new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+			if (isStatus) {
+				body = expanded
+					? new Text(statusText || "(no output)", 0, 0)
+					: new Text(renderCollapsedStatus(statusText, details, args.view, theme), 0, 0);
+			} else if (!details || details.results.length === 0) {
+				body = new Text(statusText || "(no output)", 0, 0);
 			} else if (details.mode === "single" && details.results.length === 1) {
 				body = expanded
 					? renderExpandedResult(details.results[0], theme)

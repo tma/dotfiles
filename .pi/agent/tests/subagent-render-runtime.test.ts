@@ -292,6 +292,178 @@ test("subagent tool keeps self shell renderer and hides job id from result rende
 	assert.match(normal, /Fix Dispatch · coder · running · provider\/model · low/);
 });
 
+test("status summary render collapses long multi-child output and expands to full authoritative status text", (t) => {
+	const runtime = withHarness(t);
+	const subagent = runtime.tools.find((tool) => tool.name === "subagent");
+	assert.ok(subagent);
+	const makeResult = (index: number, state: "completed" | "running" | "failed") => ({
+		agent: `agent-${index}`,
+		agentType: index % 2 ? "coder" : "scout",
+		sessionName: `Child ${index}`,
+		task: `task ${index}`,
+		state,
+		exitCode: state === "failed" ? 1 : 0,
+		messages: [],
+		stderr: state === "failed" ? "stderr boom" : "",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+		model: "provider/model",
+		thinkingLevel: "low",
+		errorMessage: state === "failed" ? "child failed" : undefined,
+	});
+	const details = {
+		mode: "parallel",
+		results: [
+			makeResult(1, "completed"),
+			makeResult(2, "running"),
+			makeResult(3, "completed"),
+			makeResult(4, "failed"),
+			makeResult(5, "completed"),
+			makeResult(6, "completed"),
+		],
+		jobId: "agent-long",
+		state: "failed",
+	};
+	const longTail = `${"status tail ".repeat(30)}TAIL-MULTI`;
+	const statusText = [
+		"job agent-long",
+		"Child 1 · done",
+		"Child 2 · running",
+		"Child 3 · done",
+		"Child 4 · failed",
+		"Child 5 · done",
+		"Child 6 · done",
+		"input delivery: child 1 rejected steer input",
+		"error: widget crash",
+		"error: second failure with context",
+		`error: deep diagnostic ${longTail}`,
+	].join("\n");
+	const collapsed = subagent.renderResult(
+		{ content: [{ type: "text", text: statusText }], details },
+		{ expanded: false },
+		theme,
+		{ isError: false, args: { action: "status", id: "agent-long" } },
+	).render(240).join("\n");
+	assert.match(collapsed, /status 6 children · 1 running · 4 done · 1 failed/);
+	assert.match(collapsed, /Child 1/);
+	assert.match(collapsed, /Child 3/);
+	assert.doesNotMatch(collapsed, /Child 4/);
+	assert.match(collapsed, /… 3 more children/);
+	assert.match(collapsed, /input delivery: child 1 rejected steer input/);
+	assert.match(collapsed, /Expand for full status output/);
+	assert.doesNotMatch(collapsed, /TAIL-MULTI/);
+
+	const expanded = subagent.renderResult(
+		{ content: [{ type: "text", text: statusText }], details },
+		{ expanded: true },
+		theme,
+		{ isError: false, args: { action: "status", id: "agent-long" } },
+	).render(240).join("\n");
+	assert.match(expanded, /Child 4 · failed/);
+	assert.match(expanded, /error: widget crash/);
+	assert.match(expanded, /error: second failure with context/);
+	assert.match(expanded, /TAIL-MULTI/);
+});
+
+test("expanded status for single-child jobs keeps full job-level failures", (t) => {
+	const runtime = withHarness(t);
+	const subagent = runtime.tools.find((tool) => tool.name === "subagent");
+	assert.ok(subagent);
+	const details = {
+		mode: "single",
+		results: [{
+			agent: "coder",
+			agentType: "coder",
+			sessionName: "Single Child",
+			task: "x",
+			state: "failed",
+			exitCode: 1,
+			messages: [],
+			stderr: "stderr",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			model: "provider/model",
+			thinkingLevel: "low",
+			errorMessage: "child failed",
+		}],
+		jobId: "agent-single",
+		state: "failed",
+	};
+	const failureTail = `${"full single diagnostics ".repeat(25)}TAIL-SINGLE`;
+	const statusText = [
+		"job agent-single",
+		"Single Child · coder · failed · provider/model · low",
+		"input delivery: completion delivery failed for child 0",
+		`error: coordinator callback failed ${failureTail}`,
+	].join("\n");
+	const collapsed = subagent.renderResult(
+		{ content: [{ type: "text", text: statusText }], details },
+		{ expanded: false },
+		theme,
+		{ isError: true, args: { action: "status", id: "agent-single" } },
+	).render(240).join("\n");
+	assert.match(collapsed, /status 1 child · 1 failed/);
+	assert.match(collapsed, /input delivery: completion delivery failed for child 0/);
+	assert.doesNotMatch(collapsed, /TAIL-SINGLE/);
+
+	const expanded = subagent.renderResult(
+		{ content: [{ type: "text", text: statusText }], details },
+		{ expanded: true },
+		theme,
+		{ isError: true, args: { action: "status", id: "agent-single" } },
+	).render(240).join("\n");
+	assert.match(expanded, /input delivery: completion delivery failed for child 0/);
+	assert.match(expanded, /error: coordinator callback failed/);
+	assert.match(expanded, /TAIL-SINGLE/);
+});
+
+test("status detail render keeps transcript behind expanded toggle", (t) => {
+	const runtime = withHarness(t);
+	const subagent = runtime.tools.find((tool) => tool.name === "subagent");
+	assert.ok(subagent);
+	const longDetail = `job agent-live · child 0\nRECENT: ${"streaming output ".repeat(50)}TAIL-MARKER\n\n[detail offset 0; next offset 600; native session contains full transcript]`;
+	const collapsed = subagent.renderResult(
+		{ content: [{ type: "text", text: longDetail }], details: undefined },
+		{ expanded: false },
+		theme,
+		{ isError: false, args: { action: "status", view: "detail", id: "agent-live", index: 0 } },
+	).render(240).join("\n");
+	assert.match(collapsed, /status detail/);
+	assert.match(collapsed, /Expand to view the detail page/);
+	assert.doesNotMatch(collapsed, /TAIL-MARKER/);
+
+	const expanded = subagent.renderResult(
+		{ content: [{ type: "text", text: longDetail }], details: undefined },
+		{ expanded: true },
+		theme,
+		{ isError: false, args: { action: "status", view: "detail", id: "agent-live", index: 0 } },
+	).render(240).join("\n");
+	assert.match(expanded, /TAIL-MARKER/);
+	assert.match(expanded, /detail offset 0; next offset 600/);
+});
+
+test("status summary without structured details stays compact when collapsed", (t) => {
+	const runtime = withHarness(t);
+	const subagent = runtime.tools.find((tool) => tool.name === "subagent");
+	assert.ok(subagent);
+	const raw = `No unique subagent job matches \"agent-missing\".\n${"x".repeat(600)}TAIL-END`;
+	const collapsed = subagent.renderResult(
+		{ content: [{ type: "text", text: raw }], details: undefined },
+		{ expanded: false },
+		theme,
+		{ isError: true, args: { action: "status", id: "agent-missing" } },
+	).render(240).join("\n");
+	assert.match(collapsed, /status No unique subagent job matches/);
+	assert.match(collapsed, /Expand for full status output/);
+	assert.doesNotMatch(collapsed, /TAIL-END/);
+
+	const expanded = subagent.renderResult(
+		{ content: [{ type: "text", text: raw }], details: undefined },
+		{ expanded: true },
+		theme,
+		{ isError: true, args: { action: "status", id: "agent-missing" } },
+	).render(240).join("\n");
+	assert.match(expanded, /TAIL-END/);
+});
+
 test("parallel completion delivery sends first completed child before later children and uses follow-up trigger", async (t) => {
 	const runtime = withHarness(t, {
 		scripts: {
