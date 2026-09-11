@@ -1210,11 +1210,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function modelPolicyFrom(value: any): ModelPolicy {
+		const optional = (field: unknown) => field === "" ? undefined : field;
 		return {
-			model: value?.model,
+			model: optional(value?.model) as string | undefined,
 			thinking: value?.thinking,
-			provider: value?.provider,
-			family: value?.family,
+			provider: optional(value?.provider) as string | undefined,
+			family: optional(value?.family) as string | undefined,
 		};
 	}
 

@@ -140,6 +140,57 @@ test("actual launcher wires agent, single/shared launch, parallel item, and chai
 	assert.equal(defaults.created[0].thinkingLevel, "low");
 });
 
+test("single-launch empty optional model/provider/family placeholders are treated as omission", async () => {
+	for (const policy of [
+		{ provider: "" },
+		{ family: "" },
+		{ provider: "", family: "" },
+		{ model: "" },
+		{ model: "", provider: "", family: "" },
+	]) {
+		const run = launcher();
+		const result = await run.dispatch({ agent: "coder", task: "defaults", ...policy });
+		assert.equal(result.isError, undefined);
+		assert.equal(run.created.length, 1);
+		assert.equal(run.created[0].model.provider, "agent");
+		assert.equal(run.created[0].model.id, "gpt-5-mini");
+		assert.equal(run.created[0].thinkingLevel, "low");
+	}
+});
+
+test("parallel and chain item-level empty placeholders preserve shared launch defaults", async () => {
+	for (const mode of ["parallel", "chain"] as const) {
+		const run = launcher();
+		const work = [
+			{ agent: "coder", task: "shared default", model: "", provider: "", family: "" },
+			{ agent: "coder", task: "item override", model: "item/claude-opus-5", provider: "item", family: "claude-opus", thinking: "max" },
+		];
+		const result = await run.dispatch({
+			model: "launch/gpt-6",
+			provider: "launch",
+			family: "gpt",
+			thinking: "high",
+			...(mode === "parallel" ? { tasks: work } : { chain: work }),
+		});
+		assert.equal(result.isError, undefined);
+		assert.deepEqual(run.created.map((options) => `${options.model.provider}/${options.model.id}`), ["launch/gpt-6", "item/claude-opus-5"]);
+		assert.deepEqual(run.created.map((options) => options.thinkingLevel), ["high", "max"]);
+	}
+});
+
+test("non-empty malformed provider/family/model overrides remain explicit errors", async () => {
+	for (const [policy, pattern] of [
+		[{ provider: " " }, /Invalid provider constraint/],
+		[{ family: " " }, /Invalid family constraint/],
+		[{ model: "model-without-provider" }, /Malformed pinned model/],
+	] as const) {
+		const run = launcher();
+		const result = await run.dispatch({ agent: "coder", task: "invalid", ...policy });
+		assert.equal(result.isError, true);
+		assert.match(result.content[0].text, pattern);
+	}
+});
+
 test("launcher refreshes only automatic discovery, and an empty PI_OFFLINE value is online", async () => {
 	const offline = process.env.PI_OFFLINE;
 	try {
