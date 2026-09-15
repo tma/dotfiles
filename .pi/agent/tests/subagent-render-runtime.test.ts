@@ -51,6 +51,13 @@ type SessionScript = {
 	sendError?: string;
 };
 
+type AgentDef = { name: string; description: string; tools?: string };
+
+const DEFAULT_AGENT_DEFS: Record<string, AgentDef> = {
+	"coder.md": { name: "coder", description: "Coder", tools: "read,bash,edit,write" },
+	"scout.md": { name: "scout", description: "Scout", tools: "read,bash" },
+};
+
 function createHarness(options: {
 	scripts?: Record<string, SessionScript>;
 	sendFailures?: number;
@@ -58,6 +65,10 @@ function createHarness(options: {
 	persistenceError?: string;
 	appendError?: string;
 	sessionSaved?: boolean;
+	userAgentFiles?: string[];
+	projectAgentFiles?: string[];
+	agentDefs?: Record<string, AgentDef>;
+	noAgentsDir?: boolean;
 } = {}) {
 	const handlers = new Map<string, Function[]>();
 	const tools: any[] = [];
@@ -70,6 +81,12 @@ function createHarness(options: {
 	let sendFailures = options.sendFailures ?? 0;
 	const scripts = options.scripts ?? {};
 	const owner = options.sessionIds ?? { current: "s1", file: "/tmp/s1/session.json" };
+	const agentDirs = {
+		user: options.userAgentFiles ?? ["coder.md", "scout.md"],
+		project: options.projectAgentFiles ?? ["coder.md", "scout.md"],
+	};
+	const agentDefs: Record<string, AgentDef> = { ...DEFAULT_AGENT_DEFS, ...options.agentDefs };
+	const discoveryDirs: string[] = [];
 
 	const withoutImports = source
 		.replace(/^import[\s\S]*?;\n/gm, "")
@@ -83,12 +100,18 @@ function createHarness(options: {
 			return { ...fakeChildSession(), appendCustomEntry: () => { if (options.appendError) throw new Error(options.appendError); } };
 		},
 		fs: {
-			existsSync: (p: string) => p.endsWith("/agents") || Boolean(options.sessionSaved && p.endsWith("native-child.jsonl")),
-			readdirSync: () => [
-				{ name: "coder.md", isFile: () => true, isSymbolicLink: () => false },
-				{ name: "scout.md", isFile: () => true, isSymbolicLink: () => false },
-			],
+			existsSync: (p: string) => {
+				if (options.noAgentsDir) return Boolean(options.sessionSaved && p.endsWith("native-child.jsonl"));
+				return p.endsWith("/agents") || Boolean(options.sessionSaved && p.endsWith("native-child.jsonl"));
+			},
+			readdirSync: (dir: string) => {
+				discoveryDirs.push(dir);
+				const files = dir.endsWith("/.pi/agents") ? agentDirs.project : agentDirs.user;
+				return files.map((name) => ({ name, isFile: () => true, isSymbolicLink: () => false }));
+			},
 			statSync: (p: string) => {
+				discoveryDirs.push(p);
+				if (options.noAgentsDir) throw new Error("ENOENT");
 				if (String(p).endsWith("/.pi/agents")) return { isDirectory: () => true };
 				throw new Error("ENOENT");
 			},
@@ -157,12 +180,11 @@ function createHarness(options: {
 		getAgentDir: () => "/tmp",
 		getMarkdownTheme: () => ({}),
 		ModelRuntime: { create: async () => ({ registerNativeProvider: () => {}, registerProvider: () => {} }) },
-		parseFrontmatter: (content: string) => ({
-			frontmatter: content.includes("scout.md")
-				? { name: "scout", description: "Scout", tools: "read,bash" }
-				: { name: "coder", description: "Coder", tools: "read,bash,edit,write" },
-			body: "system",
-		}),
+		parseFrontmatter: (content: string) => {
+			const filename = content.split("/").pop() ?? content;
+			const def = agentDefs[filename] ?? { name: filename.replace(/\.md$/, ""), description: filename };
+			return { frontmatter: { name: def.name, description: def.description, tools: def.tools }, body: "system" };
+		},
 		SettingsManager: { create: () => ({}) },
 		truncateHead: (text: string) => ({ content: text, truncated: false }),
 		DEFAULT_MAX_BYTES: 64 * 1024,
@@ -246,7 +268,7 @@ function createHarness(options: {
 		await emit("session_shutdown");
 	}
 
-	return { tools, emit, shutdown, ctx, messages, owner, handlers, commands, shortcuts, inputs, notices, storage };
+	return { tools, emit, shutdown, ctx, messages, owner, handlers, commands, shortcuts, inputs, notices, storage, agentDirs, discoveryDirs };
 }
 
 const theme = {
@@ -518,9 +540,95 @@ test("before-agent reminder says completions are already delivered and status is
 	await subagent.execute("id", { agent: "coder", task: "status-reminder" }, undefined, undefined, runtime.ctx);
 	const before = runtime.handlers.get("before_agent_start")?.[0];
 	assert.ok(before);
-	const response = await before({}, runtime.ctx);
+	const response = await before({ systemPrompt: "Base system prompt." }, runtime.ctx);
+	assert.match(response.systemPrompt, /^Base system prompt\./);
+	assert.match(response.systemPrompt, /coder: Coder/);
 	assert.match(response.message.content, /Self-contained child completions are delivered automatically/);
 	assert.match(response.message.content, /subagent action=status only when the user asks/);
+});
+
+test("before-agent catalog lists discovered agents and exact-selection guidance when idle", async (t) => {
+	const runtime = withHarness(t);
+	await runtime.emit("session_start");
+	const before = runtime.handlers.get("before_agent_start")?.[0];
+	assert.ok(before);
+	const response = await before({ systemPrompt: "Base system prompt." }, runtime.ctx);
+	assert.ok(response.systemPrompt.startsWith("Base system prompt."));
+	assert.match(response.systemPrompt, /## Subagents/);
+	assert.match(response.systemPrompt, /- coder: Coder/);
+	assert.match(response.systemPrompt, /- scout: Scout/);
+	assert.match(response.systemPrompt, /choose only the exact names listed above; do not invent names or aliases/);
+	assert.equal(response.message, undefined);
+});
+
+test("before-agent catalog refreshes and drops removed agents between turns", async (t) => {
+	const runtime = withHarness(t);
+	await runtime.emit("session_start");
+	const before = runtime.handlers.get("before_agent_start")?.[0];
+	assert.ok(before);
+
+	runtime.agentDirs.user.push("researcher.md");
+	runtime.agentDirs.project.push("researcher.md");
+	const first = await before({ systemPrompt: "Base prompt." }, runtime.ctx);
+	assert.match(first.systemPrompt, /- researcher: researcher\.md/);
+
+	runtime.agentDirs.user.pop();
+	runtime.agentDirs.project.pop();
+	const second = await before({ systemPrompt: "Base prompt." }, runtime.ctx);
+	assert.doesNotMatch(second.systemPrompt, /researcher/);
+	assert.match(second.systemPrompt, /- coder: Coder/);
+});
+
+test("before-agent catalog prefers project agent definitions over user ones and discovers via the current cwd", async (t) => {
+	const runtime = withHarness(t, {
+		projectAgentFiles: ["project-coder.md"],
+		agentDefs: { "project-coder.md": { name: "coder", description: "Project coder override" } },
+	});
+	await runtime.emit("session_start");
+	const before = runtime.handlers.get("before_agent_start")?.[0];
+	assert.ok(before);
+	const response = await before({ systemPrompt: "Base prompt." }, runtime.ctx);
+	assert.match(response.systemPrompt, /- coder: Project coder override/);
+	assert.match(response.systemPrompt, /- scout: Scout/);
+	assert.doesNotMatch(response.systemPrompt, /- coder: Coder\n/);
+	// Confirms discovery actually queried the project agents dir under the current ctx.cwd,
+	// not just that the override happens to win by coincidence.
+	assert.ok(runtime.discoveryDirs.includes(`${runtime.ctx.cwd}/.pi/agents`));
+});
+
+test("before-agent catalog reports no discovered agents without crashing", async (t) => {
+	const runtime = withHarness(t, { noAgentsDir: true });
+	await runtime.emit("session_start");
+	const before = runtime.handlers.get("before_agent_start")?.[0];
+	assert.ok(before);
+	const response = await before({ systemPrompt: "Base prompt." }, runtime.ctx);
+	assert.ok(response.systemPrompt.startsWith("Base prompt."));
+	assert.match(response.systemPrompt, /No subagent definitions are discovered/);
+	assert.equal(response.message, undefined);
+});
+
+test("subagent tool rejects an unknown agent name in single, parallel, and chain launch modes without launching", async (t) => {
+	const runtime = withHarness(t);
+	const subagent = runtime.tools.find((tool) => tool.name === "subagent");
+	await runtime.emit("session_start");
+
+	const single = await subagent.execute("id", { agent: "worker", task: "single" }, undefined, undefined, runtime.ctx);
+	assert.equal(single.isError, true);
+	assert.match(single.content[0].text, /Unknown agent\(s\): worker/);
+
+	const parallel = await subagent.execute("id", {
+		tasks: [{ agent: "coder", task: "ok" }, { agent: "worker", task: "bad" }],
+	}, undefined, undefined, runtime.ctx);
+	assert.equal(parallel.isError, true);
+	assert.match(parallel.content[0].text, /Unknown agent\(s\): worker/);
+
+	const chain = await subagent.execute("id", {
+		chain: [{ agent: "coder", task: "ok" }, { agent: "worker", task: "{previous}" }],
+	}, undefined, undefined, runtime.ctx);
+	assert.equal(chain.isError, true);
+	assert.match(chain.content[0].text, /Unknown agent\(s\): worker/);
+
+	assert.equal(runtime.storage.length, 0);
 });
 
 test("completion error output excludes normal stop but keeps skipped chain failures", async (t) => {

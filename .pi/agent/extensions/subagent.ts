@@ -157,6 +157,23 @@ function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	return { agents: Array.from(agentMap.values()), projectAgentsDir };
 }
 
+function formatAgentCatalogForPrompt(agents: AgentConfig[]): string {
+	if (agents.length === 0) {
+		return [
+			"## Subagents",
+			"No subagent definitions are discovered in ~/.pi/agent/agents/ or .pi/agents/.",
+			"The subagent tool's single/parallel/chain launch modes have no valid agent names to use right now.",
+		].join("\n");
+	}
+	const lines = agents.map((agent) => `- ${agent.name}: ${agent.description}`).join("\n");
+	return [
+		"## Subagents",
+		"Available agents (name: description):",
+		lines,
+		"For the subagent tool's single/parallel/chain launch modes, choose only the exact names listed above; do not invent names or aliases.",
+	].join("\n");
+}
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const MAX_PARALLEL = 8;
@@ -1883,7 +1900,7 @@ export default function (pi: ExtensionAPI) {
 			"Actions: launch (default), status, send (steer/follow-up input to running children), stop (whole job).",
 			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
-			"Available agents are defined in ~/.pi/agent/agents/ and .pi/agents/ as markdown files.",
+			"Available agent names and descriptions are listed under the Subagents section of the system prompt; select an agent by its exact discovered name only.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -2155,11 +2172,14 @@ export default function (pi: ExtensionAPI) {
 		refreshWidget();
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		currentCtx = ctx;
+		const { agents } = discoverAgents(ctx.cwd, "both");
+		const systemPrompt = `${event.systemPrompt}\n\n${formatAgentCatalogForPrompt(agents)}`;
 		const active = activeJobs();
-		if (active.length === 0) return;
+		if (active.length === 0) return { systemPrompt };
 		return {
+			systemPrompt,
 			message: {
 				customType: "subagent-status-reminder",
 				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Self-contained child completions are delivered automatically; inspect details directly, and use subagent action=status only when the user asks for status, details are missing, or control actions are needed.`,
