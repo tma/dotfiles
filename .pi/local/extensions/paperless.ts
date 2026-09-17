@@ -1,7 +1,8 @@
 /**
  * Read-only Paperless-ngx tools for the local Pi profile.
  *
- * Required environment:
+ * Tools register even if Paperless env vars are missing. Calls fail with a
+ * setup error until both are set:
  *   PAPERLESS_URL    local http(s) origin, e.g. http://paperless.example.local:8000
  *   PAPERLESS_TOKEN  Paperless API token
  *
@@ -110,10 +111,6 @@ function toolError(error: unknown): { isError: true; content: [{ type: "text"; t
 }
 
 export default function (pi: ExtensionAPI) {
-	if (!process.env.PAPERLESS_URL?.trim() || !process.env.PAPERLESS_TOKEN?.trim()) {
-		return;
-	}
-
 	pi.registerTool({
 		name: "paperless_search",
 		label: "Paperless Search",

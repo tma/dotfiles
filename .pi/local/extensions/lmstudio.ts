@@ -17,12 +17,6 @@ import { modelsFromLmStudioPayload, type LmStudioModel } from "./lib/lmstudio-mo
 const DEFAULT_URL = "http://127.0.0.1:1234";
 const FETCH_TIMEOUT_MS = 2_000;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const COMPAT = {
-	supportsDeveloperRole: false,
-	supportsReasoningEffort: false,
-	maxTokensField: "max_tokens" as const,
-	thinkingFormat: "qwen-chat-template" as const,
-};
 
 let lastModels: ProviderModelConfig[] | undefined;
 let discoveryWarning: string | undefined;
@@ -50,7 +44,7 @@ function toProviderModels(models: LmStudioModel[]): ProviderModelConfig[] {
 		cost: ZERO_COST,
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
-		compat: COMPAT,
+		compat: model.compat,
 	}));
 }
 
