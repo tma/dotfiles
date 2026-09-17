@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import path from "node:path";
 
 const SKIP_KEYS = new Set(["PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_LOCAL_DIR", "PI_LOCAL_ENV", "PI_LOCAL_LAUNCH_DIR"]);
@@ -79,6 +79,18 @@ export function describeEnvDir(dir: string): string {
 	}
 }
 
+function describeStat(st: Stats): string {
+	const kinds = [
+		st.isFile() && "file",
+		st.isDirectory() && "directory",
+		st.isSymbolicLink() && "symlink",
+		st.isSocket() && "socket",
+		st.isFIFO() && "fifo",
+		st.isBlockDevice() && "block",
+		st.isCharacterDevice() && "char",
+	].filter(Boolean);
+	return `${kinds.join("|") || "unknown"} mode=${st.mode.toString(8)} size=${st.size}`;
+}
 
 function readEnvFile(filePath: string): { ok: true; path: string; keys: string[] } | { ok: false; error: string } {
 	try {
@@ -90,23 +102,41 @@ function readEnvFile(filePath: string): { ok: true; path: string; keys: string[]
 	}
 }
 
-function readEnvCandidate(candidate: string): { ok: true; path: string; keys: string[] } | { ok: false; error?: string } {
+function readEnvCandidate(
+	candidate: string,
+	depth = 0,
+): { ok: true; path: string; keys: string[] } | { ok: false; error?: string } {
+	if (depth > 4) return { ok: false, error: `${candidate}: too many .env links` };
 	if (!existsSync(candidate)) return { ok: false };
+
+	let lst: Stats;
 	try {
-		const st = statSync(candidate);
-		if (st.isDirectory()) {
-			const nested = path.join(candidate, ".env");
-			if (existsSync(nested)) return readEnvFile(nested);
-			return { ok: false, error: `${candidate} is a directory` };
-		}
-		if (!st.isFile()) {
-			return { ok: false, error: `${candidate} is not a regular file` };
-		}
+		lst = lstatSync(candidate);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		return { ok: false, error: `${candidate}: ${detail}` };
 	}
-	return readEnvFile(candidate);
+
+	if (lst.isSymbolicLink()) {
+		try {
+			return readEnvCandidate(realpathSync(candidate), depth + 1);
+		} catch (error) {
+			const result = readEnvFile(candidate);
+			if (result.ok) return result;
+			const detail = error instanceof Error ? error.message : String(error);
+			return { ok: false, error: `${candidate} (${describeStat(lst)}): ${detail}` };
+		}
+	}
+
+	if (lst.isDirectory()) {
+		const nested = path.join(candidate, ".env");
+		if (nested !== candidate && existsSync(nested)) return readEnvCandidate(nested, depth + 1);
+		return { ok: false, error: `${candidate} is a directory` };
+	}
+
+	const result = readEnvFile(candidate);
+	if (result.ok) return result;
+	return { ok: false, error: `${candidate} (${describeStat(lst)}): ${result.error}` };
 }
 
 export function loadLocalEnv(cwd = process.cwd()): LoadedEnv {

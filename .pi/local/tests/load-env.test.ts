@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -82,6 +82,23 @@ test("loadLocalEnv reads nested .env when .env is a directory", () => {
 		const loaded = loadLocalEnv(dir);
 		assert.equal(loaded.path, path.join(dir, ".env", ".env"));
 		assert.equal(process.env.PAPERLESS_TOKEN, "nested");
+	} finally {
+		if (previous == null) delete process.env.PAPERLESS_TOKEN;
+		else process.env.PAPERLESS_TOKEN = previous;
+	}
+});
+
+test("loadLocalEnv follows a .env symlink", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-local-env-link-"));
+	const target = path.join(dir, "secrets.env");
+	writeFileSync(target, "PAPERLESS_TOKEN=from-symlink\n");
+	symlinkSync(target, path.join(dir, ".env"));
+	const previous = process.env.PAPERLESS_TOKEN;
+	try {
+		delete process.env.PAPERLESS_TOKEN;
+		const loaded = loadLocalEnv(dir);
+		assert.equal(loaded.path, target);
+		assert.equal(process.env.PAPERLESS_TOKEN, "from-symlink");
 	} finally {
 		if (previous == null) delete process.env.PAPERLESS_TOKEN;
 		else process.env.PAPERLESS_TOKEN = previous;
