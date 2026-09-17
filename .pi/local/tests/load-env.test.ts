@@ -52,3 +52,22 @@ test("applyDotEnv does not override Pi process keys", () => {
 		delete process.env.PAPERLESS_TOKEN;
 	}
 });
+
+test("loadLocalEnv finds .env via PI_LOCAL_LAUNCH_DIR", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-local-env-launch-"));
+	writeFileSync(path.join(dir, ".env"), "PAPERLESS_TOKEN=from-launch-dir\n");
+	const previousLaunch = process.env.PI_LOCAL_LAUNCH_DIR;
+	const previousToken = process.env.PAPERLESS_TOKEN;
+	try {
+		delete process.env.PAPERLESS_TOKEN;
+		process.env.PI_LOCAL_LAUNCH_DIR = dir;
+		const loaded = loadLocalEnv("/tmp");
+		assert.equal(loaded.path, path.join(dir, ".env"));
+		assert.equal(process.env.PAPERLESS_TOKEN, "from-launch-dir");
+	} finally {
+		if (previousLaunch == null) delete process.env.PI_LOCAL_LAUNCH_DIR;
+		else process.env.PI_LOCAL_LAUNCH_DIR = previousLaunch;
+		if (previousToken == null) delete process.env.PAPERLESS_TOKEN;
+		else process.env.PAPERLESS_TOKEN = previousToken;
+	}
+});

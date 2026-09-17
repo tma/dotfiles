@@ -119,6 +119,7 @@ pi-local() {
     set +a
   fi
   PI_CODING_AGENT_DIR="$dir" \
+  PI_LOCAL_LAUNCH_DIR="$PWD" \
   PI_OFFLINE=1 \
   command pi --no-builtin-tools --no-skills --no-context-files --no-prompt-templates "$@"
 }
