@@ -11,5 +11,6 @@
   "compaction": {
     "enabled": true,
     "keepRecentTokens": 30000
-  }
+  },
+  "lastChangelogVersion": "99.99.99"
 }
