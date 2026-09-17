@@ -14,7 +14,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
 	assertHostnameResolvesLocal,
-	paperlessApiUrl,
+	localApiUrl,
 	parseLocalOrigin,
 	UnsafeUrlError,
 	type LocalBase,
@@ -38,7 +38,7 @@ function loadConfig(): PaperlessConfig {
 			"Set PAPERLESS_URL and PAPERLESS_TOKEN. PAPERLESS_URL must be a local http(s) origin, e.g. http://paperless.example.local:8000",
 		);
 	}
-	return { base: parseLocalOrigin(rawUrl), token };
+	return { base: parseLocalOrigin(rawUrl, "PAPERLESS_URL"), token };
 }
 
 function snippet(text: string, max = 240): string | undefined {
@@ -79,7 +79,7 @@ function combinedSignal(signal?: AbortSignal | null): AbortSignal {
 async function paperlessGet(path: string, signal?: AbortSignal | null): Promise<unknown> {
 	const { base, token } = loadConfig();
 	await assertHostnameResolvesLocal(base.hostname);
-	const url = paperlessApiUrl(base, path);
+	const url = localApiUrl(base, path);
 	const res = await fetch(url, {
 		headers: {
 			Authorization: `Token ${token}`,

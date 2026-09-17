@@ -49,29 +49,29 @@ export function isLocalIp(address: string): boolean {
 	return false;
 }
 
-export function parseLocalOrigin(raw: string): LocalBase {
+export function parseLocalOrigin(raw: string, label = "URL"): LocalBase {
 	let parsed: URL;
 	try {
 		parsed = new URL(raw.trim());
 	} catch {
-		throw new UnsafeUrlError("PAPERLESS_URL is invalid");
+		throw new UnsafeUrlError(`${label} is invalid`);
 	}
 
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-		throw new UnsafeUrlError("PAPERLESS_URL must be http or https");
+		throw new UnsafeUrlError(`${label} must be http or https`);
 	}
 
 	if (parsed.username || parsed.password) {
-		throw new UnsafeUrlError("PAPERLESS_URL must not include credentials");
+		throw new UnsafeUrlError(`${label} must not include credentials`);
 	}
 
 	const hostname = normalizeHostname(parsed.hostname);
 	if (!hostname) {
-		throw new UnsafeUrlError("PAPERLESS_URL is missing a hostname");
+		throw new UnsafeUrlError(`${label} is missing a hostname`);
 	}
 
 	if (isIP(hostname) !== 0 && !isLocalIp(hostname)) {
-		throw new UnsafeUrlError(`PAPERLESS_URL host ${hostname} is not a local address`);
+		throw new UnsafeUrlError(`${label} host ${hostname} is not a local address`);
 	}
 
 	let pathPrefix = parsed.pathname.replace(/\/+$/, "");
@@ -84,14 +84,14 @@ export function parseLocalOrigin(raw: string): LocalBase {
 	};
 }
 
-export function paperlessApiUrl(base: LocalBase, apiPath: string): URL {
+export function localApiUrl(base: LocalBase, apiPath: string): URL {
 	const rel = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
 	const target = new URL(`${base.origin}${base.pathPrefix}${rel}`);
 	if (target.origin !== base.origin) {
-		throw new UnsafeUrlError("Refusing to call a host other than PAPERLESS_URL");
+		throw new UnsafeUrlError("Refusing to call a host other than the configured origin");
 	}
 	if (base.pathPrefix && target.pathname !== base.pathPrefix && !target.pathname.startsWith(`${base.pathPrefix}/`)) {
-		throw new UnsafeUrlError("Refusing to call a path outside PAPERLESS_URL");
+		throw new UnsafeUrlError("Refusing to call a path outside the configured origin");
 	}
 	return target;
 }

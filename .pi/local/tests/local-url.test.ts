@@ -3,7 +3,7 @@ import test from "node:test";
 import {
 	assertLocalAddresses,
 	isLocalIp,
-	paperlessApiUrl,
+	localApiUrl,
 	parseLocalOrigin,
 	UnsafeUrlError,
 } from "../extensions/lib/local-url.ts";
@@ -49,9 +49,9 @@ test("parseLocalOrigin rejects credentials, public IPs, and non-http", () => {
 	assert.throws(() => parseLocalOrigin("not a url"), UnsafeUrlError);
 });
 
-test("paperlessApiUrl stays on the configured origin and prefix", () => {
+test("localApiUrl stays on the configured origin and prefix", () => {
 	const base = parseLocalOrigin("http://10.0.0.5:8000/paperless");
-	const url = paperlessApiUrl(base, "/api/documents/?query=tax");
+	const url = localApiUrl(base, "/api/documents/?query=tax");
 	assert.equal(url.toString(), "http://10.0.0.5:8000/paperless/api/documents/?query=tax");
 });
 

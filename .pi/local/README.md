@@ -16,11 +16,16 @@ export PAPERLESS_URL="http://paperless.example.local:8000"
 export PAPERLESS_TOKEN="..."   # Paperless admin → API token
 
 # LM Studio listening on localhost:1234
+# optional: export LM_STUDIO_URL="http://127.0.0.1:1234"
 pi-local
 ```
 
 `PAPERLESS_URL` has to resolve to a local address (RFC1918, loopback,
 Tailscale). Do not put the real URL or token in this repository.
+
+Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
+If the server is down, `models.json` is the fallback. `/reload` picks up
+models you load later.
 
 ## Current tools
 
