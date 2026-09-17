@@ -13,6 +13,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { loadLocalEnv } from "./lib/load-env.ts";
 import {
 	fetchLocal,
 	localApiUrl,
@@ -32,6 +33,7 @@ type PaperlessConfig = {
 };
 
 function loadConfig(): PaperlessConfig {
+	loadLocalEnv();
 	const rawUrl = process.env.PAPERLESS_URL?.trim() ?? "";
 	const token = process.env.PAPERLESS_TOKEN?.trim() ?? "";
 	if (!rawUrl || !token) {

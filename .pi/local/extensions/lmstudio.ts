@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { loadLocalEnv } from "./lib/load-env.ts";
 import {
 	fetchLocal,
 	localApiUrl,
@@ -75,6 +76,7 @@ async function discover(base: LocalBase, signal?: AbortSignal): Promise<Provider
 }
 
 export default async function (pi: ExtensionAPI) {
+	loadLocalEnv();
 	let base: LocalBase;
 	try {
 		base = loadBase();

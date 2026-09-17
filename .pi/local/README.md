@@ -21,7 +21,8 @@ out of the session.
 pi-local
 ```
 
-`pi-local` sources `./.env` (or `PI_LOCAL_ENV`) before start.
+`pi-local` loads `./.env` from the launch directory (or `PI_LOCAL_ENV`).
+Startup notifies the path it used.
 Paperless tools are always registered. Calls fail until `PAPERLESS_URL` and
 `PAPERLESS_TOKEN` are set. `PAPERLESS_URL` may be a domain as long as it
 resolves to a local address (RFC1918, loopback, Tailscale). Public records
