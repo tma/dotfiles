@@ -219,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 			const title = d.title ? ` ${d.title}` : "";
 			let line = theme.fg("success", `Document ${d.id ?? "?"}`) + theme.fg("muted", title);
 			if (expanded) {
-				line += `\n${theme.fg("dim", (result.content?.[0]?.text ?? "").slice(0, 500)}`;
+				line += `\n${theme.fg("dim", (result.content?.[0]?.text ?? "").slice(0, 500))}`;
 			}
 			return new Text(line, 0, 0);
 		},
