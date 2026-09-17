@@ -12,7 +12,7 @@ out of the session.
 # from this repository
 ./install.sh
 
-# ~/.pi/local/.env  (not in git)
+# ./.env in the directory you launch from (not in git)
 # PAPERLESS_URL=http://paperless.example.local:8000
 # PAPERLESS_TOKEN=...
 # LM_STUDIO_URL=http://127.0.0.1:1234
@@ -21,7 +21,7 @@ out of the session.
 pi-local
 ```
 
-`pi-local` sources `~/.pi/local/.env` (or `PI_LOCAL_ENV`) before start.
+`pi-local` sources `./.env` (or `PI_LOCAL_ENV`) before start.
 Paperless tools are always registered. Calls fail until `PAPERLESS_URL` and
 `PAPERLESS_TOKEN` are set. `PAPERLESS_URL` may be a domain as long as it
 resolves to a local address (RFC1918, loopback, Tailscale). Public records

@@ -11,5 +11,6 @@ node_modules/
 # Built Gondolin guest image
 .pi/agent/extensions/gondolin/image/
 
-# Local Pi secrets (PAPERLESS_TOKEN, etc.)
+# Local secrets (PAPERLESS_TOKEN, etc.)
+.env
 .pi/local/.env

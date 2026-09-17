@@ -103,7 +103,7 @@ fi
 # agent extensions, skills, and cloud auth stay out of this session.
 pi-local() {
   local dir="${PI_LOCAL_DIR:-$HOME/.pi/local}"
-  local env_file="${PI_LOCAL_ENV:-$dir/.env}"
+  local env_file="${PI_LOCAL_ENV:-$PWD/.env}"
   if [ ! -d "$dir" ]; then
     printf 'pi-local: %s is missing. Run install.sh from this repository.\n' "$dir" >&2
     return 1
