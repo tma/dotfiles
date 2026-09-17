@@ -109,7 +109,25 @@ export function pickLocalAddresses(hostname: string, addresses: string[]): strin
 }
 
 export function preferLocalAddress(addresses: string[]): string {
-	return addresses.find((address) => isIP(address) === 4) ?? addresses[0];
+	const ip = addresses.find((address) => isIP(address) === 4) ?? addresses[0];
+	if (!ip) throw new UnsafeUrlError("No local IP to pin");
+	return ip;
+}
+
+export function pinLookup(
+	ip: string,
+	family: 4 | 6,
+	options: unknown,
+	callback?: (err: Error | null, address?: string | Array<{ address: string; family: number }>, family?: number) => void,
+): void {
+	const cb = typeof options === "function" ? options : callback;
+	if (typeof cb !== "function") throw new UnsafeUrlError("lookup callback missing");
+	const all = typeof options === "object" && options != null && Boolean((options as { all?: boolean }).all);
+	if (all) {
+		cb(null, [{ address: ip, family }]);
+		return;
+	}
+	cb(null, ip, family);
 }
 
 export function assertLocalAddresses(hostname: string, addresses: string[]): string[] {
@@ -159,9 +177,10 @@ export async function fetchLocal(url: URL, init: RequestInit = {}): Promise<Resp
 			{
 				method: (init.method ?? "GET").toUpperCase(),
 				headers,
-				lookup(_hostname, _options, callback) {
-					callback(null, ip, family);
+				lookup(_hostname, options, callback) {
+					pinLookup(ip, family === 6 ? 6 : 4, options, callback);
 				},
+				autoSelectFamily: false,
 				servername: url.hostname,
 			},
 			(res) => {

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	assertLocalAddresses,
 	pickLocalAddresses,
+	pinLookup,
 	isLocalIp,
 	localApiUrl,
 	parseLocalOrigin,
@@ -83,4 +84,21 @@ test("fetchLocal pins loopback and preserves Host", async () => {
 	} finally {
 		server.close();
 	}
+});
+
+test("pinLookup returns an address list when options.all is set", () => {
+	let allResult: unknown;
+	pinLookup("127.0.0.1", 4, { all: true }, (_err, address) => {
+		allResult = address;
+	});
+	assert.deepEqual(allResult, [{ address: "127.0.0.1", family: 4 }]);
+
+	let single: unknown;
+	let family: unknown;
+	pinLookup("10.0.0.5", 4, {}, (_err, address, fam) => {
+		single = address;
+		family = fam;
+	});
+	assert.equal(single, "10.0.0.5");
+	assert.equal(family, 4);
 });
