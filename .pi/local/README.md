@@ -24,8 +24,8 @@ pi-local
 Tailscale). Do not put the real URL or token in this repository.
 
 Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
-If the server is down, `models.json` is the fallback. `/reload` picks up
-models you load later.
+`models.json` has no hardcoded model list. `/reload` picks up models you
+load later.
 
 ## Current tools
 

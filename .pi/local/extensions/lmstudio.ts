@@ -2,8 +2,7 @@
  * Discover models from a local LM Studio server.
  *
  * LM_STUDIO_URL defaults to http://127.0.0.1:1234 and must resolve locally.
- * Successful discovery replaces the static models.json list. If LM Studio is
- * down, that fallback list stays in place.
+ * The model list comes only from LM Studio. models.json has no static entries.
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
@@ -102,11 +101,11 @@ export default async function (pi: ExtensionAPI) {
 		if (models.length > 0) {
 			lastModels = models;
 		} else {
-			discoveryWarning = `LM Studio at ${base.origin} returned no chat models; using models.json fallback`;
+			discoveryWarning = `LM Studio at ${base.origin} returned no chat models`;
 		}
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
-		discoveryWarning = `LM Studio discovery failed (${detail}); using models.json fallback`;
+		discoveryWarning = `LM Studio discovery failed (${detail})`;
 	}
 
 	pi.registerProvider("lmstudio", {
