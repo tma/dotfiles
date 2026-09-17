@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
-	assertHostnameResolvesLocal,
+	fetchLocal,
 	localApiUrl,
 	parseLocalOrigin,
 	UnsafeUrlError,
@@ -78,15 +78,13 @@ function combinedSignal(signal?: AbortSignal | null): AbortSignal {
 
 async function paperlessGet(path: string, signal?: AbortSignal | null): Promise<unknown> {
 	const { base, token } = loadConfig();
-	await assertHostnameResolvesLocal(base.hostname);
 	const url = localApiUrl(base, path);
-	const res = await fetch(url, {
+	const res = await fetchLocal(url, {
 		headers: {
 			Authorization: `Token ${token}`,
 			Accept: "application/json",
 			"User-Agent": "pi-local/1.0",
 		},
-		redirect: "error",
 		signal: combinedSignal(signal),
 	});
 

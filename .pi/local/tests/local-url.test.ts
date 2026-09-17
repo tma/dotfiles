@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	assertLocalAddresses,
+	pickLocalAddresses,
 	isLocalIp,
 	localApiUrl,
 	parseLocalOrigin,
@@ -55,11 +56,31 @@ test("localApiUrl stays on the configured origin and prefix", () => {
 	assert.equal(url.toString(), "http://10.0.0.5:8000/paperless/api/documents/?query=tax");
 });
 
-test("assertLocalAddresses rejects mixed or public DNS results", () => {
-	assert.doesNotThrow(() => assertLocalAddresses("paperless.example.local", ["192.168.1.10"]));
-	assert.throws(
-		() => assertLocalAddresses("paperless.example.local", ["192.168.1.10", "8.8.8.8"]),
-		UnsafeUrlError,
-	);
-	assert.throws(() => assertLocalAddresses("paperless.example.local", []), UnsafeUrlError);
+test("pickLocalAddresses keeps local IPs behind a domain and drops public ones", () => {
+	assert.deepEqual(pickLocalAddresses("paperless.example.com", ["192.168.1.10"]), ["192.168.1.10"]);
+	assert.deepEqual(pickLocalAddresses("paperless.example.com", ["8.8.8.8", "10.0.0.5"]), ["10.0.0.5"]);
+	assert.throws(() => pickLocalAddresses("paperless.example.com", ["8.8.8.8"]), UnsafeUrlError);
+	assert.throws(() => pickLocalAddresses("paperless.example.com", []), UnsafeUrlError);
+	assert.deepEqual(assertLocalAddresses("paperless.example.local", ["192.168.1.10"]), ["192.168.1.10"]);
+});
+
+test("fetchLocal pins loopback and preserves Host", async () => {
+	const { createServer } = await import("node:http");
+	const { fetchLocal } = await import("../extensions/lib/local-url.ts");
+	const seen: string[] = [];
+	const server = createServer((req, res) => {
+		seen.push(req.headers.host ?? "");
+		res.end("ok");
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("no port");
+	try {
+		const res = await fetchLocal(new URL(`http://127.0.0.1:${address.port}/`));
+		assert.equal(res.status, 200);
+		assert.equal(await res.text(), "ok");
+		assert.equal(seen[0], `127.0.0.1:${address.port}`);
+	} finally {
+		server.close();
+	}
 });

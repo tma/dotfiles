@@ -18,9 +18,10 @@ pi-local
 ```
 
 Paperless is optional. Without `PAPERLESS_URL` and `PAPERLESS_TOKEN`, those
-tools are not registered. When set, `PAPERLESS_URL` has to resolve to a local
-address (RFC1918, loopback, Tailscale). Do not put the real URL or token in
-this repository.
+tools are not registered. When set, `PAPERLESS_URL` may be a domain as long as it resolves to a
+local address (RFC1918, loopback, Tailscale). Public records on the same
+name are ignored; the request is pinned to a local IP. Do not put the real
+URL or token in this repository.
 
 Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
 `models.json` has no hardcoded model list. `/reload` picks up models you

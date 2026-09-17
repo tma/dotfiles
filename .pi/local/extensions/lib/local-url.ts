@@ -1,4 +1,6 @@
 import { lookup } from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import { isIP } from "node:net";
 
 export class UnsafeUrlError extends Error {
@@ -96,28 +98,99 @@ export function localApiUrl(base: LocalBase, apiPath: string): URL {
 	return target;
 }
 
-export function assertLocalAddresses(hostname: string, addresses: string[]): void {
-	if (addresses.length === 0) {
-		throw new UnsafeUrlError(`${hostname} did not resolve`);
+export function pickLocalAddresses(hostname: string, addresses: string[]): string[] {
+	const local = [...new Set(addresses.map(normalizeHostname).filter((address) => isLocalIp(address)))];
+	if (local.length === 0) {
+		throw new UnsafeUrlError(
+			addresses.length === 0 ? `${hostname} did not resolve` : `${hostname} did not resolve to a local address`,
+		);
 	}
-	for (const address of addresses) {
-		if (!isLocalIp(address)) {
-			throw new UnsafeUrlError(`${hostname} resolves to non-local address ${address}`);
-		}
-	}
+	return local;
 }
 
-export async function assertHostnameResolvesLocal(hostname: string): Promise<void> {
-	if (isIP(hostname) !== 0) {
-		if (!isLocalIp(hostname)) {
-			throw new UnsafeUrlError(`${hostname} is not a local address`);
-		}
-		return;
+export function preferLocalAddress(addresses: string[]): string {
+	return addresses.find((address) => isIP(address) === 4) ?? addresses[0];
+}
+
+export function assertLocalAddresses(hostname: string, addresses: string[]): string[] {
+	return pickLocalAddresses(hostname, addresses);
+}
+
+export async function resolveLocalAddresses(hostname: string): Promise<string[]> {
+	const host = normalizeHostname(hostname);
+	if (isIP(host) !== 0) {
+		return pickLocalAddresses(host, [host]);
 	}
 
-	const addresses = await lookup(hostname, { all: true, verbatim: true });
-	assertLocalAddresses(
-		hostname,
-		addresses.map((entry) => entry.address),
+	const entries = await lookup(host, { all: true, verbatim: true });
+	return pickLocalAddresses(
+		host,
+		entries.map((entry) => entry.address),
 	);
+}
+
+export async function assertHostnameResolvesLocal(hostname: string): Promise<string[]> {
+	return resolveLocalAddresses(hostname);
+}
+
+function headerRecord(headers?: HeadersInit): http.OutgoingHttpHeaders {
+	if (!headers) return {};
+	if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+	if (Array.isArray(headers)) return Object.fromEntries(headers);
+	return { ...headers };
+}
+
+export async function fetchLocal(url: URL, init: RequestInit = {}): Promise<Response> {
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new UnsafeUrlError("Only http and https are allowed");
+	}
+
+	const ip = preferLocalAddress(await resolveLocalAddresses(url.hostname));
+	const family = isIP(ip) === 6 ? 6 : 4;
+	const headers = headerRecord(init.headers);
+	if (headers.Host == null && headers.host == null) {
+		headers.Host = url.host;
+	}
+
+	return await new Promise((resolve, reject) => {
+		const lib = url.protocol === "https:" ? https : http;
+		const req = lib.request(
+			url,
+			{
+				method: (init.method ?? "GET").toUpperCase(),
+				headers,
+				lookup(_hostname, _options, callback) {
+					callback(null, ip, family);
+				},
+				servername: url.hostname,
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk) => {
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				});
+				res.on("end", () => {
+					const incoming = new Headers();
+					for (const [name, value] of Object.entries(res.headers)) {
+						if (value == null) continue;
+						incoming.set(name, Array.isArray(value) ? value.join(", ") : value);
+					}
+					resolve(
+						new Response(Buffer.concat(chunks), {
+							status: res.statusCode ?? 0,
+							headers: incoming,
+						}),
+					);
+				});
+			},
+		);
+
+		req.on("error", reject);
+		if (init.signal) {
+			const abort = () => req.destroy(new Error("aborted"));
+			if (init.signal.aborted) abort();
+			else init.signal.addEventListener("abort", abort, { once: true });
+		}
+		req.end();
+	});
 }

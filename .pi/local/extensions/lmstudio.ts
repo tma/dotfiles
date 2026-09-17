@@ -7,7 +7,7 @@
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import {
-	assertHostnameResolvesLocal,
+	fetchLocal,
 	localApiUrl,
 	parseLocalOrigin,
 	type LocalBase,
@@ -54,13 +54,12 @@ function toProviderModels(models: LmStudioModel[]): ProviderModelConfig[] {
 	}));
 }
 
-async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
-	const res = await fetch(url, {
+async function fetchJson(url: URL, signal: AbortSignal): Promise<unknown> {
+	const res = await fetchLocal(url, {
 		headers: {
 			Accept: "application/json",
 			Authorization: "Bearer lm-studio",
 		},
-		redirect: "error",
 		signal,
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -68,20 +67,17 @@ async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
 }
 
 async function discover(base: LocalBase, signal?: AbortSignal): Promise<ProviderModelConfig[]> {
-	await assertHostnameResolvesLocal(base.hostname);
 	const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
 	const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
 	try {
-		const v0 = modelsFromLmStudioPayload(await fetchJson(localApiUrl(base, "/api/v0/models").toString(), combined));
+		const v0 = modelsFromLmStudioPayload(await fetchJson(localApiUrl(base, "/api/v0/models"), combined));
 		if (v0.length > 0) return toProviderModels(v0);
 	} catch {
 		// OpenAI /v1/models is enough when the richer v0 endpoint is missing.
 	}
 
-	return toProviderModels(
-		modelsFromLmStudioPayload(await fetchJson(localApiUrl(base, "/v1/models").toString(), combined)),
-	);
+	return toProviderModels(modelsFromLmStudioPayload(await fetchJson(localApiUrl(base, "/v1/models"), combined)));
 }
 
 export default async function (pi: ExtensionAPI) {
