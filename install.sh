@@ -174,21 +174,44 @@ install_or_update_pi() {
   return 0
 }
 
+link_pi_profile() {
+  # Pi stores transient state (auth.json, sessions/, bin/) alongside config.
+  # Symlink only the managed pieces so those files stay out of the repository.
+  local src="$1"
+  local dest="$2"
+  local failures=0
+
+  if [ ! -d "$src" ]; then
+    return 0
+  fi
+
+  if ! mkdir -p "$dest"; then
+    warn "Failed to create $dest"
+    return 1
+  fi
+
+  for item in "$src"/*; do
+    [ -e "$item" ] || continue
+    local name
+    name="$(basename "$item")"
+    if ln -sfn "$item" "$dest/$name"; then
+      log "Linked $dest/$name -> $item"
+    else
+      warn "Failed to link $dest/$name"
+      failures=$((failures + 1))
+    fi
+  done
+
+  return "$failures"
+}
+
 link_pi_agent() {
-  # Pi stores transient state (auth.json, sessions/, bin/) alongside config
-  # in ~/.pi/agent/. We symlink only the managed pieces individually so
-  # transient files are left untouched.
   local pi_src="$DOTFILES_DIR/.pi/agent"
   local pi_dest="$HOME/.pi/agent"
   local failures=0
 
   if [ ! -d "$pi_src" ]; then
     return 0
-  fi
-
-  if ! mkdir -p "$pi_dest"; then
-    warn "Failed to create $pi_dest"
-    return 1
   fi
 
   if [ -L "$pi_dest/skills" ]; then
@@ -202,17 +225,8 @@ link_pi_agent() {
     esac
   fi
 
-  for item in "$pi_src"/*; do
-    [ -e "$item" ] || continue
-    local name
-    name="$(basename "$item")"
-    if ln -sfn "$item" "$pi_dest/$name"; then
-      log "Linked $pi_dest/$name -> $item"
-    else
-      warn "Failed to link $pi_dest/$name"
-      failures=$((failures + 1))
-    fi
-  done
+  link_pi_profile "$pi_src" "$pi_dest"
+  failures=$?
 
   local agents_md="$DOTFILES_DIR/.agents/AGENTS.md"
   if [ -f "$agents_md" ]; then
@@ -227,6 +241,10 @@ link_pi_agent() {
   fi
 
   return "$failures"
+}
+
+link_pi_local() {
+  link_pi_profile "$DOTFILES_DIR/.pi/local" "$HOME/.pi/local"
 }
 
 main() {
@@ -245,6 +263,10 @@ main() {
   done
 
   if ! link_pi_agent; then
+    failures=$((failures + 1))
+  fi
+
+  if ! link_pi_local; then
     failures=$((failures + 1))
   fi
 

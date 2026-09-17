@@ -1,0 +1,19 @@
+{
+  "defaultProvider": "lmstudio",
+  "defaultModel": "qwen3.6-27b-iq4xs",
+  "defaultThinkingLevel": "medium",
+  "defaultTools": [],
+  "enabledModels": [
+    "lmstudio/*"
+  ],
+  "editorPaddingX": 2,
+  "hideThinkingBlock": true,
+  "quietStartup": true,
+  "enableInstallTelemetry": false,
+  "theme": "dark",
+  "enableSkillCommands": false,
+  "compaction": {
+    "enabled": true,
+    "keepRecentTokens": 30000
+  }
+}
