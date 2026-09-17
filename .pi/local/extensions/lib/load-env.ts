@@ -79,22 +79,43 @@ export function describeEnvDir(dir: string): string {
 	}
 }
 
+
+function readEnvFile(filePath: string): { ok: true; path: string; keys: string[] } | { ok: false; error: string } {
+	try {
+		const keys = applyDotEnv(readFileSync(filePath, "utf8"));
+		return { ok: true, path: filePath, keys };
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, error: `${filePath}: ${detail}` };
+	}
+}
+
+function readEnvCandidate(candidate: string): { ok: true; path: string; keys: string[] } | { ok: false; error?: string } {
+	if (!existsSync(candidate)) return { ok: false };
+	try {
+		const st = statSync(candidate);
+		if (st.isDirectory()) {
+			const nested = path.join(candidate, ".env");
+			if (existsSync(nested)) return readEnvFile(nested);
+			return { ok: false, error: `${candidate} is a directory` };
+		}
+		if (!st.isFile()) {
+			return { ok: false, error: `${candidate} is not a regular file` };
+		}
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		return { ok: false, error: `${candidate}: ${detail}` };
+	}
+	return readEnvFile(candidate);
+}
+
 export function loadLocalEnv(cwd = process.cwd()): LoadedEnv {
 	const tried = envCandidateFiles(cwd);
 	const errors: string[] = [];
 	for (const candidate of tried) {
-		try {
-			if (!existsSync(candidate)) continue;
-			if (!statSync(candidate).isFile()) {
-				errors.push(`${candidate} is not a file`);
-				continue;
-			}
-			const keys = applyDotEnv(readFileSync(candidate, "utf8"));
-			return { path: candidate, keys, tried };
-		} catch (error) {
-			const detail = error instanceof Error ? error.message : String(error);
-			errors.push(`${candidate}: ${detail}`);
-		}
+		const result = readEnvCandidate(candidate);
+		if (result.ok) return { path: result.path, keys: result.keys, tried };
+		if (result.error) errors.push(result.error);
 	}
 	const listing = unique([...(process.env.PI_LOCAL_LAUNCH_DIR ? [process.env.PI_LOCAL_LAUNCH_DIR] : []), cwd]).map(describeEnvDir);
 	return {

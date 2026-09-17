@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -69,5 +69,21 @@ test("loadLocalEnv finds .env via PI_LOCAL_LAUNCH_DIR", () => {
 		else process.env.PI_LOCAL_LAUNCH_DIR = previousLaunch;
 		if (previousToken == null) delete process.env.PAPERLESS_TOKEN;
 		else process.env.PAPERLESS_TOKEN = previousToken;
+	}
+});
+
+test("loadLocalEnv reads nested .env when .env is a directory", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-local-env-dir-"));
+	mkdirSync(path.join(dir, ".env"));
+	writeFileSync(path.join(dir, ".env", ".env"), "PAPERLESS_TOKEN=nested\n");
+	const previous = process.env.PAPERLESS_TOKEN;
+	try {
+		delete process.env.PAPERLESS_TOKEN;
+		const loaded = loadLocalEnv(dir);
+		assert.equal(loaded.path, path.join(dir, ".env", ".env"));
+		assert.equal(process.env.PAPERLESS_TOKEN, "nested");
+	} finally {
+		if (previous == null) delete process.env.PAPERLESS_TOKEN;
+		else process.env.PAPERLESS_TOKEN = previous;
 	}
 });
