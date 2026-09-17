@@ -112,6 +112,10 @@ function toolError(error: unknown): { isError: true; content: [{ type: "text"; t
 }
 
 export default function (pi: ExtensionAPI) {
+	if (!process.env.PAPERLESS_URL?.trim() || !process.env.PAPERLESS_TOKEN?.trim()) {
+		return;
+	}
+
 	pi.registerTool({
 		name: "paperless_search",
 		label: "Paperless Search",
