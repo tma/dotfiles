@@ -12,16 +12,21 @@ out of the session.
 # from this repository
 ./install.sh
 
+# ~/.pi/local/.env  (not in git)
+# PAPERLESS_URL=http://paperless.example.local:8000
+# PAPERLESS_TOKEN=...
+# LM_STUDIO_URL=http://127.0.0.1:1234
+
 # LM Studio listening on localhost:1234
-# optional: export LM_STUDIO_URL="http://127.0.0.1:1234"
 pi-local
 ```
 
-Paperless is optional. Without `PAPERLESS_URL` and `PAPERLESS_TOKEN`, those
-tools are not registered. When set, `PAPERLESS_URL` may be a domain as long as it resolves to a
-local address (RFC1918, loopback, Tailscale). Public records on the same
-name are ignored; the request is pinned to a local IP. Do not put the real
-URL or token in this repository.
+`pi-local` sources `~/.pi/local/.env` (or `PI_LOCAL_ENV`) before start.
+Paperless tools are always registered. Calls fail until `PAPERLESS_URL` and
+`PAPERLESS_TOKEN` are set. `PAPERLESS_URL` may be a domain as long as it
+resolves to a local address (RFC1918, loopback, Tailscale). Public records
+on the same name are ignored; the request is pinned to a local IP. Do not
+put the real URL or token in this repository.
 
 Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
 `models.json` has no hardcoded model list. `/reload` picks up models you

@@ -103,6 +103,7 @@ fi
 # agent extensions, skills, and cloud auth stay out of this session.
 pi-local() {
   local dir="${PI_LOCAL_DIR:-$HOME/.pi/local}"
+  local env_file="${PI_LOCAL_ENV:-$dir/.env}"
   if [ ! -d "$dir" ]; then
     printf 'pi-local: %s is missing. Run install.sh from this repository.\n' "$dir" >&2
     return 1
@@ -110,6 +111,12 @@ pi-local() {
   if ! command -v pi >/dev/null 2>&1; then
     printf 'pi-local: pi is not installed\n' >&2
     return 127
+  fi
+  if [ -f "$env_file" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
   fi
   PI_CODING_AGENT_DIR="$dir" \
   PI_OFFLINE=1 \
