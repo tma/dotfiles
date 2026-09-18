@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { getGondolinToolProvider, type GondolinToolProvider } from "./gondolin/index.js";
+import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
 import {
 	AUTO_POLICIES,
 	CatalogRefreshCoordinator,
@@ -510,7 +510,8 @@ function canonicalPath(value: string): string {
 	}
 }
 
-function resolveAuthoritativeCwd(provider: GondolinToolProvider, defaultCwd: string, requestedCwd?: string): string {
+function resolveAuthoritativeCwd(provider: GondolinToolProvider | undefined, defaultCwd: string, requestedCwd?: string): string {
+	if (!provider) return path.resolve(defaultCwd, requestedCwd?.trim() || ".");
 	const hostCwd = canonicalPath(provider.hostCwd);
 	const defaultHostCwd = defaultCwd === "/workspace" ? hostCwd : canonicalPath(defaultCwd);
 	if (defaultHostCwd !== hostCwd) {
@@ -705,12 +706,13 @@ async function runAgent(
 			throw new Error(`Unknown agent "${agentName}". Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
 		}
 		const provider = getGondolinToolProvider();
-		if (!provider) throw new Error("Gondolin tool provider is unavailable; refusing to run an unsandboxed child");
 		const effectiveCwd = resolveAuthoritativeCwd(provider, defaultCwd, opts.cwd);
 		const requestedTools = agent.tools ?? ["read", "bash", "edit", "write"];
-		const customTools = provider.tools.filter((tool) => requestedTools.includes(tool.name)) as ToolDefinition<any>[];
-		const missingTools = requestedTools.filter((name) => !customTools.some((tool) => tool.name === name));
-		if (missingTools.length > 0) throw new Error(`Gondolin does not provide required child tools: ${missingTools.join(", ")}`);
+		const customTools = provider?.tools.filter((tool) => requestedTools.includes(tool.name)) as ToolDefinition<any>[] | undefined;
+		if (provider) {
+			const missingTools = requestedTools.filter((name) => !customTools?.some((tool) => tool.name === name));
+			if (missingTools.length > 0) throw new Error(`Gondolin does not provide required child tools: ${missingTools.join(", ")}`);
+		}
 
 		releaseSlot = await childLimiter.acquire(opts.signal);
 		if (opts.signal?.aborted) throw new Error("Subagent aborted before start");
@@ -756,7 +758,7 @@ async function runAgent(
 			noThemes: true,
 			noContextFiles: true,
 			appendSystemPromptOverride: (base) => [...base, agent.systemPrompt],
-			extensionFactories: [{
+			extensionFactories: provider ? [{
 				name: "subagent-gondolin-context",
 				hidden: true,
 				factory: (childPi) => {
@@ -770,7 +772,7 @@ async function runAgent(
 						};
 					});
 				},
-			}],
+			}] : [],
 		});
 		await loader.reload();
 		opts.signal?.throwIfAborted();
@@ -1969,9 +1971,6 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `Max ${MAX_ACTIVE_JOBS} active background jobs` }], details: undefined, isError: true };
 			}
 			const gondolinProvider = getGondolinToolProvider();
-			if (!gondolinProvider) {
-				return { content: [{ type: "text", text: "Gondolin is unavailable; refusing to launch unsandboxed subagents." }], details: undefined, isError: true };
-			}
 			try {
 				resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, params.cwd);
 				for (const item of [...(params.tasks ?? []), ...(params.chain ?? [])]) {
@@ -2006,7 +2005,7 @@ export default function (pi: ExtensionAPI) {
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 				total: shape.total,
-				cwd: gondolinProvider.hostCwd,
+				cwd: gondolinProvider?.hostCwd ?? ctx.cwd,
 				results: shape.results,
 				controls: new Map(),
 				pendingInputs: [],

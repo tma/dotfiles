@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -68,20 +68,22 @@ test("detail includes task, identity, arguments and tool results; pages are boun
 test("native storage is external, owner-scoped, private, and allocated only by SessionManager.create", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "pi-inspector-home-"));
 	t.after(() => rm(home, { recursive: true, force: true }));
+	const cwd = join(home, "workspace");
+	await mkdir(cwd);
 	const calls: any[] = [];
 	const sdk = { create: (cwd: string, directory: string) => { calls.push([cwd, directory]); return { getSessionFile: () => join(directory, "native.jsonl") }; }, list: async (_cwd: string, directory: string) => [{ id: "native", path: join(directory, "native.jsonl") }] };
 	const module = loadInspector({ os: { homedir: () => home }, SessionManager: sdk });
-	const first = module.createChildSession("/workspace", "owner", "/tmp/parent.jsonl");
+	const first = module.createChildSession(cwd, "owner", "/tmp/parent.jsonl");
 	assert.match(first.getSessionFile(), /\.local\/state\/pi\/subagent-sessions\/[a-f0-9]{64}\/native.jsonl$/);
 	assert.equal((await stat(calls[0][1])).mode & 0o777, 0o700);
 	await assert.rejects(stat(first.getSessionFile()), /ENOENT/);
-	assert.equal(calls[0][0], "/workspace");
-	assert.notEqual(module.childSessionDir("/workspace", "other", "/tmp/parent.jsonl"), calls[0][1]);
-	assert.notEqual(module.childSessionDir("/workspace", "owner", "/tmp/other.jsonl"), calls[0][1]);
-	assert.match(await module.savedChildSessions("/workspace", "owner", "/tmp/parent.jsonl"), /no live handles restored/);
+	assert.equal(calls[0][0], cwd);
+	assert.notEqual(module.childSessionDir(cwd, "other", "/tmp/parent.jsonl"), calls[0][1]);
+	assert.notEqual(module.childSessionDir(cwd, "owner", "/tmp/other.jsonl"), calls[0][1]);
+	assert.match(await module.savedChildSessions(cwd, "owner", "/tmp/parent.jsonl"), /no live handles restored/);
 	assert.throws(() => module.childSessionDir(home, "owner"), /outside the workspace/);
 	const broken = loadInspector({ os: { homedir: () => home }, SessionManager: { create: () => { throw new Error("disk unavailable"); } } });
-	assert.throws(() => broken.createChildSession("/workspace", "owner"), /disk unavailable/);
+	assert.throws(() => broken.createChildSession(cwd, "owner"), /disk unavailable/);
 });
 
 function uiFixture() {

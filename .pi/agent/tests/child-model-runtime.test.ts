@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,6 +49,58 @@ test("real Pi child runtime integration", {
 			contextWindow: 8192, maxTokens: 1024,
 		};
 	}
+
+	await t.test("subagent extension loads without Gondolin installed and native reviewer tools work locally", async () => {
+		const agentDir = await mkdtemp(join(tmpdir(), "pi-local-subagent-test-"));
+		try {
+			const extensionsDir = join(agentDir, "extensions");
+			await mkdir(extensionsDir);
+			for (const file of ["subagent.ts", "plan.ts", "lib"]) {
+				await cp(new URL(`../extensions/${file}`, import.meta.url), join(extensionsDir, file), { recursive: true });
+			}
+			await assert.rejects(stat(join(extensionsDir, "gondolin")), /ENOENT/);
+			const settingsManager = SettingsManager.inMemory();
+			const loader = new DefaultResourceLoader({
+				cwd: agentDir, agentDir, settingsManager,
+				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+				additionalExtensionPaths: [join(extensionsDir, "subagent.ts")],
+			});
+			await loader.reload();
+			assert.deepEqual(loader.getExtensions().errors, []);
+			assert.equal(loader.getExtensions().extensions.length, 1);
+			assert.ok(loader.getExtensions().extensions[0].tools.has("subagent"));
+
+			const runtime = await memoryRuntime();
+			const model = { ...definition("local-tools"), provider: "test", api: "openai-completions", baseUrl: "https://example.com/v1" };
+			const childLoader = new DefaultResourceLoader({
+				cwd: agentDir, agentDir, settingsManager,
+				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			});
+			await childLoader.reload();
+			const tools = ["read", "bash", "grep", "find", "ls"];
+			const { session } = await createAgentSession({
+				cwd: agentDir, agentDir, model, modelRuntime: runtime, thinkingLevel: "off", tools,
+				resourceLoader: childLoader, sessionManager: SessionManager.inMemory(agentDir), settingsManager,
+			});
+			try {
+				await session.bindExtensions({ mode: "print" });
+				assert.deepEqual(session.agent.state.tools.map((tool: any) => tool.name).sort(), [...tools].sort());
+				assert.ok(session.systemPrompt.includes(`Current working directory: ${agentDir}`));
+				assert.doesNotMatch(session.systemPrompt, /Gondolin VM/);
+				await writeFile(join(agentDir, "example.txt"), "local child tools work\n");
+				const read = session.agent.state.tools.find((tool: any) => tool.name === "read");
+				const result = await read.execute("local-read", { path: "example.txt" });
+				assert.match(result.content[0].text, /local child tools work/);
+				const bash = session.agent.state.tools.find((tool: any) => tool.name === "bash");
+				const shellResult = await bash.execute("local-bash", { command: "test -f example.txt && printf 'local cwd verified'" });
+				assert.equal(shellResult.content[0].text, "local cwd verified");
+			} finally {
+				session.dispose();
+			}
+		} finally {
+			await rm(agentDir, { recursive: true, force: true });
+		}
+	});
 
 	await t.test("native child path is pending until the first real assistant entry and survives reopening", async () => {
 		const home = await mkdtemp(join(tmpdir(), "pi-child-session-test-"));

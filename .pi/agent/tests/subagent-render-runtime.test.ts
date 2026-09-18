@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
+import * as path from "node:path";
 import test from "node:test";
 import { fakeChildSession, inspector } from "./helpers/subagent-inspector.ts";
+import { getGondolinToolProvider, setGondolinToolProvider } from "../extensions/lib/gondolin-provider.ts";
 
 class Text {
 	text: string;
@@ -69,6 +71,8 @@ function createHarness(options: {
 	projectAgentFiles?: string[];
 	agentDefs?: Record<string, AgentDef>;
 	noAgentsDir?: boolean;
+	cwd?: string;
+	gondolin?: { hostCwd: string; tools: any[] } | null;
 } = {}) {
 	const handlers = new Map<string, Function[]>();
 	const tools: any[] = [];
@@ -87,6 +91,7 @@ function createHarness(options: {
 	};
 	const agentDefs: Record<string, AgentDef> = { ...DEFAULT_AGENT_DEFS, ...options.agentDefs };
 	const discoveryDirs: string[] = [];
+	const created: any[] = [];
 
 	const withoutImports = source
 		.replace(/^import[\s\S]*?;\n/gm, "")
@@ -124,16 +129,12 @@ function createHarness(options: {
 			mkdirSync: () => {},
 		},
 		os: { homedir: () => "/home/test", tmpdir: () => "/tmp" },
-		path: {
-			join: (...parts: string[]) => parts.join("/").replace(/\/{2,}/g, "/"),
-			dirname: (p: string) => p.split("/").slice(0, -1).join("/") || "/",
-			resolve: (...parts: string[]) => parts.join("/").replace(/\/{2,}/g, "/"),
-			isAbsolute: (p: string) => p.startsWith("/"),
-		},
+		path,
 		StringEnum: (...args: any[]) => args,
 		clampThinkingLevel: (_model: any, level: string) => level,
 		getSupportedThinkingLevels: () => ["off", "low", "medium", "high"],
 		createAgentSession: async (sessionOptions: any) => {
+			created.push(sessionOptions);
 			let listener: ((event: any) => void) | undefined;
 			let aborted = false;
 			let currentScript: SessionScript = {};
@@ -176,7 +177,11 @@ function createHarness(options: {
 			};
 			return { session };
 		},
-		DefaultResourceLoader: class { async reload() {} },
+		DefaultResourceLoader: class {
+			options: any;
+			constructor(options: any) { this.options = options; }
+			async reload() {}
+		},
 		getAgentDir: () => "/tmp",
 		getMarkdownTheme: () => ({}),
 		ModelRuntime: { create: async () => ({ registerNativeProvider: () => {}, registerProvider: () => {} }) },
@@ -195,7 +200,9 @@ function createHarness(options: {
 		Text,
 		Box,
 		Type: new Proxy({}, { get: () => (..._args: any[]) => ({}) }),
-		getGondolinToolProvider: () => ({ hostCwd: "/workspace", tools: [{ name: "read" }, { name: "bash" }, { name: "edit" }, { name: "write" }] }),
+		getGondolinToolProvider: () => options.gondolin === null ? undefined : options.gondolin ?? {
+			hostCwd: "/workspace", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"].map((name) => ({ name })),
+		},
 		AUTO_POLICIES: ["cheap", "balanced", "strong"],
 		CatalogRefreshCoordinator: class { async refresh() { return {}; } },
 		mergeModelPolicy: () => ({ sources: {} }),
@@ -231,7 +238,7 @@ function createHarness(options: {
 	extension(pi as any);
 
 	const ctx = {
-		cwd: "/workspace",
+		cwd: options.cwd ?? "/workspace",
 		mode: "tui",
 		hasUI: false,
 		ui: { setWidget: () => {}, setStatus: () => {}, notify: (message: string, level: string) => notices.push({ message, level }), confirm: async () => false, input: async () => "input" },
@@ -268,7 +275,7 @@ function createHarness(options: {
 		await emit("session_shutdown");
 	}
 
-	return { tools, emit, shutdown, ctx, messages, owner, handlers, commands, shortcuts, inputs, notices, storage, agentDirs, discoveryDirs };
+	return { tools, emit, shutdown, ctx, messages, owner, handlers, commands, shortcuts, inputs, notices, storage, agentDirs, discoveryDirs, created };
 }
 
 const theme = {
@@ -284,6 +291,135 @@ function withHarness(t: any, options?: Parameters<typeof createHarness>[0]) {
 	});
 	return runtime;
 }
+
+test("Gondolin provider registry works without importing the VM runtime", () => {
+	const previous = getGondolinToolProvider();
+	try {
+		setGondolinToolProvider(undefined);
+		assert.equal(getGondolinToolProvider(), undefined);
+		const provider = { hostCwd: "/repo", tools: [] };
+		setGondolinToolProvider(provider);
+		assert.equal(getGondolinToolProvider(), provider);
+		setGondolinToolProvider(undefined);
+		assert.equal(getGondolinToolProvider(), undefined);
+	} finally {
+		setGondolinToolProvider(previous);
+	}
+});
+
+test("local single launch uses native tools and resolves cwd without a VM prompt", async (t) => {
+	const runtime = withHarness(t, {
+		gondolin: null, cwd: "/repo",
+		agentDefs: { "coder.md": { name: "coder", description: "Coder" } },
+	});
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	for (const [cwd, expected] of [[undefined, "/repo"], ["", "/repo"], ["src/../tests", "/repo/tests"], ["/other/repo", "/other/repo"]]) {
+		const launch = await tool.execute("id", { agent: "coder", task: "local", cwd }, undefined, undefined, runtime.ctx);
+		assert.notEqual(launch.isError, true);
+		await sleep(30);
+		const status = await tool.execute("id", { action: "status", id: launch.details.jobId }, undefined, undefined, runtime.ctx);
+		assert.equal(status.details.state, "completed");
+		const session = runtime.created.at(-1);
+		assert.equal(session.cwd, expected);
+		assert.deepEqual(session.tools, ["read", "bash", "edit", "write"]);
+		assert.equal(session.customTools, undefined);
+		assert.equal(session.resourceLoader.options.cwd, expected);
+		assert.deepEqual(session.resourceLoader.options.extensionFactories, []);
+		assert.equal(runtime.storage.at(-1)[0], expected);
+	}
+});
+
+for (const mode of ["single", "parallel", "chain"] as const) {
+	test(`local ${mode} reviews preserve the reviewer tool allowlist and per-child cwd`, async (t) => {
+		const reviewerTools = ["read", "bash", "grep", "find", "ls"];
+		const runtime = withHarness(t, {
+			gondolin: null, cwd: "/repo",
+			userAgentFiles: ["reviewer.md"], projectAgentFiles: [],
+			agentDefs: { "reviewer.md": { name: "second-opinion-opus", description: "Reviewer", tools: reviewerTools.join(",") } },
+		});
+		await runtime.emit("session_start");
+		const tool = runtime.tools[0];
+		const tasks = [
+			{ agent: "second-opinion-opus", task: "review default" },
+			{ agent: "second-opinion-opus", task: "review relative", cwd: "src" },
+			{ agent: "second-opinion-opus", task: "review absolute", cwd: "/other/repo" },
+		];
+		const params = mode === "single" ? tasks[0] : { [mode === "parallel" ? "tasks" : "chain"]: tasks };
+		const launch = await tool.execute("id", params, undefined, undefined, runtime.ctx);
+		assert.notEqual(launch.isError, true);
+		await sleep(30);
+		const status = await tool.execute("id", { action: "status", id: launch.details.jobId }, undefined, undefined, runtime.ctx);
+		assert.equal(status.details.state, "completed");
+		assert.deepEqual(runtime.created.map((session) => session.cwd), mode === "single" ? ["/repo"] : ["/repo", "/repo/src", "/other/repo"]);
+		for (const session of runtime.created) {
+			assert.deepEqual(session.tools, reviewerTools);
+			assert.equal(session.customTools, undefined);
+			assert.deepEqual(session.resourceLoader.options.extensionFactories, []);
+			assert.equal(session.resourceLoader.options.noExtensions, true);
+		}
+	});
+}
+
+test("sandboxed children keep Gondolin tools, workspace mapping, and guest prompt", async (t) => {
+	const gondolin = {
+		hostCwd: "/repo",
+		tools: ["read", "bash", "edit", "write"].map((name) => ({ name, execute: async () => { throw new Error("VM unavailable"); } })),
+	};
+	const runtime = withHarness(t, { gondolin, cwd: "/repo" });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	const launch = await tool.execute("id", { agent: "scout", task: "sandbox", cwd: "/workspace" }, undefined, undefined, runtime.ctx);
+	assert.notEqual(launch.isError, true);
+	await sleep(30);
+	const status = await tool.execute("id", { action: "status", id: launch.details.jobId }, undefined, undefined, runtime.ctx);
+	assert.equal(status.details.state, "completed");
+	const session = runtime.created[0];
+	assert.equal(session.cwd, "/repo");
+	assert.deepEqual(session.tools, ["read", "bash"]);
+	assert.deepEqual(session.customTools, gondolin.tools.slice(0, 2));
+	assert.equal(session.customTools[0], gondolin.tools[0]);
+	await assert.rejects(session.customTools[0].execute(), /VM unavailable/);
+	const factories = session.resourceLoader.options.extensionFactories;
+	assert.equal(factories.length, 1);
+	let rewrite!: Function;
+	factories[0].factory({ on: (name: string, handler: Function) => { assert.equal(name, "before_agent_start"); rewrite = handler; } });
+	assert.equal(rewrite({ systemPrompt: "Current working directory: /repo" }).systemPrompt,
+		"Current working directory: /workspace (Gondolin VM; host workspace mounted from /repo)");
+});
+
+test("sandboxed launches still reject cwd mismatches in every mode", async (t) => {
+	const runtime = withHarness(t, { gondolin: { hostCwd: "/repo", tools: [{ name: "read" }] }, cwd: "/repo" });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	for (const params of [
+		{ agent: "scout", task: "wrong checkout", cwd: "/other/repo" },
+		{ tasks: [{ agent: "scout", task: "wrong directory", cwd: "src" }] },
+		{ chain: [{ agent: "scout", task: "wrong checkout", cwd: "/other/repo" }] },
+	]) {
+		const launch = await tool.execute("id", params, undefined, undefined, runtime.ctx);
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0].text, /does not map exactly to Gondolin workspace/);
+	}
+	runtime.ctx.cwd = "/other/repo";
+	const launch = await tool.execute("id", { agent: "scout", task: "wrong parent" }, undefined, undefined, runtime.ctx);
+	assert.equal(launch.isError, true);
+	assert.match(launch.content[0].text, /Gondolin is bound to/);
+	assert.deepEqual(runtime.created, []);
+});
+
+test("sandboxed children never replace missing VM tools with local tools", async (t) => {
+	const runtime = withHarness(t, { gondolin: { hostCwd: "/workspace", tools: [{ name: "read" }] } });
+	await runtime.emit("session_start");
+	const tool = runtime.tools[0];
+	const launch = await tool.execute("id", { agent: "scout", task: "missing tool" }, undefined, undefined, runtime.ctx);
+	assert.notEqual(launch.isError, true);
+	await sleep(30);
+	const status = await tool.execute("id", { action: "status", id: launch.details.jobId }, undefined, undefined, runtime.ctx);
+	assert.equal(status.details.state, "failed");
+	assert.match(status.details.results[0].errorMessage, /Gondolin does not provide required child tools: bash/);
+	assert.deepEqual(runtime.created, []);
+});
 
 test("subagent tool keeps self shell renderer and hides job id from result rendering", (t) => {
 	const runtime = withHarness(t);

@@ -53,6 +53,7 @@ import {
 	truncateLine,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import { getGondolinToolProvider, setGondolinToolProvider, type GondolinToolProvider } from "../lib/gondolin-provider.js";
 
 const GUEST_WORKSPACE = "/workspace";
 const GUEST_HOME = "/root";
@@ -63,22 +64,6 @@ const ONE_PASSWORD_AGENT = path.join(
 	os.homedir(),
 	"Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
 );
-
-export interface GondolinToolProvider {
-	readonly hostCwd: string;
-	readonly tools: readonly ToolDefinition<any>[];
-}
-
-const GONDOLIN_TOOL_PROVIDER = Symbol.for("tma.pi.gondolin.tool-provider");
-
-function setGondolinToolProvider(provider: GondolinToolProvider | undefined): void {
-	(globalThis as any)[GONDOLIN_TOOL_PROVIDER] = provider;
-}
-
-/** Returns tools bound to the parent Gondolin VM and its authoritative host workspace. */
-export function getGondolinToolProvider(): GondolinToolProvider | undefined {
-	return (globalThis as any)[GONDOLIN_TOOL_PROVIDER] as GondolinToolProvider | undefined;
-}
 
 /**
  * Optional SSH egress config, kept outside this repository because it names
