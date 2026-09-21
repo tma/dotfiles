@@ -212,7 +212,6 @@ function createHarness(options: {
 		cleanGeneratedSessionName: (value: string) => value,
 		heuristicSessionName: () => "Task",
 		sanitizeTitleText: (value: string) => String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim(),
-		findPlanFile: () => undefined,
 	};
 	const prelude = Object.keys(deps).map((name) => `const ${name} = deps.${name};`).join("\n");
 	const extension = new Function("deps", `${prelude}\n${js}\nreturn __default;`)(deps);
@@ -304,6 +303,17 @@ test("Gondolin provider registry works without importing the VM runtime", () => 
 		assert.equal(getGondolinToolProvider(), undefined);
 	} finally {
 		setGondolinToolProvider(previous);
+	}
+});
+
+test("extension registers the subagent tool and /agents inspector, and no removed slash commands", async (t) => {
+	const runtime = withHarness(t);
+	await runtime.emit("session_start");
+	assert.ok(runtime.tools.some((tool) => tool.name === "subagent"));
+	assert.ok(runtime.commands.has("agents"));
+	assert.ok(runtime.shortcuts.has("ctrl+shift+a"));
+	for (const removed of ["run", "chain", "dispatch", "plan", "autopilot", "worktree", "review"]) {
+		assert.ok(!runtime.commands.has(removed), `/${removed} must not be registered`);
 	}
 });
 

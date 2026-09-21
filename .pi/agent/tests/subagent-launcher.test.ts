@@ -20,34 +20,14 @@ function constSource(name: string): string {
 	return match[0];
 }
 
-test("slash commands retain literal flags, multiline tasks, and original prompt endings", async () => {
-	const commands = new Map<string, any>();
-	const messages: string[] = [];
-	const pi = {
-		registerCommand: (name: string, command: any) => commands.set(name, command),
-		sendUserMessage: (message: string) => messages.push(message),
-	};
-	const slashCommands = source.slice(source.indexOf('\tpi.registerCommand("run",'), source.lastIndexOf("}"));
-	new Function("pi", "discoverAgents", "agentCompletions", "findPlanFile", stripTypeScriptTypes(`
-		${functionSource("parseQuotedArgs")}
-		${slashCommands}
-	`))(pi, () => ({ agents: [] }), () => [], () => undefined);
-	const ctx = { cwd: "/test", ui: { notify: () => assert.fail("Unexpected usage message") } };
-	const task = 'Keep "--model=literal" and "--provider=literal"\n  on separate lines';
-	await commands.get("dispatch").handler(task, ctx);
-	assert.ok(messages.pop()!.endsWith(`## Task\n${task}`));
-	await commands.get("chain").handler(`scout -> coder -- ${task}`, ctx);
-	assert.deepEqual(JSON.parse(messages.pop()!.split("with these steps: ")[1]), [
-		{ agent: "scout", task }, { agent: "coder", task: "{previous}" },
-	]);
-	await commands.get("chain").handler('scout "literal --model=example" -> coder "literal --provider=example"', ctx);
-	assert.deepEqual(JSON.parse(messages.pop()!.split("with these steps: ")[1]), [
-		{ agent: "scout", task: "literal --model=example" }, { agent: "coder", task: "literal --provider=example" },
-	]);
-	// /run already joined whitespace in HEAD; retain that behavior, without new punctuation.
-	await commands.get("run").handler(`coder ${task}`, ctx);
-	assert.equal(messages.pop(), `Use the subagent tool to run agent "coder" with this task: ${task.split(/\s+/).join(" ")}`);
-	assert.doesNotMatch(source, /extractSlashPolicy|policyInstruction/);
+test("launcher source no longer defines removed slash-command wrappers", () => {
+	for (const name of ["parseQuotedArgs", "agentCompletions"]) {
+		assert.doesNotMatch(source, new RegExp(`\\b${name}\\b`), `${name} must be removed`);
+	}
+	for (const command of ["run", "chain", "dispatch"]) {
+		assert.doesNotMatch(source, new RegExp(`registerCommand\\("${command}"`), `/${command} must not be registered`);
+	}
+	assert.match(source, /registerCommand\("agents"/);
 });
 
 function launcher(

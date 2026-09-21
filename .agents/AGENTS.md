@@ -68,8 +68,8 @@ assuming any of that comes along for free:
 - how to verify the result, and what a blocked outcome looks like so the
   child reports it instead of guessing
 
-This contract applies to every delegation path — the `subagent` tool,
-`/run`, `/chain`, and `/dispatch` alike.
+This contract applies to every launch mode of the `subagent` tool — single,
+parallel, and chain alike.
 
 Treat active delegated agents as work that must be supervised:
 

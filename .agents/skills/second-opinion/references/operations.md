@@ -109,7 +109,7 @@ Include relevant project guidance when present:
 - `.github/instructions/*.instructions.md` that apply to touched files
 - `CONVENTIONS.md`
 
-Also include review rubric/checklist content when available, such as `.pi/agent/prompts/review.md`, `.pi/prompts/review.md`, or equivalent. Extract only advisory review parts: checklist, severities, output format, and project-specific review standards. Exclude posting, editing, or PR workflow steps.
+Include the `code-review` skill's checklist, severity definitions, and output requirements when relevant, plus project-specific review standards. Extract only advisory review guidance. Exclude posting, editing, or PR workflow steps.
 
 Do not over-collect. Include enough context for independent reasoning without flooding reviewers with unrelated files.
 

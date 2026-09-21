@@ -2,11 +2,8 @@
  * Subagent extension — lightweight multi-agent orchestration for pi.
  *
  * Based on pi's built-in subagent example, enhanced with:
- *   - /dispatch command — decomposes a task into parallel subtasks or executes a plan
- *   - /run <agent> <task> — single agent dispatch
- *   - /chain agent1 -> agent2 -- <task> — sequential pipeline
+ *   - subagent tool — single/parallel/chain launch modes, background jobs, and status/send/stop control
  *   - Duration + cost tracking
- *   - Tab-completion for agent names
  *   - Output truncation to avoid context blowup
  */
 
@@ -31,7 +28,7 @@ import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
-import { type AutocompleteItem, Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
 import {
@@ -57,7 +54,6 @@ import {
 	trackChildEvent,
 	type ChildInspection,
 } from "./lib/subagent-inspector.js";
-import { findPlanFile } from "./plan.js";
 
 // ─── Agent discovery ────────────────────────────────────────────────────────
 
@@ -1117,46 +1113,9 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 	return c;
 }
 
-// ─── Slash command argument parsing ─────────────────────────────────────────
-
-function parseQuotedArgs(input: string): string[] {
-	const args: string[] = [];
-	let current = "";
-	let inQuote: string | null = null;
-
-	for (let i = 0; i < input.length; i++) {
-		const ch = input[i];
-		if (inQuote) {
-			if (ch === inQuote) {
-				inQuote = null;
-			} else {
-				current += ch;
-			}
-		} else if (ch === '"' || ch === "'") {
-			inQuote = ch;
-		} else if (ch === " " && current) {
-			args.push(current);
-			current = "";
-		} else if (ch !== " ") {
-			current += ch;
-		}
-	}
-	if (current) args.push(current);
-	return args;
-}
-
 // ─── Extension ──────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	// Agent name completions for slash commands
-	function agentCompletions(prefix: string): AutocompleteItem[] | null {
-		const { agents } = discoverAgents(process.cwd(), "both");
-		const items = agents
-			.filter((a) => a.name.startsWith(prefix))
-			.map((a) => ({ value: a.name, label: `${a.name} — ${a.description}` }));
-		return items.length > 0 ? items : null;
-	}
-
 	// ─── Tool schemas ─────────────────────────────────────────────────────
 
 	const ModelPolicyFields = {
@@ -2293,178 +2252,5 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("ctrl+shift+a", {
 		description: "Inspect subagents while the main model is running",
 		handler: (ctx) => inspectAgents("", ctx),
-	});
-
-	// ─── /run <agent> <task> ──────────────────────────────────────────────
-
-	pi.registerCommand("run", {
-		description: "Run a single agent: /run <agent> <task>",
-		getArgumentCompletions: agentCompletions,
-		handler: async (args, ctx) => {
-			if (!args?.trim()) {
-				const { agents } = discoverAgents(ctx.cwd, "both");
-				const list = agents.map((a) => `  ${a.name} — ${a.description}`).join("\n");
-				ctx.ui.notify(`Usage: /run <agent> <task>\n\nAgents:\n${list || "  (none)"}`, "info");
-				return;
-			}
-
-			const parts = args.trim().split(/\s+/);
-			const agentName = parts[0];
-			const task = parts.slice(1).join(" ");
-
-			if (!task) {
-				ctx.ui.notify(`Usage: /run ${agentName} <task>`, "warning");
-				return;
-			}
-
-			pi.sendUserMessage(
-				`Use the subagent tool to run agent "${agentName}" with this task: ${task}`,
-				{ deliverAs: "followUp" },
-			);
-		},
-	});
-
-	// ─── /chain agent1 -> agent2 -- <task> ───────────────────────────────
-
-	pi.registerCommand("chain", {
-		description: "Run agents in sequence: /chain scout -> coder -- <task>",
-		getArgumentCompletions: agentCompletions,
-		handler: async (args, ctx) => {
-			if (!args?.trim()) {
-				ctx.ui.notify("Usage: /chain agent1 -> agent2 -- <task>\nOr: /chain agent1 \"task1\" -> agent2 \"task2\"", "info");
-				return;
-			}
-
-			// Check for -- separator (shared task mode)
-			const dashIdx = args.indexOf(" -- ");
-			if (dashIdx !== -1) {
-				const agentsPart = args.slice(0, dashIdx).trim();
-				const task = args.slice(dashIdx + 4).trim();
-				const agentNames = agentsPart.split(/\s*->\s*/).map((s) => s.trim()).filter(Boolean);
-
-				if (agentNames.length < 2 || !task) {
-					ctx.ui.notify("Usage: /chain agent1 -> agent2 -- <task>", "warning");
-					return;
-				}
-
-				const steps = agentNames.map((name, i) => ({
-					agent: name,
-					task: i === 0 ? task : "{previous}",
-				}));
-
-				const stepsJson = JSON.stringify(steps);
-				pi.sendUserMessage(
-					`Use the subagent tool in chain mode with these steps: ${stepsJson}`,
-					{ deliverAs: "followUp" },
-				);
-				return;
-			}
-
-			// Per-step task mode: agent1 "task1" -> agent2 "task2"
-			const segments = args.split(/\s*->\s*/);
-			const steps: { agent: string; task: string }[] = [];
-
-			for (const seg of segments) {
-				const parsed = parseQuotedArgs(seg.trim());
-				if (parsed.length === 0) continue;
-				const agent = parsed[0];
-				const task = parsed.slice(1).join(" ") || (steps.length === 0 ? "" : "{previous}");
-				steps.push({ agent, task });
-			}
-
-			if (steps.length < 2) {
-				ctx.ui.notify("Chain needs at least 2 agents separated by ->", "warning");
-				return;
-			}
-
-			if (!steps[0].task) {
-				ctx.ui.notify("First step needs a task", "warning");
-				return;
-			}
-
-			const stepsJson = JSON.stringify(steps);
-			pi.sendUserMessage(
-				`Use the subagent tool in chain mode with these steps: ${stepsJson}`,
-				{ deliverAs: "followUp" },
-			);
-		},
-	});
-
-	// ─── /dispatch [task] ────────────────────────────────────────────────
-	//
-	// Executes work in the current worktree by decomposing a task into
-	// parallel subtasks, or by executing the current worktree's .pi/plan.md.
-	//
-
-	pi.registerCommand("dispatch", {
-		description: "Execute work in parallel: /dispatch [task]. No args = execute worktree-local .pi/plan.md or the plan from this session.",
-		handler: async (args, ctx) => {
-			const { agents } = discoverAgents(ctx.cwd, "both");
-			const agentList = agents.map((a) => `- ${a.name}: ${a.description}`).join("\n");
-			const task = args?.trim();
-
-			// With args: decompose and execute the given task
-			if (task) {
-				const dispatchPrompt = `Break this task into independent subtasks that can run in parallel, then execute them using the subagent tool in parallel mode (tasks array).
-
-## Available agents
-${agentList}
-
-## Rules
-- Identify 2-8 independent subtasks that don't depend on each other's output.
-- Pick the best agent for each subtask (use "coder" for implementation, "scout" for analysis, "researcher" for research).
-- If a subtask depends on another's output, DON'T parallelize those — either keep them together or use a chain for sequential dependencies.
-- If the task is inherently sequential or atomic, just run it as a single subagent call instead.
-- Each subtask should be self-contained with enough context to execute independently.
-- Parallel read-only exploration is fine, but only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
-
-## Task
-${task}`;
-				pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
-				return;
-			}
-
-			// No args: look for .pi/plan.md first, then fall back to conversation
-			const planFile = findPlanFile(ctx.cwd);
-
-			if (planFile) {
-				const dispatchPrompt = `Read the plan file at ${planFile} and execute it using the subagent tool.
-
-## Available agents
-${agentList}
-
-## Instructions
-1. Read ${planFile} to get the full plan.
-2. Follow the **Execution Strategy** section to determine task ordering and parallelism.
-3. For each parallel group, use the subagent tool's parallel mode (tasks array).
-4. For sequential dependencies, use chain mode or run groups in sequence.
-5. Each task must include its scope and relevant plan context. Children don't inherit this conversation or the plan's contents automatically. If a child needs the plan, provide an accessible path and explicitly require reading it; translate ${planFile} to the child's workspace path when needed.
-6. Include file paths, function names, patterns to follow, and verification steps in each task.
-7. Only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
-8. Do NOT re-plan or discuss. Execute now.`;
-
-				pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
-				return;
-			}
-
-			// No plan file: try to execute from conversation context
-			const dispatchPrompt = `Look at the plan we've been discussing in this conversation. Execute it now using the subagent tool.
-
-## Available agents
-${agentList}
-
-## Rules
-- Review the plan from our conversation and identify the implementation steps.
-- Break the plan into independent subtasks that can run in parallel (use the tasks array).
-- Pick the best agent for each subtask (use "coder" for implementation, "scout" for analysis, "researcher" for research).
-- If some steps depend on others, group the independent ones into a parallel batch, and use a chain for sequential dependencies.
-- Each subtask must be self-contained — include all the relevant context, file paths, and requirements from our discussion so the agent can execute without seeing this conversation.
-- Only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
-- Do NOT summarize or re-discuss the plan. Execute it now.
-
-Tip: Consider running /plan first to create a .pi/plan.md for more reliable execution.`;
-
-			pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
-		},
 	});
 }

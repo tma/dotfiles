@@ -55,7 +55,7 @@ test("real Pi child runtime integration", {
 		try {
 			const extensionsDir = join(agentDir, "extensions");
 			await mkdir(extensionsDir);
-			for (const file of ["subagent.ts", "plan.ts", "lib"]) {
+			for (const file of ["subagent.ts", "lib"]) {
 				await cp(new URL(`../extensions/${file}`, import.meta.url), join(extensionsDir, file), { recursive: true });
 			}
 			await assert.rejects(stat(join(extensionsDir, "gondolin")), /ENOENT/);
