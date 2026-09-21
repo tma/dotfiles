@@ -12,6 +12,14 @@ Some skills in this directory are adapted from third-party sources. This file co
 
 | File in this repository | Upstream source |
 |-------------------------|-----------------|
+| `writing-for-agents/SKILL.md` | `skills/productivity/writing-for-agents/SKILL.md` |
+| `writing-for-agents/references/skill-mechanics.md` | `skills/productivity/writing-for-agents/SKILL-MECHANICS.md` |
+| `writing-for-agents/references/session-retrospectives.md` | `skills/in-progress/retro/SKILL.md` |
+| `diagnosing-bugs/SKILL.md` | `skills/engineering/diagnosing-bugs/SKILL.md` |
+| `tdd/SKILL.md` | `skills/engineering/tdd/SKILL.md` |
+| `tdd/references/test-quality.md` | `skills/engineering/tdd/tests.md`, `skills/engineering/tdd/mocking.md` |
+| `design-review/SKILL.md` | `skills/productivity/grilling/SKILL.md`, `skills/engineering/codebase-design/SKILL.md` |
+| `design-review/references/alternative-designs.md` | `skills/engineering/codebase-design/DESIGN-IT-TWICE.md` |
 | `code-review/SKILL.md` | `skills/engineering/code-review/SKILL.md` (requirements coverage axis) |
 | `code-review/references/checklist.md` | `skills/engineering/code-review/SKILL.md` (design-problem guidance) |
 | `git/references/merge-conflicts.md` | `skills/engineering/resolving-merge-conflicts/SKILL.md` |
