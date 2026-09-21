@@ -26,3 +26,19 @@ Selection and authentication preflight have a ten-second total deadline and resp
 **Known authentication limitation:** child runtimes are isolated and preserve native and compatibility provider registrations, including per-model headers. Credentials stored only in the parent's runtime or SDK memory store are not shared. A parent can pass authentication preflight while its child cannot authenticate. General propagation needs a supported shared-runtime or authentication-delegation API; converting resolved OAuth or header-only authentication into an API key is not safe.
 
 See [tests/README.md](../tests/README.md) for offline checks.
+
+## Parent-to-child context contract
+
+Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and
+`noContextFiles` set, so a child never automatically receives the parent
+conversation, project or global instruction files (`AGENTS.md`,
+`.agents/AGENTS.md`, `.github/copilot-instructions.md`, etc.), loaded skills,
+or extension tools. This isolation is intentional; don't work around it by
+pasting the parent's full system prompt into a task.
+
+The required contents of a delegated task packet (scope, instruction
+pointers, writable paths/ownership, granted permissions, verification and
+blocked outcomes) are owned by the "Delegate substantial work" section of
+[`.agents/AGENTS.md`](../../../.agents/AGENTS.md). That contract applies to
+every launch mode here — the `subagent` tool, `/run`, `/chain`, and
+`/dispatch` alike — not just this file's model-policy mechanics.

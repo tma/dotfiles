@@ -1903,6 +1903,8 @@ export default function (pi: ExtensionAPI) {
 			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
 			"Available agent names and descriptions are listed under the Subagents section of the system prompt; select an agent by its exact discovered name only.",
+			"Children do not inherit the parent conversation, project/global instructions, skills, or extension tools — make each task self-contained: scoped goal and acceptance criteria, pointers to instructions/files the child must read, writable paths with single-writer ownership, only user-granted permissions, and how to verify or report a blocked outcome.",
+			"Parallel read-only exploration is fine, but only one writer may operate in a shared worktree at a time; non-overlapping files does not waive this — use separate worktrees only when explicitly authorized.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -2414,6 +2416,7 @@ ${agentList}
 - If a subtask depends on another's output, DON'T parallelize those — either keep them together or use a chain for sequential dependencies.
 - If the task is inherently sequential or atomic, just run it as a single subagent call instead.
 - Each subtask should be self-contained with enough context to execute independently.
+- Parallel read-only exploration is fine, but only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
 
 ## Task
 ${task}`;
@@ -2435,9 +2438,10 @@ ${agentList}
 2. Follow the **Execution Strategy** section to determine task ordering and parallelism.
 3. For each parallel group, use the subagent tool's parallel mode (tasks array).
 4. For sequential dependencies, use chain mode or run groups in sequence.
-5. Each agent task description must be FULLY SELF-CONTAINED — copy all relevant context from the plan into each task. Agents cannot read the plan file or see this conversation.
+5. Each task must include its scope and relevant plan context. Children don't inherit this conversation or the plan's contents automatically. If a child needs the plan, provide an accessible path and explicitly require reading it; translate ${planFile} to the child's workspace path when needed.
 6. Include file paths, function names, patterns to follow, and verification steps in each task.
-7. Do NOT re-plan or discuss. Execute now.`;
+7. Only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
+8. Do NOT re-plan or discuss. Execute now.`;
 
 				pi.sendUserMessage(dispatchPrompt, { deliverAs: "followUp" });
 				return;
@@ -2455,6 +2459,7 @@ ${agentList}
 - Pick the best agent for each subtask (use "coder" for implementation, "scout" for analysis, "researcher" for research).
 - If some steps depend on others, group the independent ones into a parallel batch, and use a chain for sequential dependencies.
 - Each subtask must be self-contained — include all the relevant context, file paths, and requirements from our discussion so the agent can execute without seeing this conversation.
+- Only one writer may operate in a shared worktree at a time — non-overlapping files does not waive this. Use separate worktrees only when explicitly authorized.
 - Do NOT summarize or re-discuss the plan. Execute it now.
 
 Tip: Consider running /plan first to create a .pi/plan.md for more reliable execution.`;

@@ -6,9 +6,9 @@
  *
  * Files discovered from the current working directory up through the git repo
  * root (or filesystem root when not in a repo):
- * - .owner/repo
- * - recursive .owner/repo/*.instructions.md files
- * - other top-level .owner/repo*.md files
+ * - .github/copilot-instructions.md
+ * - .github/instructions/ scanned recursively for .instructions.md files
+ * - other top-level .github/copilot*.md files
  */
 
 import * as fs from "node:fs";

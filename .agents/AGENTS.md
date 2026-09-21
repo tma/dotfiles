@@ -53,6 +53,24 @@ supervise subagents, and own decisions and final acceptance.
 - Keep ownership of user intent, task routing, decisions, approvals, synthesis,
   and final acceptance in the main session.
 
+Children are isolated: a subagent does not automatically receive the parent
+conversation, project or global instruction files, loaded skills, or extension
+tools. Every delegated task must carry its own context packet instead of
+assuming any of that comes along for free:
+
+- a scoped task with concrete acceptance criteria
+- the relevant instructions, or pointers to accessible files the child must
+  read, not the entire global prompt
+- writable paths or worktree, with single-writer ownership when a worktree is
+  shared with other agents
+- only the permissions the user has explicitly granted for this task (for
+  example, publishing, committing, or destructive actions)
+- how to verify the result, and what a blocked outcome looks like so the
+  child reports it instead of guessing
+
+This contract applies to every delegation path — the `subagent` tool,
+`/run`, `/chain`, and `/dispatch` alike.
+
 Treat active delegated agents as work that must be supervised:
 
 - On every new user turn while delegated work is active, inspect live child
