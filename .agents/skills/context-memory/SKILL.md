@@ -1,6 +1,6 @@
 ---
 name: context-memory
-description: Use Pi session history for cross-session context; do not create memory files.
+description: Keep cross-session continuity in Pi session history instead of memory files. Use when resuming earlier work, summarizing prior context, or when tempted to write a handoff, decision log, or memory file.
 ---
 
 # Context Memory
@@ -47,3 +47,5 @@ When resuming work:
 3. **Prefer inline summaries over file writes**.
 4. **Create documentation only when it serves the project, not bookkeeping**.
 5. **If unsure, do not persist anything extra**.
+
+This policy binds other skills too. Retrospectives, design sessions, and long-form drafting keep their output in the conversation unless the user asks for a file.

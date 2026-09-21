@@ -1,6 +1,6 @@
 ---
 name: datadog
-description: Query Datadog metrics, logs, traces, monitors, events, dashboards, and SLOs.
+description: Investigate Datadog metrics, logs, traces, monitors, events, dashboards, and SLOs. Use when the user asks about a Datadog signal, alert, latency, error rate, saturation, or deployment impact.
 ---
 
 # Datadog
@@ -92,6 +92,8 @@ Return:
 - **Evidence:** metric/log/trace/event names, filters, time windows, and counts
 - **Likely cause:** only if supported by evidence
 - **Next checks:** the smallest useful follow-up queries
+
+An empty result is not a finding on its own. Report it as empty, name the query and window that produced it, and list the candidate explanations you can still check: no matching data, a filter that does not match the real tags, or a window outside retention. When authentication, the site, or access is missing, report what is missing and stop; do not present an unverified guess as a finding.
 
 ## Safety
 

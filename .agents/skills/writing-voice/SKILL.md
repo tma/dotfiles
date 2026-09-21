@@ -1,6 +1,6 @@
 ---
 name: writing-voice
-description: Write drafts in the user's voice for comments, docs, messages, reviews, and release notes.
+description: "Draft or edit prose in tma's voice. Use before writing any user-visible text on tma's behalf: commit messages, PR and issue text, review comments, release notes, emails, Slack messages, documents, and status updates."
 ---
 
 # Writing Voice
@@ -17,7 +17,11 @@ Before drafting, read:
 - [tma's curated voice](./references/tma-curated-voice.md) for the baseline voice.
 - [Style rules](./references/style-rules.md) for kill-list words, filler, punctuation, and structure rules.
 
-Read the [voice sampling guide](./references/voice-sampling.md) only when there is no curated/cached profile, the user asks for sampling, the current draft does not sound like them, or the curated profile needs more signal for the format.
+Read these when the format calls for them:
+
+- [Why-first git and GitHub prose](./references/why-first.md) before writing a commit message, PR title, or PR description. This is required for that text, not optional.
+- [Long-form drafting](./references/long-form.md) for anything longer than a few paragraphs: blog posts, design documents, proposals, incident writeups.
+- The [voice sampling guide](./references/voice-sampling.md) only when there is no curated or cached profile, the user asks for sampling, the current draft does not sound like them, or the curated profile needs more signal for the format.
 
 ## Skill-local curated profile
 
@@ -56,6 +60,8 @@ If no profile is available, write in a direct, specific, confident-not-arrogant 
 6. **Style beats voice for bad patterns** — copy good habits, not AI-sounding ones.
 7. **Specifics beat polish** — when in doubt, make it shorter and more concrete.
 8. **Keep profiles separate** — curated profile in the skill folder; sampled profiles in `~/.pi/voice-profiles`; refresh sampled profiles quarterly.
+9. **Lead git and GitHub prose with why** — commit subjects, PR titles, and PR bodies state the outcome, problem, or avoided risk before the mechanism. See the [why-first reference](./references/why-first.md).
+10. **Do not create writing workspaces** — draft in the conversation or in the file the user named; no scratch, fragment, or outline files that outlive the task.
 
 ## Final edit checklist
 

@@ -1,6 +1,6 @@
 ---
 name: kusto
-description: Query Azure Data Explorer/Kusto logs, metrics, and events.
+description: Query Azure Data Explorer/Kusto logs, metrics, and events with KQL. Use when the user names a Kusto cluster or database, or asks to investigate telemetry stored in Azure Data Explorer.
 ---
 
 # Kusto / Azure Data Explorer
@@ -78,6 +78,8 @@ Return:
 - **Evidence:** cluster/database/table, query, time range, filters, counts, and redacted samples
 - **Likely cause:** only if supported by evidence
 - **Next checks:** focused follow-up queries or fields to inspect
+
+Distinguish an empty result from a failed query. If the cluster, database, table, or authentication is unavailable, report exactly what is missing and stop.
 
 ## Safety
 

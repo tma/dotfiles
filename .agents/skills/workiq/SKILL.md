@@ -1,6 +1,6 @@
 ---
 name: workiq
-description: Search and summarize Microsoft 365 mail, meetings, chats, files, and docs.
+description: Search and summarize Microsoft 365 mail, meetings, chats, files, and documents through a configured WorkIQ tool. Use when the user asks to find or summarize workplace content.
 ---
 
 # WorkIQ / Microsoft 365 Content Search

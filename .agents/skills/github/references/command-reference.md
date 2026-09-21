@@ -44,7 +44,7 @@ gh issue edit 123 --repo owner/repo --add-assignee @me
 
 Before drafting a PR body, inspect the repository for a pull request template. Check the root, `docs/`, and `.github/` for a case-insensitive filename match on `pull_request_template.md`, plus `.github/PULL_REQUEST_TEMPLATE/` for multiple templates. Use the local checkout when available. For a remote repository, list candidate directories with `gh api repos/owner/repo/contents/<path>` and match returned names case-insensitively instead of probing one filename casing. Preserve required headings, checklists, and ordering.
 
-Draft PR descriptions with the rationale first:
+The [why-first reference](../../writing-voice/references/why-first.md) owns the rule for titles and bodies. Use this scaffold only when the repository provides no template:
 
 ```markdown
 ## Why
@@ -61,9 +61,7 @@ Summarize the implementation after the motivation is clear.
 Describe the checks that support the change.
 ```
 
-Use this scaffold only when the repository does not provide a fixed template. Do not lead with a summary of files or implementation details. When a repository template fixes the order, make its first substantive prose explain why before how.
-
-PR titles follow the same why-first order as commit subjects: start with the intended outcome, problem, or avoided risk, then name the mechanism when useful. This keeps PR lists understandable and preserves the rationale when a squash merge uses the PR title as its commit subject.
+For before/after evidence and merge-risk notes, read the [PR evidence reference](./pr-evidence.md).
 
 ```bash
 # List PRs
@@ -91,33 +89,20 @@ gh pr merge 123 --squash --delete-branch
 
 When the user asks for a GitHub Copilot review on a PR, use the requested-reviewer flow, not a PR comment.
 
+The [Copilot review workflow](../../code-review/references/copilot-review.md) is the canonical procedure: it handles pagination, pending reviews, baselines for re-review polling, and the difference between an API failure and no review. Follow it rather than improvising a poll here.
+
+The two commands you need directly:
+
 ```bash
 # Check whether Copilot is already requested
 gh api repos/owner/repo/pulls/123/requested_reviewers \
   --jq '{users: [.users[]?.login], teams: [.teams[]?.slug]}'
 
-# Check whether Copilot has already reviewed
-gh api repos/owner/repo/pulls/123/reviews \
-  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {user: .user.login, state: .state, submitted_at: .submitted_at}'
-
-# Request the real Copilot reviewer bot
+# Request the Copilot reviewer bot
 gh pr edit 123 --repo owner/repo --add-reviewer "copilot-pull-request-reviewer[bot]"
-
-# Poll if the user wants to wait for the review
-for i in $(seq 1 18); do
-  sleep 10
-  REVIEW=$(gh api repos/owner/repo/pulls/123/reviews \
-    --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot"))))] | length')
-  [ "$REVIEW" -gt 0 ] && echo "Copilot review arrived" && break
-  echo "Waiting for Copilot review... (${i}/18)"
-done
-
-# Fetch Copilot inline comments
-gh api repos/owner/repo/pulls/123/comments \
-  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or (.user.type == "Bot" and (.user.login | test("copilot")))) | {id: .id, path: .path, line: .original_line, body: .body}'
 ```
 
-Never try to trigger Copilot review by posting `@copilot` in a PR or issue comment. That does not create the requested-reviewer review flow.
+Never try to trigger a Copilot review by posting `@copilot` in a PR or issue comment. That does not create the requested-reviewer review flow.
 
 ## Repository
 

@@ -4,7 +4,7 @@ Use this reference after loading the `second-opinion` skill. Child reviewers are
 
 ## Relationship to the primary review workflow
 
-The normal review prompt/workflow is the canonical source for rubric and output style, but not for this skill's operations.
+The calling review workflow supplies the rubric and output style; this file owns the operations. When the caller is the `code-review` skill running a deep review, its [deep review reference](../../code-review/references/deep-review.md) states the required routes, count, and focus split, and the root agent there owns synthesis and reranking.
 
 Use the primary review prompt only for:
 

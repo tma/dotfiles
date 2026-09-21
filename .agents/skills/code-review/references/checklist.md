@@ -34,6 +34,15 @@ the diff or surrounding code. Do not invent problems.
 - Missing, stale, or misleading comments.
 - Public APIs that are broader or more complicated than needed.
 - Duplicated logic where a small shared helper would be clearer.
+- Design problems visible in the diff: logic that belongs on the data it reaches
+  into, a group of parameters that keep travelling together, a primitive standing
+  in for a domain concept, one change forcing scattered edits.
+
+Name a design problem only when you can point at the concrete cost in this diff:
+the bug it invites, the change it makes expensive, the reader it confuses. A list
+of labelled code smells with no cost attached is noise. A documented repository
+convention always wins over a general preference, and anything the linter or
+formatter already enforces is not a review finding.
 
 ## Performance
 
@@ -73,6 +82,12 @@ Look for tests for:
 
 If coverage is missing, name the specific path or file that needs a test.
 
+## Requirements versus standards
+
+Everything above is a repository standard. Whether the change does what was asked
+for is a separate axis, handled in step 3 of the skill. Keep them apart in the
+report: a diff can satisfy every standard and implement the wrong thing.
+
 ## Finding quality bar
 
 For each finding:
@@ -86,3 +101,7 @@ Avoid vague findings like “this could be a problem.” Say what fails, when, a
 why it matters.
 
 If the diff is clean, say so. A clean review is better than invented feedback.
+
+---
+
+Design-review guidance is adapted from Matt Pocock's `code-review` skill. See [third-party notices](../../THIRD_PARTY_NOTICES.md).

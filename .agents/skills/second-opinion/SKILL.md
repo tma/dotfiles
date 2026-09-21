@@ -1,19 +1,21 @@
 ---
 name: second-opinion
-description: Get 1–3 independent reviews of changes, PRs, commits, branches, or plans.
+description: Get 1-3 independent read-only reviews of changes, PRs, commits, branches, or plans from other model families. Use when the user asks for a second opinion or multiple opinions, or when a deep code review needs cross-family reviewers.
 ---
 
 # Second Opinion
 
-Get one, two, or three independent advisory reviews by delegating self-contained review packets to child/subagents. Default to one review unless the user asks for more.
+Get one, two, or three independent advisory reviews by delegating self-contained review packets to child/subagents. Default to one review, or two when invoked by a deep/thorough code review; follow an explicit request for more, up to three.
 
 This skill is harness-agnostic: prepare a review packet, then delegate it through the host harness's native child-agent/subagent mechanism. Do **not** shell out to model CLIs such as Codex, Claude, Gemini, or similar.
+
+This skill owns reviewer routing, the child-reviewer contract, and reviewer error handling. Other skills that need reviewers state what they require and leave the routing here. The `code-review` skill's [deep review reference](../code-review/references/deep-review.md) is the one caller with extra requirements.
 
 For routing tables, task templates, examples, and detailed error handling, read the [operations reference](./references/operations.md).
 
 ## Core contract
 
-1. Determine review count: `1` by default; infer `2` or `3` when the user asks for multiple opinions. Cap at `3`.
+1. Determine review count: `1` by default, `2` for a deep/thorough code review; infer `2` or `3` when the user asks for multiple opinions. Cap at `3`. For deep reviews, read the caller's [deep review reference](../code-review/references/deep-review.md) for the required count and routes.
 2. Identify the current/root model family when the harness exposes it.
 3. Prefer reviewers from a different model family than the current/root agent.
 4. Gather the review material and relevant project instructions into a concise review packet.
@@ -77,10 +79,19 @@ Present each review separately, then add a short root-agent synthesis:
 
 If multiple tasks reused the same route, mention that plainly.
 
+## Outcomes
+
+Say which of these happened; do not present a partial run as a full one.
+
+- **Reviews delivered** — each reviewer's findings, its route and focus, then the synthesis. Mention when tasks reused one route.
+- **Partial** — one reviewer failed or timed out. Present what came back, name what is missing, and offer a retry with a narrower packet.
+- **Not run** — no reviewable input, no routed reviewer agent available, or the harness cannot launch child agents. Say which, and do not substitute your own review while calling it a second opinion.
+- **Waiting on the user** — the packet is very large or a same-family reviewer needs confirmation.
+
 ## Rules
 
 1. **Use child/subagent delegation only**; never shell out to external model CLIs.
-2. **Default to one review** and cap at three.
+2. **Default to one review**, or two for a deep/thorough code review, and cap at three.
 3. **Prefer a different model family** from the current/root agent unless the user confirms otherwise.
 4. **Keep reviewers read-only**; they do not edit files or post GitHub comments.
 5. **Use both GPT and Opus routes** for deep/thorough code-review workflows when available. Add the Grok route when the user asks for three reviewers.

@@ -1,6 +1,6 @@
 ---
 name: cmux
-description: Control cmux workspaces, panes, surfaces, status/sidebar, browser panels, and notifications.
+description: Control cmux workspaces, panes, surfaces, status pills, browser panels, and notifications through the cmux CLI. Use when the user asks to open, split, focus, read, or drive a cmux surface.
 ---
 
 # cmux
@@ -38,6 +38,12 @@ To detect whether the current terminal is inside cmux, check `CMUX_WORKSPACE_ID`
 - Sidebar: set status pills, progress, and log entries.
 - Notifications: send desktop notifications.
 - Browser panels: open, navigate, snapshot, click, type, evaluate JavaScript, or screenshot.
+
+## Outcomes
+
+- **Done** — the operation ran and a read or list command confirms the new state. Say which refs you acted on.
+- **Stale refs** — a command failed with `surface:invalid`. Refresh with `cmux tree` and retry once if the request still makes sense; otherwise report what changed.
+- **Unavailable** — `cmux` is not installed or the socket is unreachable. Say so and stop. Never describe cmux state you did not read.
 
 ## Rules
 

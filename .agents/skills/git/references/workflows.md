@@ -58,11 +58,7 @@ Use `git add -p` when a single file contains changes belonging to different topi
 
 ## Commit messages
 
-Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile. The git skill owns the format; the writing-voice skill owns the tone.
-
-Lead every message with why the commit exists: the intended outcome, the problem being solved, or the risk being avoided. Put implementation details second. Someone reading the log should understand why without opening the diff.
-
-Prefer subjects shaped like `<intended outcome> by <mechanism>`. If the why cannot fit clearly in the subject, state it in the first body paragraph before explaining the implementation. Never open with filenames, code mechanics, or a change list.
+Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile. The git skill owns the format; `writing-voice` owns the tone, and its [why-first reference](../../writing-voice/references/why-first.md) owns the lead-with-why rule and its examples.
 
 For multi-line messages, draft the message first and use:
 
@@ -86,33 +82,6 @@ Optional implementation detail:
 <related issues or links>
 ```
 
-Good:
-
-```text
-prevent multi-session collisions by scoping status files
-
-Multiple pi sessions in the same directory were overwriting each
-other's stats and todos files. Scope filenames by process.pid and
-pass PI_PID environment variable to the status panel shell script.
-```
-
-Bad because they are too vague:
-
-```text
-update files
-fix bug
-changes
-WIP
-```
-
-Bad because it leads with the mechanism and omits why:
-
-```text
-scope status files by PID
-```
-
-Prefer `prevent multi-session collisions by scoping status files`.
-
 Rules:
 
 - Lead with the intended outcome, problem, or avoided risk; put implementation details second.
@@ -121,6 +90,10 @@ Rules:
 - Do not put a period at the end of the summary line.
 - Wrap the body at 72 characters.
 - Reference issue numbers when applicable.
+
+## Merge and rebase conflicts
+
+When a merge, rebase, cherry-pick, revert, or stash pop stops with conflicts, follow the [merge conflict reference](./merge-conflicts.md). It covers identifying the operation, reading both sides, staging only resolved paths, and when to stop or abort.
 
 ## Pulling
 

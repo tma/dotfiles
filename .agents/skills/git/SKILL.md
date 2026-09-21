@@ -1,11 +1,11 @@
 ---
 name: git
-description: Use git workflow conventions for commits, pulls, pushes, and branch hygiene.
+description: Apply git conventions for branch setup, topic commits, pulls, pushes, merge conflicts, history rewriting, and branch cleanup. Use whenever local git work is involved.
 ---
 
 # Git
 
-Use this skill for branch setup, commits, pulls, pushes, history rewriting, and branch cleanup. For command examples and detailed workflows, read the [Git workflows reference](./references/workflows.md).
+Use this skill for branch setup, commits, pulls, pushes, merge conflicts, history rewriting, and branch cleanup. For command examples and detailed workflows, read the [Git workflows reference](./references/workflows.md). When a merge, rebase, cherry-pick, revert, or stash pop stops with conflicts, read the [merge conflict reference](./references/merge-conflicts.md) before resolving anything.
 
 ## Starting development work
 
@@ -38,16 +38,11 @@ Always group changes into topic-based commits. Each commit should represent one 
 
 When multiple files were changed across different topics, review the full diff, identify the topics, and stage each topic separately using `git add <specific files>` or `git add -p`.
 
-When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit.
+When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit. Read the [merge conflict reference](./references/merge-conflicts.md) for the resolution procedure, including when to stop and when aborting is appropriate.
 
 Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile.
 
-Every commit message must lead with **why the commit exists**: the problem it solves, the outcome it enables, or the risk it avoids. Put that intent before implementation details:
-
-- Start the subject with the intended outcome or motivation, then name the mechanism if useful.
-- If the why does not fit clearly in the subject, make it the first paragraph of the body.
-- Do not lead with filenames, code mechanics, or a list of changes.
-- A reader should understand why the commit matters without opening the diff.
+Every commit message must lead with **why the commit exists**: the problem it solves, the outcome it enables, or the risk it avoids. Implementation details come second, and a reader should understand why the commit matters without opening the diff. The [why-first reference](../writing-voice/references/why-first.md) owns the full rule and examples; read it before writing a non-trivial message.
 
 Commit message rules:
 
@@ -88,3 +83,4 @@ Never force push to `main` or shared branches. Never force push a branch with an
 6. **Never amend or rebase with an open PR** — check `gh pr view` first; add new commits instead.
 7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`.
 8. **Prefix branches when needed** — use `tma/` for branches on GitHub repositories not owned by `tma`; use the same rule for worktree branch names.
+9. **Resolve conflicts deliberately** — understand both sides, stage only resolved paths, and confirm before aborting an operation.
