@@ -3,7 +3,7 @@
   "defaultThinkingLevel": "medium",
   "defaultTools": [],
   "editorPaddingX": 2,
-  "hideThinkingBlock": true,
+  "hideThinkingBlock": false,
   "quietStartup": true,
   "enableInstallTelemetry": false,
   "theme": "dark",

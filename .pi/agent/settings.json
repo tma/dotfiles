@@ -20,7 +20,8 @@
     "github-copilot/gpt-6-astra",
     "github-copilot/grok-4.6",
     "github-copilot/claude-opus-5",
-    "github-copilot/gpt-5.6-sol"
+    "github-copilot/gpt-5.6-sol",
+    "xai/grok-4.6"
   ],
   "lastChangelogVersion": "99.99.99",
   "packages": [
