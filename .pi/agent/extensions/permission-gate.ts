@@ -256,9 +256,8 @@ export default function (pi: ExtensionAPI) {
 			const preview = summarizeCommand(command);
 			ctx.ui.notify("Dangerous bash command needs approval", "warning");
 			pi.events.emit(attentionNotificationEvent, {
-				title: "Pi waiting for confirmation",
-				body: "Dangerous bash command needs Yes/No approval in Pi",
-				subtitle: preview,
+				title: "Pi",
+				body: "Needs input · Approve command",
 				logMessage: `Waiting for dangerous command approval: ${preview}`,
 				level: "warning",
 			});

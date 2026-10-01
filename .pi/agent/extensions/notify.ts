@@ -5,7 +5,7 @@
  * - Status pills with icons/colors for agent state
  * - Progress bar tracking turns within an agent loop
  * - Sidebar log entries for tool calls, errors, compaction
- * - Rich notifications for completion and errors
+ * - One notification per settled run, led by its outcome
  *
  * Falls back to OSC 777/99/Windows toast when not in cmux.
  */
@@ -15,6 +15,12 @@ import { accessSync, mkdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	type AssistantMessageLike,
+	completionPreview,
+	escapePowerShellSingleQuoted,
+	sanitizeNotificationText,
+} from "./lib/notification-preview.js";
 
 const attentionNotificationEvent = "notify:attention";
 
@@ -168,6 +174,8 @@ function notifyOSC99(title: string, body: string): void {
 }
 
 function notifyWindows(title: string, body: string): void {
+	title = escapePowerShellSingleQuoted(title);
+	body = escapePowerShellSingleQuoted(body);
 	const type = "Windows.UI.Notifications";
 	const mgr = `[${type}.ToastNotificationManager, ${type}, ContentType = WindowsRuntime]`;
 	const template = `[${type}.ToastTemplateType]::ToastText01`;
@@ -182,6 +190,9 @@ function notifyWindows(title: string, body: string): void {
 }
 
 function notify(title: string, body: string, subtitle?: string): void {
+	title = singleLine(title);
+	body = singleLine(body);
+	subtitle = subtitle === undefined ? undefined : singleLine(subtitle);
 	if (isCmux()) {
 		cmuxNotify(title, body, subtitle);
 	} else if (process.env.WT_SESSION) {
@@ -194,6 +205,11 @@ function notify(title: string, body: string, subtitle?: string): void {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/** Strips terminal controls and line breaks; callers bound length themselves. */
+function singleLine(text: string): string {
+	return sanitizeNotificationText(text, Number.POSITIVE_INFINITY);
+}
 
 function basename(path: string): string {
 	return path.split("/").pop() ?? path;
@@ -241,6 +257,15 @@ export default function (pi: ExtensionAPI) {
 	let subagentInfo: SessionStats["subagent"] = null;
 	let currentCtx: { getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined } | null = null;
 	let sessionName = "";
+
+	// One settled run can span several low-level agent runs (retries, compaction, queued follow-ups).
+	let runPending = false;
+	let lastAssistantMessage: AssistantMessageLike | undefined;
+
+	function resetPendingRun(): void {
+		runPending = false;
+		lastAssistantMessage = undefined;
+	}
 
 	function syncSessionStatus(): void {
 		if (sessionName) {
@@ -306,6 +331,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		resetCmuxDetection();
+		resetPendingRun();
 		currentCtx = ctx;
 		const sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
@@ -352,6 +378,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		resetPendingRun();
 		cmuxClearStatus("session");
 		cmuxClearStatus("pi");
 		cmuxClearProgress();
@@ -362,6 +389,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_switch", async (event, ctx) => {
+		resetPendingRun();
 		currentCtx = ctx;
 		const sessionDir = getStateDir(ctx.sessionManager.getSessionFile());
 		statsFile = path.join(sessionDir, `${process.pid}-stats.json`);
@@ -419,6 +447,8 @@ export default function (pi: ExtensionAPI) {
 	// ── agent loop ───────────────────────────────────────────────────────
 
 	pi.on("agent_start", async () => {
+		runPending = true;
+		lastAssistantMessage = undefined;
 		turnCount = 0;
 		toolsThisTurn = 0;
 		errorsThisLoop = 0;
@@ -446,12 +476,10 @@ export default function (pi: ExtensionAPI) {
 		if (errorsThisLoop > 0) {
 			cmuxSetStatus("pi", "done (errors)", "exclamationmark.triangle.fill", "#ff3b30");
 			cmuxLog(`${body} (${errorsThisLoop} error${errorsThisLoop !== 1 ? "s" : ""})`, "warning");
-			notify("Pi", body, "Errors");
 			cmuxSetTabColor("Red");
 		} else {
 			cmuxSetStatus("pi", "idle", "checkmark.circle.fill", "#34c759");
 			cmuxLog(body, "success");
-			notify("Pi", body);
 			cmuxSetTabColor("Green");
 		}
 
@@ -462,6 +490,15 @@ export default function (pi: ExtensionAPI) {
 		}, 10000);
 
 		flushStats();
+	});
+
+	// agent_end can be followed by a retry, compaction, or queued follow-up.
+	// Notify once Pi will not continue on its own.
+	pi.on("agent_settled", async () => {
+		if (!runPending) return;
+		const body = completionPreview(lastAssistantMessage);
+		resetPendingRun();
+		notify("Pi", body);
 	});
 
 	// ── turns ────────────────────────────────────────────────────────────
@@ -476,6 +513,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("message_end", async (event) => {
 		const msg = event.message;
 		if (msg.role === "assistant") {
+			lastAssistantMessage = msg as AssistantMessageLike;
 			totalTurns++;
 			const u = (msg as any).usage;
 			if (u) {

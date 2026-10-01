@@ -97,15 +97,6 @@ function cmuxLogTask(task: Task): void {
 	}
 }
 
-function cmuxNotifyAllDone(tasks: Task[]): void {
-	const completed = tasks.filter((t) => t.status === "completed").length;
-	const cancelled = tasks.filter((t) => t.status === "cancelled").length;
-	const total = tasks.length;
-	let body = `All ${total} tasks completed!`;
-	if (cancelled > 0) body = `${completed} completed, ${cancelled} cancelled`;
-	cmux(["notify", "--title", "✅ Tasks Done", "--body", body]);
-}
-
 // ── Types ───────────────────────────────────────────────────────────
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
@@ -330,7 +321,6 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (allSubmittedTasksDone) {
-				cmuxNotifyAllDone(submittedTasks);
 				state = { ...state, tasks: [] };
 			} else {
 				state = { ...state, tasks: submittedTasks };
