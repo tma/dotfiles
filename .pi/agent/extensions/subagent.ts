@@ -517,7 +517,7 @@ function resolveAuthoritativeCwd(provider: GondolinToolProvider | undefined, def
 	if (!requested || requested === "/workspace") return provider.hostCwd;
 	const resolved = canonicalPath(path.isAbsolute(requested) ? requested : path.resolve(provider.hostCwd, requested));
 	if (resolved !== hostCwd) {
-		throw new Error(`Requested cwd ${requested} does not map exactly to Gondolin workspace ${provider.hostCwd}`);
+		throw new Error(`Requested cwd ${requested} does not map exactly to Gondolin workspace ${provider.hostCwd}; omit cwd or use /workspace`);
 	}
 	return provider.hostCwd;
 }
@@ -1118,6 +1118,7 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 export default function (pi: ExtensionAPI) {
 	// ─── Tool schemas ─────────────────────────────────────────────────────
 
+	const CWD_DESCRIPTION = "Working directory. Omit to inherit the parent workspace. Under Gondolin, omit or use /workspace; other paths are rejected.";
 	const ModelPolicyFields = {
 		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin" })),
 		thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Requested thinking level" })),
@@ -1128,14 +1129,14 @@ export default function (pi: ExtensionAPI) {
 	const TaskItem = Type.Object({
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task to delegate" }),
-		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 		...ModelPolicyFields,
 	});
 
 	const ChainItem = Type.Object({
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task with optional {previous} placeholder" }),
-		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 		...ModelPolicyFields,
 	});
 
@@ -1159,7 +1160,7 @@ export default function (pi: ExtensionAPI) {
 		task: Type.Optional(Type.String({ description: "Task (single mode)" })),
 		tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks to run in parallel" })),
 		chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential chain steps" })),
-		cwd: Type.Optional(Type.String({ description: "Working directory" })),
+		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
 		...ModelPolicyFields,
 	});
 

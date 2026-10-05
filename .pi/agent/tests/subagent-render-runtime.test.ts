@@ -324,7 +324,7 @@ test("local single launch uses native tools and resolves cwd without a VM prompt
 	});
 	await runtime.emit("session_start");
 	const tool = runtime.tools[0];
-	for (const [cwd, expected] of [[undefined, "/repo"], ["", "/repo"], ["src/../tests", "/repo/tests"], ["/other/repo", "/other/repo"]]) {
+	for (const [cwd, expected] of [[undefined, "/repo"], ["", "/repo"], ["src/../tests", "/repo/tests"], ["/tmp", "/tmp"], ["/other/repo", "/other/repo"]]) {
 		const launch = await tool.execute("id", { agent: "coder", task: "local", cwd }, undefined, undefined, runtime.ctx);
 		assert.notEqual(launch.isError, true);
 		await sleep(30);
@@ -409,7 +409,7 @@ test("sandboxed launches still reject cwd mismatches in every mode", async (t) =
 	]) {
 		const launch = await tool.execute("id", params, undefined, undefined, runtime.ctx);
 		assert.equal(launch.isError, true);
-		assert.match(launch.content[0].text, /does not map exactly to Gondolin workspace/);
+		assert.match(launch.content[0].text, /omit cwd or use \/workspace/);
 	}
 	runtime.ctx.cwd = "/other/repo";
 	const launch = await tool.execute("id", { agent: "scout", task: "wrong parent" }, undefined, undefined, runtime.ctx);
