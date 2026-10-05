@@ -2,9 +2,15 @@
  * Web Search Extension
  *
  * Registers `web_search` and `web_read` tools.
- * - web_search: DuckDuckGo lite, with Marginalia and Hacker News as fallbacks
+ * - web_search: SearXNG when SEARXNG_URL is set, then DuckDuckGo lite, with
+ *   Marginalia, Wikipedia, Hacker News, and Google News as fallbacks
  * - web_read: Fetch URLs with smart extraction, Wayback Machine fallback,
  *   GitHub raw file detection, and multi-URL support.
+ *
+ * Put SEARXNG_URL in ~/.pi/.env, in this repo's gitignored .pi/.env, export it,
+ * or point PI_SEARXNG_ENV at another env file. Public engines run only when
+ * SearXNG is unset, errors, or returns nothing. The instance may be local;
+ * web_read still refuses private URLs.
  *
  * No API keys, no Docker, no MCP.
  */
@@ -15,6 +21,8 @@ import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import os from "node:os";
+import { fetchSearxngResults, resolveSearxngConfig } from "./lib/searxng.js";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const UA_BOT = "pi-coding-agent/1.0";
@@ -57,8 +65,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search",
 		label: "Web Search",
-		description: "Search the web using DuckDuckGo and return a list of results with titles, URLs, and snippets.",
-		promptSnippet: "Search the web via DuckDuckGo for current information",
+		description:
+			"Search the web and return titles, URLs, and snippets. Tries SEARXNG_URL first when set, then public engines.",
+		promptSnippet: "Search the web for current information",
 		promptGuidelines: [
 			"Use web_search when the user asks about current events, recent releases, or anything not in your training data.",
 			"Follow up with web_read to get full page content when a search result looks relevant.",
@@ -625,9 +634,30 @@ const RECENCY_PATTERN =
 	/\b(news|today|yesterday|latest|recent|release[ds]?|announce[ds]?|outage|incident|breach|launch(?:ed|es)?|update[ds]?|20[2-9]\d)\b/i;
 
 function providersFor(query: string): SearchProvider[] {
-	return RECENCY_PATTERN.test(query)
+	const online = RECENCY_PATTERN.test(query)
 		? [PRIMARY_PROVIDER, GOOGLE_NEWS, MARGINALIA, HACKER_NEWS, WIKIPEDIA]
 		: [PRIMARY_PROVIDER, MARGINALIA, WIKIPEDIA, HACKER_NEWS, GOOGLE_NEWS];
+	const searxng = searxngProvider();
+	return searxng ? [searxng, ...online] : online;
+}
+
+// Operator-configured. May be loopback, LAN, or Tailscale, so this does not
+// use the public-web URL guard. Redirects stay on the configured origin.
+function searxngProvider(): SearchProvider | null {
+	const config = resolveSearxngConfig({ env: process.env, home: os.homedir() });
+	if (config.status === "unset") return null;
+	return {
+		name: "searxng",
+		run: (query, signal) => {
+			if (config.status === "invalid") throw new Error(config.error);
+			return fetchSearxngResults(config.url, query, {
+				signal,
+				timeoutMs: SEARCH_TIMEOUT_MS,
+				userAgent: UA_BOT,
+				limit: SEARCH_RESULT_LIMIT,
+			});
+		},
+	};
 }
 
 async function runSearch(
@@ -645,6 +675,8 @@ async function runSearch(
 			}
 			attempts.push({ provider: provider.name, outcome: "no results" });
 		} catch (error) {
+			// A cancelled SearXNG attempt must not continue on to public engines.
+			if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
 			attempts.push({
 				provider: provider.name,
 				outcome: error instanceof Error ? error.message : String(error),
