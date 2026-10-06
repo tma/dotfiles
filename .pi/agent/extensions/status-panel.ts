@@ -233,7 +233,7 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			if (handle.backend === "cmux") {
-				execFileSync("cmux", ["close-surface", "--surface", handle.ref], { timeout: 2000 });
+				execFileSync("cmux", ["close-surface", "--surface", handle.ref, "--force"], { timeout: 2000 });
 			} else {
 				execFileSync("tmux", ["kill-pane", "-t", handle.ref], { timeout: 2000 });
 			}
