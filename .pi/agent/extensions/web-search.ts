@@ -19,16 +19,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { execFile } from "node:child_process";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import os from "node:os";
+import { assertSafeWebUrl, fetchPublic, UnsafeUrlError } from "./lib/public-web.js";
 import { fetchSearxngResults, resolveSearxngConfig } from "./lib/searxng.js";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const UA_BOT = "pi-coding-agent/1.0";
 const MAX_CHARS = 50_000;
 const FETCH_TIMEOUT_MS = 15_000;
-const MAX_REDIRECTS = 5;
+const READ_MAX_BYTES = 5 * 1024 * 1024;
+const SEARCH_MAX_BYTES = 2 * 1024 * 1024;
 const WAYBACK_PREFIX = "https://web.archive.org/web/2/";
 const MARGINALIA_ENDPOINT = "https://api.marginalia.nu/public/search/";
 const HN_ENDPOINT = "https://hn.algolia.com/api/v1/search";
@@ -45,21 +45,6 @@ const DDG_AGENTS = [UA_BOT, "Mozilla/5.0", UA];
 const SEARCH_TIMEOUT_MS = 8_000;
 const SEARCH_RESULT_LIMIT = 10;
 const MIN_CONTENT_LENGTH = 200; // below this, content is probably garbage
-const BLOCKED_HOSTNAMES = new Set([
-	"localhost",
-	"localhost.localdomain",
-	"ip6-localhost",
-	"ip6-loopback",
-	"broadcasthost",
-	"host.docker.internal",
-]);
-
-class UnsafeUrlError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "UnsafeUrlError";
-	}
-}
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -189,7 +174,7 @@ class ReadFailedError extends Error {
 
 function describeError(error: unknown): string {
 	if (error instanceof Error) {
-		if (error.name === "AbortError" || error.message.includes("timeout")) return "timed out";
+		if (error.name === "TimeoutError") return "timed out";
 		return error.message;
 	}
 	return String(error);
@@ -203,20 +188,19 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 	const rawUrl = githubToRaw(inputUrl);
 	if (rawUrl) {
 		try {
-			const safeRawUrl = assertSafeWebUrl(rawUrl, "GitHub raw URL");
-			await assertPublicDns(safeRawUrl, "GitHub raw URL");
-			const res = await fetchWithTimeout(safeRawUrl.toString(), {
+			const res = await fetchPublic(rawUrl, {
 				headers: { "User-Agent": UA },
 				signal,
+				timeoutMs: FETCH_TIMEOUT_MS,
+				maxBytes: READ_MAX_BYTES,
+				context: "GitHub raw URL",
 			});
 			if (res.ok) {
-				let text = await res.text();
-				text = truncate(text);
-				return { text, source: "github-raw" };
+				return { text: truncate(res.text()), source: "github-raw" };
 			}
 			attempts.push({ stage: "github-raw", outcome: `HTTP ${res.status}` });
 		} catch (error) {
-			if (error instanceof UnsafeUrlError) throw error;
+			if (isFinalReadError(error, signal)) throw error;
 			attempts.push({ stage: "github-raw", outcome: describeError(error) });
 		}
 	}
@@ -224,10 +208,19 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 	// Direct fetch
 	let thinContent: string | null = null;
 	try {
-		const res = await fetchSafe(inputUrl, signal);
+		const res = await fetchPublic(inputUrl, {
+			headers: {
+				"User-Agent": UA,
+				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+				"Accept-Language": "en-US,en;q=0.9",
+			},
+			signal,
+			timeoutMs: FETCH_TIMEOUT_MS,
+			maxBytes: READ_MAX_BYTES,
+		});
 		if (res.ok) {
 			const contentType = res.headers.get("content-type") ?? "";
-			const body = await res.text();
+			const body = res.text();
 
 			let text: string;
 			if (contentType.includes("html")) {
@@ -251,21 +244,22 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 			attempts.push({ stage: "direct", outcome: `HTTP ${res.status}` });
 		}
 	} catch (error) {
-		if (error instanceof UnsafeUrlError) throw error;
+		if (isFinalReadError(error, signal)) throw error;
 		attempts.push({ stage: "direct", outcome: describeError(error) });
 	}
 
 	// Wayback fallback for pages that block direct fetches. Key-less, but the
 	// Internet Archive rate limits hard, so treat it as best effort.
 	try {
-		const waybackUrl = assertSafeWebUrl(WAYBACK_PREFIX + inputUrl, "Wayback URL");
-		await assertPublicDns(waybackUrl, "Wayback URL");
-		const res = await fetchWithTimeout(waybackUrl.toString(), {
+		const res = await fetchPublic(WAYBACK_PREFIX + inputUrl, {
 			headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
 			signal,
+			timeoutMs: FETCH_TIMEOUT_MS,
+			maxBytes: READ_MAX_BYTES,
+			context: "Wayback URL",
 		});
 		if (res.ok) {
-			const text = truncate(extractContent(await res.text()));
+			const text = truncate(extractContent(res.text()));
 			if (text.length >= MIN_CONTENT_LENGTH) {
 				return { text, source: "wayback" };
 			}
@@ -274,7 +268,7 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 			attempts.push({ stage: "wayback", outcome: `HTTP ${res.status}` });
 		}
 	} catch (error) {
-		if (error instanceof UnsafeUrlError) throw error;
+		if (isFinalReadError(error, signal)) throw error;
 		attempts.push({ stage: "wayback", outcome: describeError(error) });
 	}
 
@@ -285,115 +279,9 @@ async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadRe
 	throw new ReadFailedError(inputUrl, attempts);
 }
 
-// ── URL safety ──────────────────────────────────────────────────────
-
-function assertSafeWebUrl(url: string, context = "URL"): URL {
-	let parsed: URL;
-	try {
-		parsed = new URL(url.trim());
-	} catch {
-		throw new UnsafeUrlError(`${context} is invalid`);
-	}
-
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-		throw new UnsafeUrlError(`${context} is not allowed: only http(s) URLs are supported`);
-	}
-
-	if (parsed.username || parsed.password) {
-		throw new UnsafeUrlError(`${context} is not allowed: embedded credentials are blocked`);
-	}
-
-	const hostname = normalizeHostname(parsed.hostname);
-	if (!hostname) {
-		throw new UnsafeUrlError(`${context} is not allowed: missing hostname`);
-	}
-
-	if (isBlockedHostname(hostname)) {
-		throw new UnsafeUrlError(`${context} is not allowed: local hostnames are blocked`);
-	}
-
-	if (isBlockedIpLiteral(hostname)) {
-		throw new UnsafeUrlError(`${context} is not allowed: private, local, or reserved IP addresses are blocked`);
-	}
-
-	return parsed;
-}
-
-function normalizeHostname(hostname: string): string {
-	return hostname.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "").toLowerCase();
-}
-
-function isBlockedHostname(hostname: string): boolean {
-	if (BLOCKED_HOSTNAMES.has(hostname)) return true;
-	if (hostname.endsWith(".localhost")) return true;
-	if (hostname.endsWith(".local")) return true;
-	if (hostname.endsWith(".home.arpa")) return true;
-
-	// Single-label names are almost always local/intranet hosts, not public web URLs.
-	if (!hostname.includes(".") && isIP(hostname) === 0) return true;
-
-	return false;
-}
-
-function isBlockedIpLiteral(hostname: string): boolean {
-	const version = isIP(hostname);
-	if (version === 4) return isBlockedIpv4(hostname);
-	if (version === 6) return isBlockedIpv6(hostname);
-	return false;
-}
-
-async function assertPublicDns(url: URL, context = "URL"): Promise<void> {
-	const hostname = normalizeHostname(url.hostname);
-	if (isIP(hostname) !== 0) return;
-
-	const addresses = await lookup(hostname, { all: true, verbatim: true });
-	const blocked = addresses.find((entry) => isBlockedIpLiteral(normalizeHostname(entry.address)));
-	if (blocked) {
-		throw new UnsafeUrlError(`${context} is not allowed: ${hostname} resolves to blocked IP ${blocked.address}`);
-	}
-}
-
-function isBlockedIpv4(hostname: string): boolean {
-	const octets = hostname.split(".").map((part) => Number(part));
-	if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-		return true;
-	}
-
-	const [a, b] = octets;
-	return (
-		a === 0 || // current network
-		a === 10 || // RFC1918
-		a === 127 || // loopback
-		(a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
-		(a === 169 && b === 254) || // link-local
-		(a === 172 && b >= 16 && b <= 31) || // RFC1918
-		(a === 192 && b === 168) || // RFC1918
-		(a === 192 && b === 0) || // IETF protocol assignments
-		(a === 198 && (b === 18 || b === 19)) || // benchmarking
-		a >= 224 // multicast/reserved/broadcast
-	);
-}
-
-function isBlockedIpv6(hostname: string): boolean {
-	const lower = hostname.toLowerCase();
-	const embeddedIpv4 = lower.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
-	if (embeddedIpv4 && isBlockedIpv4(embeddedIpv4)) return true;
-
-	return (
-		lower === "::" ||
-		lower === "::1" ||
-		lower.startsWith("fc") || // unique local fc00::/7
-		lower.startsWith("fd") || // unique local fc00::/7
-		lower.startsWith("fe8") || // link-local fe80::/10
-		lower.startsWith("fe9") ||
-		lower.startsWith("fea") ||
-		lower.startsWith("feb") ||
-		lower.startsWith("fec") || // deprecated site-local fec0::/10
-		lower.startsWith("fed") ||
-		lower.startsWith("fee") ||
-		lower.startsWith("fef") ||
-		lower.startsWith("ff") // multicast
-	);
+// Unsafe URLs and caller aborts end the read; other failures try the next source.
+function isFinalReadError(error: unknown, signal?: AbortSignal | null): boolean {
+	return error instanceof UnsafeUrlError || Boolean(signal?.aborted);
 }
 
 // ── GitHub URL handling ─────────────────────────────────────────────
@@ -418,70 +306,6 @@ function githubToRaw(url: string): string | null {
 	} catch {
 		return null;
 	}
-}
-
-// ── Fetch helpers ───────────────────────────────────────────────────
-
-async function fetchWithTimeout(
-	url: string,
-	init?: RequestInit & { signal?: AbortSignal | null; timeoutMs?: number },
-): Promise<Response> {
-	const controller = new AbortController();
-	const externalSignal = init?.signal;
-
-	// Link external signal
-	if (externalSignal?.aborted) {
-		controller.abort(externalSignal.reason);
-	} else if (externalSignal) {
-		externalSignal.addEventListener("abort", () => controller.abort(externalSignal.reason), { once: true });
-	}
-
-	const timer = setTimeout(
-		() => controller.abort(new Error("Fetch timeout")),
-		init?.timeoutMs ?? FETCH_TIMEOUT_MS,
-	);
-
-	try {
-		const { signal: _externalSignal, timeoutMs: _timeoutMs, ...fetchInit } = init ?? {};
-		return await fetch(url, {
-			...fetchInit,
-			signal: controller.signal,
-			redirect: init?.redirect ?? "follow",
-		});
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-async function fetchSafe(url: string, signal?: AbortSignal | null): Promise<Response> {
-	let currentUrl = assertSafeWebUrl(url).toString();
-	let redirects = 0;
-
-	while (redirects <= MAX_REDIRECTS) {
-		const safeUrl = assertSafeWebUrl(currentUrl, redirects === 0 ? "URL" : "redirect URL");
-		await assertPublicDns(safeUrl, redirects === 0 ? "URL" : "redirect URL");
-		const res = await fetchWithTimeout(safeUrl.toString(), {
-			headers: {
-				"User-Agent": UA,
-				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
-				"Accept-Language": "en-US,en;q=0.9",
-			},
-			signal,
-			redirect: "manual",
-		});
-
-		if (res.status >= 300 && res.status < 400) {
-			const location = res.headers.get("location");
-			if (!location) return res;
-			currentUrl = assertSafeWebUrl(new URL(location, safeUrl).toString(), "redirect URL").toString();
-			redirects++;
-			continue;
-		}
-
-		return res;
-	}
-
-	throw new Error(`Too many redirects while fetching ${url}`);
 }
 
 // ── HTML extraction ─────────────────────────────────────────────────
@@ -728,13 +552,14 @@ function isDDGChallenge(html: string): boolean {
 }
 
 async function searchMarginalia(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
-	const res = await fetchWithTimeout(MARGINALIA_ENDPOINT + encodeURIComponent(query), {
+	const res = await fetchPublic(MARGINALIA_ENDPOINT + encodeURIComponent(query), {
 		headers: { Accept: "application/json", "User-Agent": UA_BOT },
 		signal,
 		timeoutMs: SEARCH_TIMEOUT_MS,
+		maxBytes: SEARCH_MAX_BYTES,
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	const body = (await res.json()) as {
+	const body = res.json() as {
 		results?: Array<{ url?: string; title?: string; description?: string }>;
 	};
 	return (body.results ?? [])
@@ -749,13 +574,14 @@ async function searchMarginalia(query: string, signal?: AbortSignal | null): Pro
 
 async function searchHackerNews(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
 	const url = `${HN_ENDPOINT}?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${SEARCH_RESULT_LIMIT}`;
-	const res = await fetchWithTimeout(url, {
+	const res = await fetchPublic(url, {
 		headers: { Accept: "application/json", "User-Agent": UA_BOT },
 		signal,
 		timeoutMs: SEARCH_TIMEOUT_MS,
+		maxBytes: SEARCH_MAX_BYTES,
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	const body = (await res.json()) as {
+	const body = res.json() as {
 		hits?: Array<{ title?: string; url?: string; objectID?: string; points?: number; num_comments?: number }>;
 	};
 	return (body.hits ?? [])
@@ -773,13 +599,14 @@ function delay(ms: number): Promise<void> {
 
 async function searchGoogleNews(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
 	const url = `${GOOGLE_NEWS_ENDPOINT}?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
-	const res = await fetchWithTimeout(url, {
+	const res = await fetchPublic(url, {
 		headers: { Accept: "application/rss+xml", "User-Agent": UA },
 		signal,
 		timeoutMs: SEARCH_TIMEOUT_MS,
+		maxBytes: SEARCH_MAX_BYTES,
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	const xml = await res.text();
+	const xml = res.text();
 	const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
 	return items.slice(0, SEARCH_RESULT_LIMIT).flatMap((item) => {
 		const title = readXmlTag(item, "title");
@@ -799,13 +626,14 @@ async function searchGoogleNews(query: string, signal?: AbortSignal | null): Pro
 
 async function searchWikipedia(query: string, signal?: AbortSignal | null): Promise<SearchResult[]> {
 	const url = `${WIKIPEDIA_ENDPOINT}?action=query&list=search&format=json&srlimit=${SEARCH_RESULT_LIMIT}&srsearch=${encodeURIComponent(query)}`;
-	const res = await fetchWithTimeout(url, {
+	const res = await fetchPublic(url, {
 		headers: { Accept: "application/json", "User-Agent": UA_BOT },
 		signal,
 		timeoutMs: SEARCH_TIMEOUT_MS,
+		maxBytes: SEARCH_MAX_BYTES,
 	});
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	const body = (await res.json()) as {
+	const body = res.json() as {
 		query?: { search?: Array<{ title?: string; snippet?: string }> };
 	};
 	return (body.query?.search ?? [])
