@@ -42,3 +42,28 @@ blocked outcomes) are owned by the "Delegate substantial work" section of
 [`.agents/AGENTS.md`](../../../.agents/AGENTS.md). That contract applies to
 every launch mode of the `subagent` tool — single, parallel, and chain alike
 — not just this file's model-policy mechanics.
+
+## Project trust and child guards
+
+Children follow the parent's project trust. A child gets project trust only
+when the parent session trusts its project and the child's cwd is the parent's
+workspace, compared after resolving symlinks. Under Gondolin, `/workspace` maps
+to the host workspace. Any other cwd, including a subdirectory, is untrusted.
+Without trust, the child doesn't load project settings (such as `packages`,
+`npmCommand`, or `shellCommandPrefix`) or `.pi/SYSTEM.md`. If the parent has no
+trust API, children are untrusted.
+
+Project agents in `.pi/agents/` follow the same rule. If the parent declined
+trust, they aren't listed and can't override user agents. A trusted parent can
+run them only in its own workspace; a launch that gives a project agent another
+cwd is rejected.
+
+Every child loads the `permission-gate` and `protected-paths` extensions, in
+native and Gondolin sessions. Children run without a UI, so a dangerous command
+is blocked instead of prompting. The guards are best-effort speed bumps, not a
+sandbox: they catch common commands and paths, not every way to write a file.
+
+An agent's `tools` list is its real capability boundary. The second-opinion
+reviewers have no `bash`, so the caller supplies command output. `scout`,
+`planner`, and `researcher` keep `bash` for investigation; they're read-only
+by instruction only, so delegate to them only what the parent may authorize.

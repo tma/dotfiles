@@ -31,6 +31,8 @@ import {
 import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
+import permissionGate from "./permission-gate.js";
+import protectedPaths from "./protected-paths.js";
 import {
 	AUTO_POLICIES,
 	CatalogRefreshCoordinator,
@@ -136,12 +138,13 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
-function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+function discoverAgents(cwd: string, scope: AgentScope, projectTrusted: boolean): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
-	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+	// Untrusted projects must not advertise or override agents, including from ancestor dirs.
+	const projectAgentsDir = projectTrusted && scope !== "user" ? findNearestProjectAgentsDir(cwd) : null;
 
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const projectAgents = !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
 	// Project agents override user agents with the same name
 	const agentMap = new Map<string, AgentConfig>();
@@ -522,6 +525,23 @@ function resolveAuthoritativeCwd(provider: GondolinToolProvider | undefined, def
 	return provider.hostCwd;
 }
 
+/** Missing trust APIs fail closed: project resources stay unloaded. */
+function isParentProjectTrusted(ctx: ExtensionContext): boolean {
+	return typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted() === true;
+}
+
+/** A child inherits project trust only for the parent's own workspace, compared canonically. */
+function isChildProjectTrusted(ctx: ExtensionContext, provider: GondolinToolProvider | undefined, effectiveCwd: string): boolean {
+	if (!isParentProjectTrusted(ctx)) return false;
+	const parentCwd = provider && ctx.cwd === "/workspace" ? provider.hostCwd : ctx.cwd;
+	return canonicalPath(effectiveCwd) === canonicalPath(parentCwd);
+}
+
+function projectAgentTrustError(agent: AgentConfig, projectTrusted: boolean, cwd: string): string | undefined {
+	if (agent.source !== "project" || projectTrusted) return undefined;
+	return `Project agent "${agent.name}" cannot run in ${cwd}: project agents only run in the trusted parent workspace. Omit cwd or use a user agent.`;
+}
+
 async function getChildModelRuntime(ctx: ExtensionContext, signal?: AbortSignal): Promise<ModelRuntime> {
 	// A fresh runtime avoids stale registrations and cross-parent routing. Keep
 	// compatibility registrations intact: effective providers omit model headers.
@@ -703,6 +723,9 @@ async function runAgent(
 		}
 		const provider = getGondolinToolProvider();
 		const effectiveCwd = resolveAuthoritativeCwd(provider, defaultCwd, opts.cwd);
+		const projectTrusted = isChildProjectTrusted(opts.parentCtx, provider, effectiveCwd);
+		const trustError = projectAgentTrustError(agent, projectTrusted, effectiveCwd);
+		if (trustError) throw new Error(trustError);
 		const requestedTools = agent.tools ?? ["read", "bash", "edit", "write"];
 		const customTools = provider?.tools.filter((tool) => requestedTools.includes(tool.name)) as ToolDefinition<any>[] | undefined;
 		if (provider) {
@@ -738,12 +761,15 @@ async function runAgent(
 			.filter(([, source]) => source !== "agent")
 			.map(([field, source]) => `${field} from ${source}`);
 		result.selectionReason = `${selection.reason}${overrideSources.length > 0 ? `; ${overrideSources.join(", ")}` : ""}`;
+		if (!projectTrusted && isParentProjectTrusted(opts.parentCtx)) {
+			result.selectionReason += "; project resources not loaded: cwd is outside the trusted parent workspace";
+		}
 		const modelRuntime = await waitWithDeadline((signal) => getChildModelRuntime(opts.parentCtx, signal), {
 			signal: opts.signal,
 			label: "Child model runtime setup",
 		});
 		opts.signal?.throwIfAborted();
-		const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir());
+		const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), { projectTrusted });
 		const loader = new DefaultResourceLoader({
 			cwd: effectiveCwd,
 			agentDir: getAgentDir(),
@@ -754,21 +780,26 @@ async function runAgent(
 			noThemes: true,
 			noContextFiles: true,
 			appendSystemPromptOverride: (base) => [...base, agent.systemPrompt],
-			extensionFactories: provider ? [{
-				name: "subagent-gondolin-context",
-				hidden: true,
-				factory: (childPi) => {
-					childPi.on("before_agent_start", (event) => {
-						const hostLine = `Current working directory: ${provider.hostCwd}`;
-						const guestLine = `Current working directory: /workspace (Gondolin VM; host workspace mounted from ${provider.hostCwd})`;
-						return {
-							systemPrompt: event.systemPrompt.includes(hostLine)
-								? event.systemPrompt.replace(hostLine, guestLine)
-								: `${event.systemPrompt}\n\n${guestLine}`,
-						};
-					});
-				},
-			}] : [],
+			// noExtensions skips discovery only; inline factories still load, so children keep the default guards.
+			extensionFactories: [
+				{ name: "permission-gate", factory: permissionGate },
+				{ name: "protected-paths", factory: protectedPaths },
+				...(provider ? [{
+					name: "subagent-gondolin-context",
+					hidden: true,
+					factory: (childPi: ExtensionAPI) => {
+						childPi.on("before_agent_start", (event) => {
+							const hostLine = `Current working directory: ${provider.hostCwd}`;
+							const guestLine = `Current working directory: /workspace (Gondolin VM; host workspace mounted from ${provider.hostCwd})`;
+							return {
+								systemPrompt: event.systemPrompt.includes(hostLine)
+									? event.systemPrompt.replace(hostLine, guestLine)
+									: `${event.systemPrompt}\n\n${guestLine}`,
+							};
+						});
+					},
+				}] : []),
+			],
 		});
 		await loader.reload();
 		opts.signal?.throwIfAborted();
@@ -1914,7 +1945,7 @@ export default function (pi: ExtensionAPI) {
 				return response;
 			}
 
-			const { agents } = discoverAgents(ctx.cwd, "both");
+			const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
@@ -1955,6 +1986,13 @@ export default function (pi: ExtensionAPI) {
 					details: undefined,
 					isError: true,
 				};
+			}
+			const launches: Array<{ agent: string; cwd?: string }> = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, cwd: params.cwd }];
+			for (const launch of launches) {
+				const agent = agents.find((candidate) => candidate.name === launch.agent)!;
+				const cwd = resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, launch.cwd);
+				const trustError = projectAgentTrustError(agent, isChildProjectTrusted(ctx, gondolinProvider, cwd), cwd);
+				if (trustError) return { content: [{ type: "text", text: trustError }], details: undefined, isError: true };
 			}
 
 			const shape = getLaunchShape(params);
@@ -2135,7 +2173,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		currentCtx = ctx;
-		const { agents } = discoverAgents(ctx.cwd, "both");
+		const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
 		const systemPrompt = `${event.systemPrompt}\n\n${formatAgentCatalogForPrompt(agents)}`;
 		const active = activeJobs();
 		if (active.length === 0) return { systemPrompt };
