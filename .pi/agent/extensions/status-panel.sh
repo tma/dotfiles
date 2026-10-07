@@ -18,26 +18,34 @@ fi
 
 set +e
 
-# Colors
-DIM='\033[2m'
-BOLD='\033[1m'
-RESET='\033[0m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-MAGENTA='\033[35m'
-CYAN='\033[36m'
-RED='\033[31m'
-GRAY='\033[90m'
-BORDER_GRAY='\033[38;2;59;66;82m'
+# Colors. The frame is printed with %s, so these hold real escape bytes and
+# untrusted text is never escape-decoded.
+DIM=$'\033[2m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+MAGENTA=$'\033[35m'
+CYAN=$'\033[36m'
+RED=$'\033[31m'
+GRAY=$'\033[90m'
+BORDER_GRAY=$'\033[38;2;59;66;82m'
 
 # Soft panel palette
-SAGE_GREEN='\033[38;5;114m'
-BUTTER_YELLOW='\033[38;5;228m'
-SOFT_GRAY='\033[38;5;245m'
-PALE_CYAN='\033[38;5;159m'
-PALE_AMBER='\033[38;5;223m'
-PALE_ROSE='\033[38;5;217m'
+SAGE_GREEN=$'\033[38;5;114m'
+BUTTER_YELLOW=$'\033[38;5;228m'
+SOFT_GRAY=$'\033[38;5;245m'
+PALE_CYAN=$'\033[38;5;159m'
+PALE_AMBER=$'\033[38;5;223m'
+PALE_ROSE=$'\033[38;5;217m'
+
+# Cleans session JSON, session names, and git names before they reach the frame.
+PANEL_TEXT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/status_panel_text.py"
+
+# Bash arithmetic evaluates expressions such as a[$(cmd)], so only bounded
+# ASCII integers may reach it.
+is_uint() { [[ "$1" =~ ^(0|[1-9][0-9]{0,8})$ ]]; }
 
 # Refresh cadence
 SESSION_START=$(date +%s)
@@ -119,6 +127,8 @@ build_panel_template() {
   local cols="${2:-$(tput cols)}"
   local rows="${3:-$(tput lines)}"
   local goal_expanded="${4:-$GOAL_EXPANDED}"
+  is_uint "$cols" || cols=80
+  is_uint "$rows" || rows=24
   local buf=""
   local pad_x="$PANEL_PAD_X"
   [[ "$pad_x" =~ ^[0-9]+$ ]] || pad_x=1
@@ -129,11 +139,9 @@ build_panel_template() {
 
   # Append a padded line to buffer, clear rest of line.
   p() { buf+="${pad}$*"$'\033[K\n'; }
-  # Helper: wrap text in OSC 8 clickable link
-  link() {
-    local url="$1" text="$2"
-    echo -ne "\033]8;;${url}\a${text}\033]8;;\a"
-  }
+  # Store an OSC 8 clickable link in the variable named by $1. The URL and
+  # text are %s data, never escape-decoded.
+  link() { printf -v "$1" '\033]8;;%s\a%s\033]8;;\a' "$2" "$3"; }
   # Repeat a Unicode character without relying on locale-sensitive tr(1).
   repeat_char() {
     local count="$1" char="$2" out=""
@@ -148,13 +156,15 @@ build_panel_template() {
   # ── Pi session info ─────────────────────────────────
   if [[ -f "$STATS_FILE" ]]; then
     local stats
-    stats=$(cat "$STATS_FILE" 2>/dev/null)
+    stats=$(python3 "$PANEL_TEXT_HELPER" json < "$STATS_FILE" 2>/dev/null)
     if [[ -n "$stats" ]]; then
       local model state ctx_pct ctx_window
       model=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model',''))" 2>/dev/null || true)
       state=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))" 2>/dev/null || true)
-      ctx_pct=$(echo "$stats" | python3 -c "import sys,json; d=json.load(sys.stdin); p=d.get('contextPercent'); print(f'{p:.0f}' if p is not None else '')" 2>/dev/null || true)
-      ctx_window=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contextWindow',0))" 2>/dev/null || true)
+      ctx_pct=$(echo "$stats" | python3 -c "import sys,json; p=json.load(sys.stdin).get('contextPercent'); print(f'{p:.0f}' if type(p) in (int,float) and 0 <= p < 1e9 else '')" 2>/dev/null || true)
+      ctx_window=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('contextWindow'); print(int(v) if type(v) in (int,float) and 0 <= v < 1e9 else 0)" 2>/dev/null || true)
+      is_uint "$ctx_pct" || ctx_pct=""
+      is_uint "$ctx_window" || ctx_window=0
 
       local session_indicator
       case "$state" in
@@ -167,6 +177,7 @@ build_panel_template() {
       local session_name=""
       if [[ -f "$name_file" ]]; then
         session_name=$(tr -d '\n' < "$name_file" 2>/dev/null || true)
+        session_name=$(python3 "$PANEL_TEXT_HELPER" text "$session_name" 2>/dev/null || true)
       fi
       if [[ -z "$session_name" ]]; then
         session_name=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sessionName') or '')" 2>/dev/null || true)
@@ -189,22 +200,19 @@ build_panel_template() {
       if [[ -n "$ctx_pct" && "$ctx_pct" != "0" ]]; then
         local bar_width=$((content_cols - 16))
         [[ $bar_width -lt 4 ]] && bar_width=4
-        local filled=$(( (${ctx_pct%.*} * bar_width) / 100 ))
+        local filled=$(( (ctx_pct * bar_width) / 100 ))
         [[ $filled -gt $bar_width ]] && filled=$bar_width
         local empty=$((bar_width - filled))
         local bar_color="$PALE_CYAN"
-        [[ ${ctx_pct%.*} -gt 70 ]] && bar_color="$PALE_AMBER"
-        [[ ${ctx_pct%.*} -gt 90 ]] && bar_color="$PALE_ROSE"
+        [[ $ctx_pct -gt 70 ]] && bar_color="$PALE_AMBER"
+        [[ $ctx_pct -gt 90 ]] && bar_color="$PALE_ROSE"
         local bar="${bar_color}$(repeat_char "$filled" '█')${SOFT_GRAY}$(repeat_char "$empty" '░')${RESET}"
         # Format context window size
         local win_label=""
-        if [[ -n "$ctx_window" && "$ctx_window" != "0" ]]; then
-          local cwint=${ctx_window%.*}
-          if [[ $cwint -ge 1000000 ]]; then
-            win_label=" / $((cwint / 1000000))M"
-          elif [[ $cwint -ge 1000 ]]; then
-            win_label=" / $((cwint / 1000))k"
-          fi
+        if [[ $ctx_window -ge 1000000 ]]; then
+          win_label=" / $((ctx_window / 1000000))M"
+        elif [[ $ctx_window -ge 1000 ]]; then
+          win_label=" / $((ctx_window / 1000))k"
         fi
         p ""
         p " ${bar} ${ctx_pct}%${GRAY}${win_label}${RESET}"
@@ -234,8 +242,9 @@ build_panel_template() {
   # ── Background subagents ─────────────────────────────
   if [[ -f "$SUBAGENTS_FILE" ]]; then
     local subagents_json subagent_count
-    subagents_json=$(cat "$SUBAGENTS_FILE" 2>/dev/null)
+    subagents_json=$(python3 "$PANEL_TEXT_HELPER" json < "$SUBAGENTS_FILE" 2>/dev/null)
     subagent_count=$(echo "$subagents_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for job in d.get('active',[]) for agent in job.get('agents',[]) if agent.get('state') in ('queued','running')))" 2>/dev/null || echo "0")
+    is_uint "$subagent_count" || subagent_count=0
     if [[ "$subagent_count" -gt 0 ]]; then
       hr
       p " ${BOLD}Agents${RESET} ${PALE_CYAN}${subagent_count} active${RESET}"
@@ -301,8 +310,7 @@ for ai, agent in enumerate(agents):
     if action:
         age=max(0, int((time.time()*1000-last)/1000)) if isinstance(last, (int,float)) else None
         freshness=f'activity {age}s ago · ' if age is not None else ''
-        # The shell later prints with %b; do not interpret escapes in tool arguments.
-        activity=fit(freshness+action, maxw).replace(chr(92), chr(92)*2)
+        activity=fit(freshness+action, maxw)
         print(f'   {dim}{activity}{reset}')
     if ai < len(agents)-1:
         print('')
@@ -319,10 +327,11 @@ for ai, agent in enumerate(agents):
   local TODOS_FILE="${PI_SESSION_DIR}/${PI_PID}-todos.json"
   if [[ -f "$TODOS_FILE" ]]; then
     local todos_json
-    todos_json=$(cat "$TODOS_FILE" 2>/dev/null)
+    todos_json=$(python3 "$PANEL_TEXT_HELPER" json < "$TODOS_FILE" 2>/dev/null)
 
     local has_goal
     has_goal=$(echo "$todos_json" | python3 -c "import sys,json; print(1 if json.load(sys.stdin).get('goal') else 0)" 2>/dev/null || echo "0")
+    is_uint "$has_goal" || has_goal=0
     if [[ "$has_goal" -gt 0 ]]; then
       hr
       p " ${BOLD}Goal${RESET}"
@@ -382,6 +391,7 @@ if note:
 
     local task_count
     task_count=$(echo "$todos_json" | python3 -c "import sys,json; t=json.load(sys.stdin).get('tasks',[]); print(len(t))" 2>/dev/null || echo "0")
+    is_uint "$task_count" || task_count=0
 
     if [[ "$task_count" -gt 0 ]]; then
       hr
@@ -400,6 +410,8 @@ import sys,json
 tasks=json.load(sys.stdin).get('tasks',[])
 print(sum(1 for t in tasks if t['status'] == 'in_progress'))
 " 2>/dev/null || echo "0")
+      is_uint "$done_count" || done_count=0
+      is_uint "$active_count" || active_count=0
       total_count="$task_count"
 
       # Progress bar: done = sage green, in-progress = butter yellow, pending = soft gray
@@ -494,9 +506,11 @@ for i, t in enumerate(tasks):
   local bi="${branch}"
   [[ "$ahead" != "0" ]] && bi+=" ↑${ahead}"
   [[ "$behind" != "0" ]] && bi+=" ↓${behind}"
-  p " ${CYAN}⎇${RESET} ${BOLD}${bi}${RESET}"
+  local -a git_labels=()
+  mapfile -t git_labels < <(python3 "$PANEL_TEXT_HELPER" text "$bi" "$git_root" 2>/dev/null)
+  p " ${CYAN}⎇${RESET} ${BOLD}${git_labels[0]}${RESET}"
 
-  local worktree_label="${git_root}"
+  local worktree_label="${git_labels[1]}"
   [[ -n "$HOME" && "$worktree_label" == "$HOME"* ]] && worktree_label="~${worktree_label#$HOME}"
   local worktree_max=$((content_cols - 4))
   [[ $worktree_max -lt 8 ]] && worktree_max=8
@@ -522,12 +536,12 @@ for i, t in enumerate(tasks):
       local dir="${f%/*}"
       local avail=$((maxpath - ${#name} - 4))
       if [[ $avail -gt 2 ]]; then
-        echo "${dir:0:$avail}…/${name}"
+        printf '%s\n' "${dir:0:$avail}…/${name}"
       else
-        echo "…${f: -$((maxpath - 1))}"
+        printf '%s\n' "…${f: -$((maxpath - 1))}"
       fi
     else
-      echo "$f"
+      printf '%s\n' "$f"
     fi
   }
 
@@ -542,9 +556,13 @@ for i, t in enumerate(tasks):
   while IFS= read -r uf; do
     [[ -z "$uf" ]] && continue
     local lc
-    lc=$(wc -l < "$uf" 2>/dev/null | tr -d ' ' || echo "0")
+    lc=$(wc -l 2>/dev/null < "$uf" | tr -d ' ' || echo "0")
     file_stats["$uf"]="${GREEN}+${lc}${RESET}"
   done < <(git ls-files --others --exclude-standard 2>/dev/null)
+
+  # Shown file rows: status icon, git path, and trailing stats. Links are built
+  # in one helper call after all rows are known.
+  local -a row_icons=() row_paths=() row_stats=()
 
   # Staged
   while IFS= read -r line; do
@@ -558,7 +576,9 @@ for i, t in enumerate(tasks):
       *) ic="?"; co="$GRAY";   lb="staged" ;;
     esac
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds} ${GRAY}${lb}${RESET}"
+    if [[ $file_count -lt $max_files ]]; then
+      row_icons+=("${co}${ic}${RESET}"); row_paths+=("$f"); row_stats+=("${ds} ${GRAY}${lb}${RESET}")
+    fi
     diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git diff --cached --name-status 2>/dev/null)
@@ -571,7 +591,9 @@ for i, t in enumerate(tasks):
       M) ic="~"; co="$YELLOW" ;; D) ic="-"; co="$RED" ;; *) ic="?"; co="$GRAY" ;;
     esac
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${co}${ic}${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds}"
+    if [[ $file_count -lt $max_files ]]; then
+      row_icons+=("${co}${ic}${RESET}"); row_paths+=("$f"); row_stats+=("$ds")
+    fi
     diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git diff --name-status 2>/dev/null)
@@ -580,10 +602,24 @@ for i, t in enumerate(tasks):
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     local ds="${file_stats[$f]:-}"
-    [[ $file_count -lt $max_files ]] && p " ${GREEN}+${RESET} $(link "file://${git_root}/${f}" "$(short "$f")") ${ds}"
+    if [[ $file_count -lt $max_files ]]; then
+      row_icons+=("${GREEN}+${RESET}"); row_paths+=("$f"); row_stats+=("$ds")
+    fi
     diff_files+=" ${git_root}/${f}"
     file_count=$((file_count + 1))
   done < <(git ls-files --others --exclude-standard 2>/dev/null)
+
+  if [[ ${#row_paths[@]} -gt 0 ]]; then
+    local -a row_links=()
+    local i uri label linked
+    mapfile -t row_links < <(python3 "$PANEL_TEXT_HELPER" file-links "$git_root" "${row_paths[@]}" 2>/dev/null)
+    for i in "${!row_paths[@]}"; do
+      uri="${row_links[$i]%%$'\t'*}"
+      label="${row_links[$i]#*$'\t'}"
+      link linked "$uri" "$(short "$label")"
+      p " ${row_icons[$i]} ${linked} ${row_stats[$i]}"
+    done
+  fi
 
   if [[ $file_count -eq 0 ]]; then
     p " ${GRAY}No changes${RESET}"
@@ -647,7 +683,7 @@ render_panel() {
 
   mapfile -t lines <<< "${rendered%$'\n'}"
   for ((i = 0; i < PANEL_PAD_BOTTOM; i++)); do
-    lines+=("\033[K")
+    lines+=($'\033[K')
   done
   total=${#lines[@]}
   visible_rows=$rows
@@ -673,7 +709,7 @@ render_panel() {
   # Never write past the pane's last row. Doing so scrolls the terminal, so the
   # next home-and-redraw cycle visibly jumps between scroll positions. Disable
   # autowrap as well so an unexpectedly wide line cannot trigger the same bug.
-  printf '\033[?7l\033[H%b\033[J\033[?7h' "$viewport"
+  printf '\033[?7l\033[H%s\033[J\033[?7h' "$viewport"
 }
 
 scroll_by() {
