@@ -6,6 +6,7 @@ import {
 	pinLookup,
 	isLocalIp,
 	localApiUrl,
+	parseLocalIpOrigin,
 	parseLocalOrigin,
 	UnsafeUrlError,
 } from "../extensions/lib/local-url.ts";
@@ -27,6 +28,32 @@ test("isLocalIp rejects public, metadata, and unspecified addresses", () => {
 	assert.equal(isLocalIp("0.0.0.0"), false);
 	assert.equal(isLocalIp("224.0.0.1"), false);
 	assert.equal(isLocalIp("2001:4860:4860::8888"), false);
+});
+
+test("isLocalIp handles IPv6 by prefix, not by string shape", () => {
+	assert.equal(isLocalIp("[fd12::1]"), true);
+	assert.equal(isLocalIp("::ffff:127.0.0.1"), true);
+	assert.equal(isLocalIp("::ffff:7f00:1"), true);
+	assert.equal(isLocalIp("::ffff:c0a8:10a"), true);
+	assert.equal(isLocalIp("::ffff:8.8.8.8"), false);
+	assert.equal(isLocalIp("fd::1"), false);
+	assert.equal(isLocalIp("fe80::1"), false);
+	assert.equal(isLocalIp("::"), false);
+});
+
+test("parseLocalIpOrigin accepts only local IP literals", () => {
+	assert.deepEqual(parseLocalIpOrigin("http://127.0.0.1:1234", "LM_STUDIO_URL"), {
+		origin: "http://127.0.0.1:1234",
+		pathPrefix: "",
+		hostname: "127.0.0.1",
+	});
+	assert.equal(parseLocalIpOrigin("http://[::1]:1234/v1").origin, "http://[::1]:1234");
+	assert.equal(parseLocalIpOrigin("http://[fd12::1]:1234").hostname, "fd12::1");
+	assert.equal(parseLocalIpOrigin("http://192.168.1.10:1234").hostname, "192.168.1.10");
+	assert.throws(() => parseLocalIpOrigin("http://localhost:1234"), /IP address/);
+	assert.throws(() => parseLocalIpOrigin("http://lmstudio.example.local:1234"), /IP address/);
+	assert.throws(() => parseLocalIpOrigin("http://8.8.8.8:1234"), UnsafeUrlError);
+	assert.throws(() => parseLocalIpOrigin("http://[2001:4860:4860::8888]:1234"), UnsafeUrlError);
 });
 
 test("parseLocalOrigin accepts local http(s) origins and path prefixes", () => {

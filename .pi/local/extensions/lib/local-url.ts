@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 export class UnsafeUrlError extends Error {
 	constructor(message: string) {
@@ -20,35 +20,22 @@ export function normalizeHostname(hostname: string): string {
 	return hostname.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "").toLowerCase();
 }
 
-export function isLocalIpv4(hostname: string): boolean {
-	const octets = hostname.split(".").map((part) => Number(part));
-	if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-		return false;
-	}
-
-	const [a, b] = octets;
-	return (
-		a === 10 ||
-		a === 127 ||
-		(a === 100 && b >= 64 && b <= 127) || // CGNAT / Tailscale
-		(a === 172 && b >= 16 && b <= 31) ||
-		(a === 192 && b === 168)
-	);
-}
-
-export function isLocalIpv6(hostname: string): boolean {
-	const lower = hostname.toLowerCase();
-	const embeddedIpv4 = lower.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
-	if (embeddedIpv4) return isLocalIpv4(embeddedIpv4);
-	return lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd");
-}
+// BlockList compares parsed addresses, so IPv6 prefixes and IPv4-mapped
+// IPv6 forms (::ffff:127.0.0.1, ::ffff:7f00:1) are matched correctly.
+const LOCAL_NETWORKS = new BlockList();
+LOCAL_NETWORKS.addSubnet("10.0.0.0", 8, "ipv4");
+LOCAL_NETWORKS.addSubnet("127.0.0.0", 8, "ipv4");
+LOCAL_NETWORKS.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT / Tailscale
+LOCAL_NETWORKS.addSubnet("172.16.0.0", 12, "ipv4");
+LOCAL_NETWORKS.addSubnet("192.168.0.0", 16, "ipv4");
+LOCAL_NETWORKS.addAddress("::1", "ipv6");
+LOCAL_NETWORKS.addSubnet("fc00::", 7, "ipv6"); // unique local
 
 export function isLocalIp(address: string): boolean {
 	const hostname = normalizeHostname(address);
 	const version = isIP(hostname);
-	if (version === 4) return isLocalIpv4(hostname);
-	if (version === 6) return isLocalIpv6(hostname);
-	return false;
+	if (version === 0) return false;
+	return LOCAL_NETWORKS.check(hostname, version === 4 ? "ipv4" : "ipv6");
 }
 
 export function parseLocalOrigin(raw: string, label = "URL"): LocalBase {
@@ -84,6 +71,17 @@ export function parseLocalOrigin(raw: string, label = "URL"): LocalBase {
 		pathPrefix,
 		hostname,
 	};
+}
+
+// For clients that resolve the hostname themselves (the chat transport), a
+// hostname could re-resolve to a public address after validation. Require a
+// local IP literal so there is nothing to resolve.
+export function parseLocalIpOrigin(raw: string, label = "URL"): LocalBase {
+	const base = parseLocalOrigin(raw, label);
+	if (isIP(base.hostname) === 0) {
+		throw new UnsafeUrlError(`${label} must use a local IP address such as 127.0.0.1, not a hostname`);
+	}
+	return base;
 }
 
 export function localApiUrl(base: LocalBase, apiPath: string): URL {

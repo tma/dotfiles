@@ -1,7 +1,9 @@
 /**
  * Discover models from a local LM Studio server.
  *
- * LM_STUDIO_URL defaults to http://127.0.0.1:1234 and must resolve locally.
+ * LM_STUDIO_URL defaults to http://127.0.0.1:1234 and must be a local IP
+ * literal. Pi's chat client resolves hostnames on its own, so a hostname could
+ * re-resolve to a public address after discovery checked it.
  * The model list comes only from LM Studio. models.json has no static entries.
  */
 
@@ -10,7 +12,7 @@ import { loadLocalEnv } from "./lib/load-env.ts";
 import {
 	fetchLocal,
 	localApiUrl,
-	parseLocalOrigin,
+	parseLocalIpOrigin,
 	type LocalBase,
 } from "./lib/local-url.ts";
 import { modelsFromLmStudioPayload, type LmStudioModel } from "./lib/lmstudio-models.ts";
@@ -19,12 +21,9 @@ const DEFAULT_URL = "http://127.0.0.1:1234";
 const FETCH_TIMEOUT_MS = 2_000;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-let lastModels: ProviderModelConfig[] | undefined;
-let discoveryWarning: string | undefined;
-
 function loadBase(): LocalBase {
 	const raw = process.env.LM_STUDIO_URL?.trim() || DEFAULT_URL;
-	const base = parseLocalOrigin(raw, "LM_STUDIO_URL");
+	const base = parseLocalIpOrigin(raw, "LM_STUDIO_URL");
 	if (base.pathPrefix === "/v1") return { ...base, pathPrefix: "" };
 	if (base.pathPrefix.endsWith("/v1")) {
 		return { ...base, pathPrefix: base.pathPrefix.slice(0, -3).replace(/\/+$/, "") };
@@ -82,12 +81,17 @@ export default async function (pi: ExtensionAPI) {
 		base = loadBase();
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		pi.registerProvider("lmstudio", { models: [] });
 		pi.on("session_start", (_event, ctx) => {
 			ctx.ui.notify(message, "warning");
 		});
 		return;
 	}
 
+	// Per load: Pi may reuse this module, and a stale list must not survive a
+	// restart or /reload where LM Studio is gone.
+	let lastModels: ProviderModelConfig[] | undefined;
+	let discoveryWarning: string | undefined;
 	try {
 		const models = await discover(base);
 		if (models.length > 0) {
@@ -104,7 +108,7 @@ export default async function (pi: ExtensionAPI) {
 		baseUrl: openaiBaseUrl(base),
 		apiKey: "lm-studio",
 		api: "openai-completions",
-		...(lastModels ? { models: lastModels } : {}),
+		models: lastModels ?? [],
 		async refreshModels(context) {
 			if (context.signal.aborted || !context.allowNetwork) return lastModels;
 			try {

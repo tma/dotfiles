@@ -101,9 +101,23 @@ fi
 
 # Local-only Pi: LM Studio + LAN tools. Separate configuration so the coding
 # agent extensions, skills, and cloud auth stay out of this session.
+# Pi reads .env itself (as data, never as shell code), so nothing from it ends
+# up in this shell. Extensions are passed explicitly so a user --no-extensions
+# cannot drop the LM Studio-only guard; --approve is refused because project
+# .pi resources could replace this profile's settings and extensions.
+# NO_PROXY keeps prompts from going to an inherited HTTP(S)_PROXY.
 pi-local() {
   local dir="${PI_LOCAL_DIR:-$HOME/.pi/local}"
-  local env_file="${PI_LOCAL_ENV:-$PWD/.env}"
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      -a|--approve)
+        printf 'pi-local: %s would load project .pi resources. Use pi for that.\n' "$arg" >&2
+        return 2
+        ;;
+    esac
+  done
   if [ ! -d "$dir" ]; then
     printf 'pi-local: %s is missing. Run install.sh from this repository.\n' "$dir" >&2
     return 1
@@ -112,16 +126,18 @@ pi-local() {
     printf 'pi-local: pi is not installed\n' >&2
     return 127
   fi
-  if [ -f "$env_file" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$env_file"
-    set +a
-  fi
   PI_CODING_AGENT_DIR="$dir" \
+  PI_LOCAL_ENV="${PI_LOCAL_ENV:-}" \
   PI_LOCAL_LAUNCH_DIR="$PWD" \
   PI_OFFLINE=1 \
-  command pi --no-builtin-tools --no-skills --no-context-files --no-prompt-templates "$@"
+  NO_PROXY='*' \
+  no_proxy='*' \
+  command pi --no-approve --no-extensions \
+    --extension "$dir/extensions/local-only.ts" \
+    --extension "$dir/extensions/env.ts" \
+    --extension "$dir/extensions/lmstudio.ts" \
+    --extension "$dir/extensions/paperless.ts" \
+    --no-builtin-tools --no-skills --no-context-files --no-prompt-templates "$@"
 }
 
 # Added by LM Studio CLI (lms)

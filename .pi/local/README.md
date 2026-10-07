@@ -6,6 +6,28 @@ LM Studio models and the tools in this directory. Launch it with `pi-local`.
 This is not the coding agent. Cloud auth, skills, and filesystem tools stay
 out of the session.
 
+## What `pi-local` enforces
+
+- **LM Studio only.** `local-only.ts` replaces every built-in Pi provider
+  with a blocker that has no models and never resolves credentials. Cloud API
+  keys in your environment or `auth.json` can't pick, restore, or send to a
+  cloud model. `--model openai/...` fails, and a resumed cloud session falls
+  back to LM Studio. If LM Studio is down or has no chat models, there's no
+  model and prompts fail locally.
+- **No project resources.** `pi-local` always passes `--no-approve`, loads its
+  own extensions with explicit `--extension` paths under `--no-extensions`,
+  and refuses `--approve`/`-a`. Built-in extensions (MCP, llama.cpp, codemode)
+  stay off. A user `--no-extensions` can't drop the guard.
+- **No proxies.** `pi-local` sets `NO_PROXY=*` for Pi, so an inherited
+  `HTTP_PROXY`/`HTTPS_PROXY` can't route prompts off the machine.
+- **IP-literal LM Studio URL.** `LM_STUDIO_URL` must be a local IP such as
+  `http://127.0.0.1:1234` or `http://[::1]:1234`. Hostnames, including
+  `localhost`, are rejected because Pi's chat client resolves names on its own
+  and a name could start pointing at a public address.
+
+This doesn't cover providers you add to `models.json` or extensions you load
+with `-e`. Those can use other endpoints or register additional providers.
+
 ## Setup
 
 ```bash
@@ -21,8 +43,19 @@ out of the session.
 pi-local
 ```
 
-`pi-local` loads `./.env` from the launch directory (or `PI_LOCAL_ENV`).
-Startup notifies the path it used.
+`pi-local` doesn't source `.env` in your shell. Pi reads it as data from the
+launch directory, or from `PI_LOCAL_ENV` when that's set (exported or not).
+Startup notifies the path it used. The rules:
+
+- Only `PAPERLESS_URL`, `PAPERLESS_TOKEN`, and `LM_STUDIO_URL` are read.
+  Other keys are ignored.
+- Variables already in the environment win over `.env`.
+- `KEY=value` lines, with an optional `export `. Lines starting with `#` are
+  comments. One pair of matching outer quotes is removed. Nothing is expanded:
+  `$`, backticks, `#`, and backslashes in a value stay literal.
+- Values load once per process. Restart `pi-local` after editing `.env`;
+  `/reload` keeps the old values.
+
 Paperless tools are always registered. Calls fail until `PAPERLESS_URL` and
 `PAPERLESS_TOKEN` are set. `PAPERLESS_URL` may be a domain as long as it
 resolves to a local address (RFC1918, loopback, Tailscale). Public records
@@ -32,6 +65,18 @@ put the real URL or token in this repository.
 Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
 `models.json` has no hardcoded model list. `/reload` picks up models you
 load later.
+
+## Tests
+
+```bash
+node --experimental-strip-types --test .pi/local/tests/*.test.ts
+```
+
+The real-Pi checks (startup selection, resumed sessions, cloud flags, the
+request guard, and the `pi-local` command itself) skip unless
+`PI_TEST_NODE_MODULES` points at a `node_modules` directory with
+`@earendil-works/pi-coding-agent`. They use a temporary agent directory,
+fake credentials, and local fake servers. Nothing leaves the machine.
 
 ## Current tools
 

@@ -1,7 +1,9 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import path from "node:path";
 
-const SKIP_KEYS = new Set(["PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_LOCAL_DIR", "PI_LOCAL_ENV", "PI_LOCAL_LAUNCH_DIR"]);
+// Only these keys are read from .env. Anything else in the file is ignored so a
+// project .env cannot inject provider credentials or Node/Pi process settings.
+const LOCAL_KEYS = new Set(["PAPERLESS_URL", "PAPERLESS_TOKEN", "LM_STUDIO_URL"]);
 
 export type LoadedEnv = {
 	path: string | null;
@@ -20,6 +22,12 @@ function stripQuotes(value: string): string {
 	return value;
 }
 
+/**
+ * Parse .env text as data. Each `KEY=value` line may start with `export `.
+ * Lines starting with `#` are comments. One pair of matching outer quotes is
+ * removed. Nothing is expanded: `$`, backticks, `#`, and backslashes inside a
+ * value stay literal.
+ */
 export function parseDotEnv(text: string): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const rawLine of text.split(/\r?\n/)) {
@@ -35,10 +43,11 @@ export function parseDotEnv(text: string): Record<string, string> {
 	return out;
 }
 
+// Variables already in the environment win, so explicit exports override .env.
 export function applyDotEnv(text: string): string[] {
 	const applied: string[] = [];
 	for (const [key, value] of Object.entries(parseDotEnv(text))) {
-		if (SKIP_KEYS.has(key)) continue;
+		if (!LOCAL_KEYS.has(key) || process.env[key] !== undefined) continue;
 		process.env[key] = value;
 		applied.push(key);
 	}
