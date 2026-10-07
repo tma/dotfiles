@@ -7,3 +7,7 @@ Do not add secrets, credentials, tokens, private keys, customer data, internal h
 Keep examples generic. Use placeholders like `owner/repo`, `example.com`, `$HOME`, and `user@example.com` instead of real company, host, tenant, account, or machine-specific values.
 
 Before committing, scan changes for sensitive or company-specific content. If something is useful but private, keep it outside the repo.
+
+## Checks
+
+Do not add automated tests or test-only helpers to this repository. Use syntax checks and focused manual verification instead.

@@ -25,8 +25,6 @@ Selection and authentication preflight have a ten-second total deadline and resp
 
 **Known authentication limitation:** child runtimes are isolated and preserve native and compatibility provider registrations, including per-model headers. Credentials stored only in the parent's runtime or SDK memory store are not shared. A parent can pass authentication preflight while its child cannot authenticate. General propagation needs a supported shared-runtime or authentication-delegation API; converting resolved OAuth or header-only authentication into an API key is not safe.
 
-See [tests/README.md](../tests/README.md) for offline checks.
-
 ## Parent-to-child context contract
 
 Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and

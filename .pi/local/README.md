@@ -66,18 +66,6 @@ Models come from LM Studio at startup (`/api/v0/models`, then `/v1/models`).
 `models.json` has no hardcoded model list. `/reload` picks up models you
 load later.
 
-## Tests
-
-```bash
-node --experimental-strip-types --test .pi/local/tests/*.test.ts
-```
-
-The real-Pi checks (startup selection, resumed sessions, cloud flags, the
-request guard, and the `pi-local` command itself) skip unless
-`PI_TEST_NODE_MODULES` points at a `node_modules` directory with
-`@earendil-works/pi-coding-agent`. They use a temporary agent directory,
-fake credentials, and local fake servers. Nothing leaves the machine.
-
 ## Current tools
 
 - `paperless_search` / `paperless_get` — read-only Paperless-ngx
