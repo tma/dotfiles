@@ -1446,19 +1446,21 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	/** Records the child's session file once known and its terminal state, unless the parent interrupted it. */
+	/** Records the child's session file once known and its latest terminal state, unless the parent interrupted it. */
 	function syncChildRecord(job: BackgroundJob, index: number, result: SingleResult): void {
 		const record = childRecords.get(completionKey(job.id, index));
-		if (!record || record.state !== undefined) return;
+		// Without a record the launch isn't on the current branch, so the result stays in memory only.
+		if (!record || record.state === "resumed") return;
 		if (result.sessionFile && record.sessionFile !== result.sessionFile) {
 			appendChildRecord(job, { kind: "session", jobId: job.id, index, sessionFile: result.sessionFile });
 		}
-		if (isTerminalResult(result) && !job.parentInterrupted) {
+		// Saving the child's outcome can still fail a completed child, so a later end record corrects it.
+		if (isTerminalResult(result) && !job.parentInterrupted && (record.state !== result.state || record.stopReason !== result.stopReason)) {
 			appendChildRecord(job, { kind: "end", jobId: job.id, index, state: result.state, stopReason: result.stopReason });
 		}
 	}
 
-	/** Forked sessions copy the entries, so only records made by this session id count. */
+	/** Forked sessions copy the entries, so only records made by this session id count; the latest end record wins. */
 	function restoreChildRecords(ctx: ExtensionContext): void {
 		childRecords.clear();
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -2265,7 +2267,7 @@ export default function (pi: ExtensionAPI) {
 		if (record.state !== undefined) throw new Error(`Child ${params.index} of ${jobId} already finished as ${record.state} and cannot be resumed`);
 		if (!interruptedChildren().includes(record)) throw new Error(`Child ${params.index} of ${jobId} is still running; use action=send to give it input`);
 		if (!record.sessionFile || !fs.existsSync(record.sessionFile)) {
-			throw new Error(`Child ${params.index} of ${jobId} has no saved session${record.sessionFile ? ` at ${record.sessionFile}` : ""}; it stopped before its first reply. Launch the task again.`);
+			throw new Error(`Child ${params.index} of ${jobId} has no saved session${record.sessionFile ? ` at ${record.sessionFile}` : ""}; it stopped before its task was sent. Launch the task again.`);
 		}
 		if (childSessionLeases.has(childSessionLeaseKey(record.sessionFile))) {
 			throw new Error(`Child ${params.index} of ${jobId} is still stopping from an earlier run in this process; try again once it stops`);
@@ -2659,6 +2661,18 @@ export default function (pi: ExtensionAPI) {
 		if (pendingLimitWarning && ctx.hasUI) {
 			ctx.ui.notify(pendingLimitWarning, "warning");
 			pendingLimitWarning = undefined;
+		}
+		refreshWidget();
+	});
+
+	// Tree navigation moves the branch the records come from. Jobs launched on this branch
+	// write the records they skipped while it wasn't current; others stay in memory only.
+	pi.on("session_tree", async (_event, ctx) => {
+		if (!ownsContext(ctx)) return;
+		restoreChildRecords(ctx);
+		for (const job of jobs.values()) {
+			if (!isCurrentOwner(job)) continue;
+			for (let index = 0; index < job.results.length; index++) syncChildRecord(job, index, job.results[index]);
 		}
 		refreshWidget();
 	});

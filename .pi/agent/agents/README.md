@@ -111,8 +111,11 @@ When the parent quits, crashes, or reloads while a child is unfinished, there's
 no final state on record. Resuming that parent session (or `/reload`) lists the
 child as `interrupted` in `subagent` status, the `/agents` inspector, and the
 `interrupted` list in the status snapshot file. Records only count in the
-session that made them, so a fork doesn't inherit them. Interrupted children
-never restart on their own.
+session that made them, so a fork doesn't inherit them. They also follow the
+current branch: after `/tree` navigation, only children launched on that branch
+are listed. A child launched on another branch keeps running and its result
+still arrives, but its records are written only while its launch is on the
+current branch. Interrupted children never restart on their own.
 
 `subagent action=resume id=<job> index=<n>` continues one interrupted child. It
 reopens the child's native session, sets the child up the same way a launch
@@ -123,8 +126,8 @@ child runs as a new background job under the normal limits, its turn count
 starts over, and its completion arrives like any other. A resumed chain step
 runs alone; later steps don't. Resuming fails if the child already finished or
 was stopped by the user, was already resumed, its agent no longer exists, or it
-stopped before writing its session file (Pi writes that file after the first
-assistant reply). If the resumed run itself fails, it's finished and can't be
+stopped before writing its session file (Pi writes that file when it sends the
+child its task). If the resumed run itself fails, it's finished and can't be
 resumed again.
 
 Parent shutdown waits ten seconds for children to stop, then lets go of them,

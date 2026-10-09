@@ -179,7 +179,7 @@ export function createChildSession(cwd: string, ownerId: string, ownerFile?: str
 	const manager = SessionManager.create(cwd, directory);
 	const file = manager.getSessionFile();
 	if (!file) throw new Error("Pi did not allocate a persistent child session path");
-	// Pi writes this path on the first assistant message, not at allocation.
+	// Pi writes this path once the first user message (the task) is appended, not at allocation.
 	return manager;
 }
 
@@ -196,7 +196,7 @@ export function openChildSession(file: string, cwd: string, ownerId: string, own
 export async function savedChildSessions(cwd: string, ownerId: string, ownerFile?: string): Promise<string> {
 	const directory = childSessionDir(cwd, ownerId, ownerFile);
 	const sessions = await SessionManager.list(cwd, directory);
-	return terminalText(`Native child sessions (read-only paths; no live handles restored):\n${directory}\n\n${sessions.map((session) => `${session.name ?? session.id}\n${session.path}`).join("\n\n") || "No saved transcripts. Pi creates files after the first assistant message."}\n\nInspect JSONL as data; do not open a live child with pi --session.`);
+	return terminalText(`Native child sessions (read-only paths; no live handles restored):\n${directory}\n\n${sessions.map((session) => `${session.name ?? session.id}\n${session.path}`).join("\n\n") || "No saved transcripts. Pi creates a file once a child's task is sent."}\n\nInspect JSONL as data; do not open a live child with pi --session.`);
 }
 
 export interface InspectorItem {
