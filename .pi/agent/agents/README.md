@@ -83,6 +83,22 @@ Nesting depth is fixed at 1. Children load with `noExtensions` plus only the
 guard extensions (and a prompt helper under Gondolin), so they never get the
 `subagent` tool and can't launch children of their own.
 
+## Completion delivery
+
+Finished children reach the parent as hidden follow-up messages. A
+multi-task job wakes the parent once, when every child is done; a parallel job
+with a straggler also reports the finished children after two minutes. A job's
+children always arrive together in one message.
+
+While the parent is busy, Pi only queues the message, and clearing the queue
+(for example, pressing Escape) drops it. The extension keeps each completion
+until it shows up in the parent session file and checks again when a parent run
+ends. A completion the session never received is appended, without waking the
+model, when the parent session ends or reloads. It isn't re-sent while the
+session stays open, because a message still waiting in Pi's queue would arrive
+twice; `subagent action=status` shows the result in the meantime. If Pi exits
+while the parent model is still streaming, Pi can drop that final append too.
+
 ## Interrupted children
 
 The parent session records each child it launches as small custom entries:

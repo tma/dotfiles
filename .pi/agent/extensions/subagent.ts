@@ -1347,7 +1347,9 @@ export default function (pi: ExtensionAPI) {
 	const pendingCompletions = new Set<string>();
 	/** Children recorded in the current session's branch, keyed like completions. */
 	const childRecords = new Map<string, ChildRecord>();
-	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
+	const pendingCompletionSnapshots = new Map<string, { jobId: string; index: number; result: SingleResult }>();
+	/** Sent but not yet seen in the parent session; Pi may drop a queued message, so the snapshot stays. */
+	const sentCompletions = new Set<string>();
 	const deliveredCompletions = new Set<string>();
 	const groupStragglerTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	const stragglerDueJobs = new Set<string>();
@@ -1358,6 +1360,7 @@ export default function (pi: ExtensionAPI) {
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
 	const MAX_STATUS_OUTPUT_BYTES = 64 * 1024;
+	const COMPLETION_MESSAGE = "subagent-completion";
 
 	function isCurrentOwner(job: BackgroundJob): boolean {
 		return job.ownerSessionId === currentSessionId && job.ownerSessionFile === currentSessionFile;
@@ -1588,13 +1591,14 @@ export default function (pi: ExtensionAPI) {
 		currentCtx.ui.setStatus("subagents", undefined);
 	}
 
-	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string, wake = true): boolean {
+	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string, wake = true, details?: unknown): boolean {
 		if (shuttingDown || ownerSessionId !== currentSessionId || ownerSessionFile !== currentSessionFile) return false;
 		try {
 			pi.sendMessage({
 				customType,
 				content: [{ type: "text", text }],
 				display: false,
+				details,
 			}, { triggerTurn: wake, deliverAs: "followUp" });
 			return true;
 		} catch {
@@ -1707,49 +1711,37 @@ export default function (pi: ExtensionAPI) {
 			group.keys.push(key);
 			groups.set(job.id, group);
 		}
-		for (const { job } of groups.values()) {
-			if (job.results.every(isTerminalResult)) clearGroupStraggler(job.id);
-			else stragglerDueJobs.delete(job.id);
-		}
 
 		const separator = "\n\n---\n\n";
 		const maxBytes = MAX_STATUS_OUTPUT_BYTES;
-		// Size each block so a job's group fits one message and wakes the parent once.
-		const entries: Array<{ key: string; ownerSessionId: string; ownerSessionFile?: string; block: string }> = [];
+		// Size each block so a job's group fits one message, and pack whole groups so a job wakes the parent once.
+		type Batch = { ownerSessionId: string; ownerSessionFile?: string; jobs: BackgroundJob[]; keys: string[]; text: string };
+		const batches: Batch[] = [];
+		let current: Batch | null = null;
 		for (const { job, keys } of groups.values()) {
 			const blockBytes = Math.min(Math.floor(maxBytes / 2), Math.floor(maxBytes / keys.length) - separator.length);
-			for (const key of keys) {
+			const text = keys.map((key) => {
 				const snap = pendingCompletionSnapshots.get(key)!;
-				entries.push({
-					key,
-					ownerSessionId: snap.ownerSessionId,
-					ownerSessionFile: snap.ownerSessionFile,
-					block: formatChildCompletion(job, snap.index, snap.result, blockBytes),
-				});
-			}
-		}
-		if (entries.length === 0) return;
-
-		const batches: Array<{ ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string }> = [];
-		let current: { ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string } | null = null;
-		for (const entry of entries) {
-			const nextText = current ? `${current.text}${separator}${entry.block}` : entry.block;
-			if (current && (Buffer.byteLength(nextText) > maxBytes || current.ownerSessionId !== entry.ownerSessionId || current.ownerSessionFile !== entry.ownerSessionFile)) {
+				return formatChildCompletion(job, snap.index, snap.result, blockBytes);
+			}).join(separator);
+			const nextText = current ? `${current.text}${separator}${text}` : text;
+			if (current && (Buffer.byteLength(nextText) > maxBytes || current.ownerSessionId !== job.ownerSessionId || current.ownerSessionFile !== job.ownerSessionFile)) {
 				batches.push(current);
 				current = null;
 			}
 			if (!current) {
-				current = { ownerSessionId: entry.ownerSessionId, ownerSessionFile: entry.ownerSessionFile, keys: [entry.key], text: entry.block };
+				current = { ownerSessionId: job.ownerSessionId, ownerSessionFile: job.ownerSessionFile, jobs: [job], keys: [...keys], text };
 			} else {
-				current.keys.push(entry.key);
-				current.text = `${current.text}${separator}${entry.block}`;
+				current.jobs.push(job);
+				current.keys.push(...keys);
+				current.text = nextText;
 			}
 		}
 		if (current) batches.push(current);
 
 		let retry = false;
 		for (const batch of batches) {
-			const sent = sendCoordinatorMessage(batch.ownerSessionId, batch.ownerSessionFile, "subagent-completion", batch.text, !final);
+			const sent = sendCoordinatorMessage(batch.ownerSessionId, batch.ownerSessionFile, COMPLETION_MESSAGE, batch.text, !final, { completionKeys: batch.keys });
 			if (!sent) {
 				for (const key of batch.keys) {
 					const snap = pendingCompletionSnapshots.get(key);
@@ -1764,23 +1756,38 @@ export default function (pi: ExtensionAPI) {
 				}
 				continue;
 			}
-			for (const key of batch.keys) {
-				deliveredCompletions.add(key);
-				pendingCompletionSnapshots.delete(key);
+			for (const key of batch.keys) sentCompletions.add(key);
+			// Readiness clears only after a send, so a failed straggler flush stays ready for the retry.
+			for (const job of batch.jobs) {
+				if (job.results.every(isTerminalResult)) clearGroupStraggler(job.id);
+				else stragglerDueJobs.delete(job.id);
 			}
 		}
 
 		if (retry && !completionTimer) completionTimer = setTimeout(() => flushCompletions(), 500);
 	}
 
+	/** A completion counts as delivered once the parent session holds its message, not when it is queued. */
+	function acknowledgeCompletions(ctx: ExtensionContext): void {
+		if (sentCompletions.size === 0) return;
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "custom_message" || entry.customType !== COMPLETION_MESSAGE) continue;
+			const keys = (entry.details as { completionKeys?: unknown } | undefined)?.completionKeys;
+			if (!Array.isArray(keys)) continue;
+			for (const key of keys) {
+				if (typeof key !== "string" || !sentCompletions.delete(key)) continue;
+				deliveredCompletions.add(key);
+				pendingCompletionSnapshots.delete(key);
+			}
+		}
+	}
+
 	function queueCompletion(job: BackgroundJob, index: number, result: SingleResult): void {
 		if (shuttingDown || !isCurrentOwner(job) || !isTerminalResult(result)) return;
 		const key = completionKey(job.id, index);
-		if (deliveredCompletions.has(key)) return;
+		if (deliveredCompletions.has(key) || sentCompletions.has(key)) return;
 		pendingCompletionSnapshots.set(key, {
 			jobId: job.id,
-			ownerSessionId: job.ownerSessionId,
-			ownerSessionFile: job.ownerSessionFile,
 			index,
 			result: cloneResultSnapshot(result),
 		});
@@ -1876,6 +1883,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		for (const key of [...pendingCompletionSnapshots.keys()]) {
 			if (key.startsWith(`${jobId}:`)) pendingCompletionSnapshots.delete(key);
+		}
+		for (const key of [...sentCompletions]) {
+			if (key.startsWith(`${jobId}:`)) sentCompletions.delete(key);
 		}
 		for (const key of [...deliveredCompletions]) {
 			if (key.startsWith(`${jobId}:`)) deliveredCompletions.delete(key);
@@ -2560,6 +2570,7 @@ export default function (pi: ExtensionAPI) {
 		clearGroupStragglers();
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
+		sentCompletions.clear();
 		for (const job of activeJobs()) {
 			job.parentInterrupted = true;
 			markJobStopping(job, "Parent session replaced");
@@ -2599,7 +2610,17 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
+	pi.on("agent_end", async (_event, ctx) => {
+		if (ownsContext(ctx)) acknowledgeCompletions(ctx);
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// A cleared or abandoned queue drops sent completions; append what the session never received.
+		if (ownsContext(ctx)) {
+			acknowledgeCompletions(ctx);
+			for (const key of sentCompletions) pendingCompletions.add(key);
+			sentCompletions.clear();
+		}
 		flushCompletions(true);
 		shuttingDown = true;
 		inspectorController?.abort();
