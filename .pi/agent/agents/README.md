@@ -43,9 +43,10 @@ maxTurns: 40 # positive integer; defaults to subagents.defaultMaxTurns (80)
 
 A turn is one model response plus its tool calls. When a child reaches the
 limit, it gets one steering message telling it to stop new work and give its
-final answer, including what's unfinished. If it is still running three turns
-later, it's aborted and reported as failed with `turn limit reached`. The
-parent still receives the last output the child wrote. A value that isn't a
+final answer, including what's unfinished. If it is still calling tools three
+turns later, it's aborted and reported as failed with `turn limit reached`. A
+turn that answers without calling tools ends the child normally. The parent
+still receives the last non-empty output the child wrote. A value that isn't a
 positive integer falls back to the default.
 
 ## Limits

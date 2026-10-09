@@ -462,16 +462,20 @@ function diagnosticParts(result: SingleResult): string[] {
 	return parts;
 }
 
-function getFinalOutput(messages: Message[]): string {
+/** The newest non-blank assistant text; an aborted turn can end with an empty assistant message. */
+function findFinalText(messages: Message[]): { index: number; text: string } | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
-		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text") return part.text;
-			}
+		if (msg.role !== "assistant") continue;
+		for (const part of msg.content) {
+			if (part.type === "text" && part.text.trim()) return { index: i, text: part.text };
 		}
 	}
-	return "";
+	return undefined;
+}
+
+function getFinalOutput(messages: Message[]): string {
+	return findFinalText(messages)?.text ?? "";
 }
 
 function getToolCallSummary(messages: Message[]): string[] {
@@ -980,7 +984,8 @@ async function runAgent(
 				if (!turnLimitSteered && turnCount >= maxTurns) {
 					turnLimitSteered = true;
 					session?.steer(TURN_LIMIT_MESSAGE).catch((error) => recordControlError("Turn limit steer", error));
-				} else if (turnLimitSteered && !turnLimitError && turnCount >= maxTurns + MAX_TURNS_GRACE) {
+				} else if (turnLimitSteered && !turnLimitError && turnCount >= maxTurns + MAX_TURNS_GRACE && turnCallsTools(event.message)) {
+					// A turn without tool calls is the child's final answer, so only stop one still working.
 					turnLimitError = `Turn limit reached: stopped after ${turnCount} turns (limit ${maxTurns} plus ${MAX_TURNS_GRACE} to wrap up)`;
 					session?.abort().catch((error) => recordControlError("Turn limit abort", error));
 				}
@@ -1089,22 +1094,25 @@ async function runAgent(
 	return result;
 }
 
-/** Replaces the final assistant message with a capped copy; the child session keeps the original. */
+function turnCallsTools(message: Message | undefined): boolean {
+	return message?.role === "assistant" && message.content.some((part) => part.type === "toolCall");
+}
+
+/** Replaces the message `getFinalOutput()` reads with a capped copy; the child session keeps the original. */
 function capFinalOutput(messages: Message[], maxLines: number): void {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message.role !== "assistant") continue;
-		messages[index] = {
-			...message,
-			content: message.content.map((part) => {
-				if (part.type !== "text") return part;
-				const lines = part.text.split("\n");
-				if (lines.length <= maxLines) return part;
-				return { ...part, text: `${lines.slice(0, maxLines).join("\n")}\n\n[Truncated: ${lines.length} → ${maxLines} lines]` };
-			}),
-		};
-		return;
-	}
+	const found = findFinalText(messages);
+	if (!found) return;
+	const message = messages[found.index];
+	if (message.role !== "assistant") return;
+	messages[found.index] = {
+		...message,
+		content: message.content.map((part) => {
+			if (part.type !== "text") return part;
+			const lines = part.text.split("\n");
+			if (lines.length <= maxLines) return part;
+			return { ...part, text: `${lines.slice(0, maxLines).join("\n")}\n\n[Truncated: ${lines.length} → ${maxLines} lines]` };
+		}),
+	};
 }
 
 // ─── Truncation ─────────────────────────────────────────────────────────────
