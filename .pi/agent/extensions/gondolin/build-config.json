@@ -21,7 +21,17 @@
 			"git",
 			"github-cli",
 			"ripgrep",
-			"jq"
+			"jq",
+			"build-base",
+			"gcc",
+			"musl-dev",
+			"linux-headers",
+			"pkgconf",
+			"cmake",
+			"python3-dev",
+			"openssl-dev",
+			"libffi-dev",
+			"zlib-dev"
 		],
 		"initramfsPackages": [],
 		"krunfwVersion": "v5.2.1"

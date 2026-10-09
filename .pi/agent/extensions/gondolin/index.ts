@@ -19,7 +19,7 @@
  *   - Node.js >= 23.6.0 for @earendil-works/gondolin
  *   - QEMU installed (for example, `brew install qemu` on macOS)
  *
- * Custom guest image (git, gh, ripgrep, jq):
+ * Custom guest image (git, gh, ripgrep, jq, Alpine build toolchain):
  *   npm install --ignore-scripts --prefix ~/.pi/agent/extensions/gondolin
  *   npm run build-image --prefix ~/.pi/agent/extensions/gondolin
  */
