@@ -1,5 +1,6 @@
 ---
 name: coder
+maxTurns: 150
 description: Implements code changes — edits, new files, refactors, bug fixes. Has full read/write access. Writes clean, reviewable code.
 tools: read,bash,edit,write,grep,find,ls
 model: auto:balanced
