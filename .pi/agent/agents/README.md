@@ -11,6 +11,14 @@ family: claude-opus  # optional normalized token-sequence constraint
 
 Explicit `provider/model[:thinking]` pins still work. A malformed or missing pin, unavailable authentication, or an empty constrained automatic selection fails the child. Automatic and pinned policies never fall back to the parent model. An older agent with no model policy inherits the parent model for compatibility, and the selection reason says so.
 
+`model` can also be an ordered, comma-separated fallback list of pins and automatic policies:
+
+```yaml
+model: github-copilot/claude-opus-4.5, xai/grok-4, auto:strong
+```
+
+Each candidate is tried in order with the same `thinking`, `provider`, and `family` constraints, and the first one that exists in the catalog, matches the constraints, and authenticates wins. That's the same availability check a single value gets; subagents don't consult `enabledModels` or `scopedModels` (see below). The `selection:` line in status and the inspector names the winning candidate and why earlier ones were rejected. If no candidate works, the child fails with each candidate's rejection reason. A malformed candidate or an empty entry fails the launch instead of being skipped. The ten-second selection deadline covers the whole list. The same list syntax works for the `model` launch parameter.
+
 The `subagent` tool accepts `model`, `thinking`, `provider`, and `family` on a single launch, as shared defaults for parallel tasks or chains, and on each task or chain step. Precedence is step/task override, shared launch default, then agent frontmatter. Thinking uses the same order, followed by a pin's `:thinking` suffix and then the parent level. Pi clamps the requested level to the selected model's supported levels and reports both the effective level and the reason.
 
 Subagent policies intentionally use all available provider catalogs, independently of the main session's `enabledModels` / `scopedModels` cycling list. Restrict subagents with `provider`, `family`, or explicit pins.

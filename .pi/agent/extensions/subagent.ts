@@ -37,6 +37,7 @@ import {
 	AUTO_POLICIES,
 	CatalogRefreshCoordinator,
 	mergeModelPolicy,
+	modelCandidates,
 	resolveModelSelection,
 	THINKING_LEVELS,
 	waitWithDeadline,
@@ -502,7 +503,8 @@ const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024;
 const catalogRefreshers = new WeakMap<ExtensionContext["modelRegistry"], CatalogRefreshCoordinator>();
 
 async function refreshModelCatalog(ctx: ExtensionContext, policy: ModelPolicy, signal?: AbortSignal): Promise<{ notice?: string }> {
-	if (!AUTO_POLICIES.some((name) => policy.model === `auto:${name}`)) {
+	const candidates = policy.model === undefined ? [] : modelCandidates(policy.model);
+	if (!candidates.some((candidate) => AUTO_POLICIES.some((name) => candidate === `auto:${name}`))) {
 		const error = ctx.modelRegistry.getError();
 		return { notice: error ? `catalog may be stale (${error})` : undefined };
 	}
@@ -1203,7 +1205,7 @@ export default function (pi: ExtensionAPI) {
 
 	const CWD_DESCRIPTION = "Working directory. Omit to inherit the parent workspace. Under Gondolin, omit or use /workspace; other paths are rejected.";
 	const ModelPolicyFields = {
-		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin" })),
+		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin, or a comma-separated fallback list of them; the first available candidate wins" })),
 		thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Requested thinking level" })),
 		provider: Type.Optional(Type.String({ description: "Exact provider constraint" })),
 		family: Type.Optional(Type.String({ description: "Normalized model-family token sequence constraint, such as claude-opus" })),

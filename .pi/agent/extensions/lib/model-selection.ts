@@ -272,14 +272,47 @@ function describeCost(model: CatalogModel): string {
 	return cost === undefined ? "catalog price unknown" : cost === 0 ? "catalog price is zero" : `relative catalog cost ${cost}`;
 }
 
+/** Splits a comma-separated fallback list; a value without commas stays a single policy. */
+export function modelCandidates(value: string): string[] {
+	if (!value.includes(",")) return [value];
+	const candidates = value.split(",").map((candidate) => candidate.trim());
+	if (candidates.some((candidate) => !candidate)) throw new Error(`Malformed model list "${value}": empty candidate`);
+	return candidates;
+}
+
 export function resolveModelSelection<TModel extends CatalogModel>(
 	options: SelectionOptions<TModel>,
 ): Promise<SelectionResult<TModel>> {
-	return waitWithDeadline(async (signal) => selectModel({ ...options, signal }), {
+	return waitWithDeadline(async (signal) => selectFirstCandidate({ ...options, signal }), {
 		signal: options.signal,
 		timeoutMs: options.timeoutMs,
 		label: "Model selection/authentication",
 	});
+}
+
+/** Tries each listed candidate in order; the first that resolves and authenticates wins. */
+async function selectFirstCandidate<TModel extends CatalogModel>(
+	options: SelectionOptions<TModel>,
+): Promise<SelectionResult<TModel>> {
+	const candidates = options.policy.model === undefined ? [] : modelCandidates(options.policy.model);
+	if (candidates.length <= 1) return selectModel(options);
+	// A typo in any candidate is a configuration error, not a reason to fall through.
+	for (const candidate of candidates) parseModelPolicy(candidate);
+	const rejected: string[] = [];
+	for (const [index, candidate] of candidates.entries()) {
+		try {
+			const selection = await selectModel({ ...options, policy: { ...options.policy, model: candidate }, catalogNotice: undefined });
+			const skipped = rejected.length > 0 ? `; rejected ${rejected.join("; ")}` : "";
+			return {
+				...selection,
+				reason: `candidate ${index + 1}/${candidates.length} ${candidate}: ${selection.reason}${skipped}${catalogSuffix(options.catalogNotice)}`,
+			};
+		} catch (error) {
+			options.signal?.throwIfAborted();
+			rejected.push(`${candidate} (${error instanceof Error ? error.message : String(error)})`);
+		}
+	}
+	throw new Error(`No model candidate is available: ${rejected.join("; ")}${catalogSuffix(options.catalogNotice)}`);
 }
 
 async function selectModel<TModel extends CatalogModel>(
