@@ -9,12 +9,14 @@ import { Box, matchesKey, SelectList, truncateToWidth, wrapTextWithAnsi } from "
 const DETAIL_BYTES = 16 * 1024;
 const LIVE_TEXT_BYTES = 4096;
 
-export function boundedText(text: string, bytes = DETAIL_BYTES): string {
+/** Keeps the head of `text` within `bytes`, cut on a character boundary, and ends it with `marker`. */
+export function boundedText(text: string, bytes = DETAIL_BYTES, marker = "[truncated]"): string {
 	if (Buffer.byteLength(text) <= bytes) return text;
 	const buffer = Buffer.from(text);
-	let end = Math.max(0, bytes - 32);
+	const suffix = `\n${marker}`;
+	let end = Math.max(0, bytes - Buffer.byteLength(suffix));
 	while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
-	return `${buffer.subarray(0, end).toString("utf8")}\n[truncated]`;
+	return `${buffer.subarray(0, end).toString("utf8")}${suffix}`;
 }
 
 export function boundedTail(text: string, bytes: number): string {

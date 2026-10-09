@@ -40,6 +40,7 @@ import {
 } from "./lib/model-selection.js";
 import { heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
 import {
+	boundedText,
 	childDetail,
 	createChildSession,
 	detailPage,
@@ -72,6 +73,8 @@ interface AgentConfig extends ModelPolicy {
 interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
+	/** Agent directories or files that exist but could not be read. */
+	warnings: string[];
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -79,14 +82,15 @@ function positiveInteger(value: unknown): number | undefined {
 	return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+function loadAgentsFromDir(dir: string, source: "user" | "project", warnings: string[]): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 	if (!fs.existsSync(dir)) return agents;
 
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
+	} catch (error) {
+		warnings.push(`Cannot read agent directory ${dir}: ${error instanceof Error ? error.message : String(error)}`);
 		return agents;
 	}
 
@@ -98,7 +102,8 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");
-		} catch {
+		} catch (error) {
+			warnings.push(`Cannot read agent file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
 			continue;
 		}
 
@@ -147,8 +152,9 @@ function discoverAgents(cwd: string, scope: AgentScope, projectTrusted: boolean)
 	// Untrusted projects must not advertise or override agents, including from ancestor dirs.
 	const projectAgentsDir = projectTrusted && scope !== "user" ? findNearestProjectAgentsDir(cwd) : null;
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const warnings: string[] = [];
+	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user", warnings);
+	const projectAgents = !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project", warnings);
 
 	// Project agents override user agents with the same name
 	const agentMap = new Map<string, AgentConfig>();
@@ -157,7 +163,7 @@ function discoverAgents(cwd: string, scope: AgentScope, projectTrusted: boolean)
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
 	}
 
-	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+	return { agents: Array.from(agentMap.values()), projectAgentsDir, warnings };
 }
 
 function formatAgentCatalogForPrompt(agents: AgentConfig[]): string {
@@ -651,12 +657,6 @@ async function getChildModelRuntime(ctx: ExtensionContext, signal?: AbortSignal)
 	return runtime;
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-	const bytes = Buffer.from(value);
-	if (bytes.byteLength <= maxBytes) return value;
-	return `${bytes.subarray(0, Math.max(0, maxBytes - 32)).toString("utf8")}\n[truncated]`;
-}
-
 function messageBytes(message: Message): number {
 	try {
 		return Buffer.byteLength(JSON.stringify(message));
@@ -676,7 +676,7 @@ function compactTranscriptMessage(message: Message): Message {
 		: "";
 	return {
 		role: message.role,
-		content: [{ type: "text", text: truncateUtf8(text || "[oversized transcript entry omitted]", MAX_CHILD_TRANSCRIPT_BYTES - 1024) }],
+		content: [{ type: "text", text: boundedText(text || "[oversized transcript entry omitted]", MAX_CHILD_TRANSCRIPT_BYTES - 1024) }],
 		timestamp: (message as any).timestamp ?? Date.now(),
 	} as Message;
 }
@@ -997,22 +997,26 @@ async function runAgent(
 		abortListener?.();
 		opts.onControlClosed?.(controlIndex);
 		unsubscribe?.();
-		await shutdownChildSession(session);
-		if (childSession) {
-			try {
-				childSession.appendCustomEntry("subagent-outcome", { state: result.state, error: result.errorMessage });
-				result.sessionSaved = Boolean(result.sessionFile && fs.existsSync(result.sessionFile));
-			} catch (error) {
-				result.persistenceError = `Native session may be incomplete: ${error instanceof Error ? error.message : String(error)}`;
-				result.errorMessage = result.persistenceError;
-				result.state = "failed";
-				result.exitCode = 1;
+		try {
+			await shutdownChildSession(session);
+			if (childSession) {
+				try {
+					childSession.appendCustomEntry("subagent-outcome", { state: result.state, error: result.errorMessage });
+					result.sessionSaved = Boolean(result.sessionFile && fs.existsSync(result.sessionFile));
+				} catch (error) {
+					result.persistenceError = `Native session may be incomplete: ${error instanceof Error ? error.message : String(error)}`;
+					result.errorMessage = result.persistenceError;
+					result.state = "failed";
+					result.exitCode = 1;
+				}
 			}
+		} finally {
+			// A throwing dispose must not leave the session leased or the slot taken.
+			if (result.inspection) finishInspection(result.inspection);
+			releaseSlot?.();
+			if (sessionLease) childSessionLeases.delete(sessionLease);
+			emitUpdate();
 		}
-		if (result.inspection) finishInspection(result.inspection);
-		releaseSlot?.();
-		if (sessionLease) childSessionLeases.delete(sessionLease);
-		emitUpdate();
 	}
 
 	return result;
@@ -1109,14 +1113,14 @@ function renderCollapsedStatus(
 		lines.push(`${theme.fg("toolTitle", theme.bold("status detail"))} ${theme.fg("muted", header)}`);
 		for (const diagnostic of statusDiagnostics(statusText, details).slice(0, 2)) lines.push(theme.fg("error", diagnostic));
 		lines.push(theme.fg("dim", "Expand to view the detail page."));
-		return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+		return boundedText(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
 	}
 
 	if (!details || details.results.length === 0) {
 		const summary = safeOneLine(statusText || "(no output)", 220);
 		lines.push(`${theme.fg("toolTitle", theme.bold("status"))} ${theme.fg("muted", summary)}`);
 		if (statusText.includes("\n")) lines.push(theme.fg("dim", "Expand for full status output."));
-		return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+		return boundedText(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
 	}
 
 	lines.push(`${theme.fg("toolTitle", theme.bold("status"))} ${theme.fg("muted", summarizeStatusCounts(details.results))}`);
@@ -1128,7 +1132,7 @@ function renderCollapsedStatus(
 	}
 	for (const diagnostic of statusDiagnostics(statusText, details).slice(0, 2)) lines.push(theme.fg("error", diagnostic));
 	lines.push(theme.fg("dim", "Expand for full status output."));
-	return truncateUtf8(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
+	return boundedText(lines.join("\n"), COLLAPSED_STATUS_MAX_BYTES);
 }
 
 function renderCollapsedResult(r: SingleResult, theme: any): string {
@@ -1227,8 +1231,12 @@ export default function (pi: ExtensionAPI) {
 	let shuttingDown = false;
 	let inspectorController: AbortController | undefined;
 	let limits: SubagentLimits = { ...DEFAULT_LIMITS };
-	/** Settings problems not yet shown; without a UI they ride along with the next launch result. */
-	let pendingLimitWarning: string | undefined;
+	/** Warnings not yet shown; without a UI they ride along with the next launch result. */
+	let pendingWarnings: string[] = [];
+	const reportedWarnings = new Set<string>();
+	let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+	let snapshotWrittenAt = 0;
+	let snapshotFailing = false;
 	const pendingCompletions = new Set<string>();
 	/** Children recorded in the current session's branch, keyed like completions. */
 	const childRecords = new Map<string, ChildRecord>();
@@ -1245,6 +1253,7 @@ export default function (pi: ExtensionAPI) {
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
 	const MAX_STATUS_OUTPUT_BYTES = 64 * 1024;
+	const SNAPSHOT_INTERVAL_MS = 500;
 	const COMPLETION_MESSAGE = "subagent-completion";
 
 	function isCurrentOwner(job: BackgroundJob): boolean {
@@ -1411,7 +1420,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (job.deliveryFailures.length > 0) lines.push(`input delivery: ${job.deliveryFailures.slice(-3).join("; ")}`);
 		if (job.error) lines.push(`error: ${safeOneLine(job.error, 500)}`);
-		return truncateUtf8(lines.join("\n"), MAX_STATUS_OUTPUT_BYTES);
+		return boundStatusOutput(lines.join("\n"));
 	}
 
 	function activeJobs(): BackgroundJob[] {
@@ -1426,6 +1435,11 @@ export default function (pi: ExtensionAPI) {
 		if (exact && isCurrentOwner(exact)) return exact;
 		const matches = [...jobs.values()].filter((job) => isCurrentOwner(job) && job.id.startsWith(id));
 		return matches.length === 1 ? matches[0] : null;
+	}
+
+	/** Model-facing status and coordinator text share one byte budget. */
+	function boundStatusOutput(text: string): string {
+		return boundedText(text, MAX_STATUS_OUTPUT_BYTES);
 	}
 
 	function writeJobsSnapshot(): void {
@@ -1467,17 +1481,47 @@ export default function (pi: ExtensionAPI) {
 			});
 			fs.renameSync(tempFile, jobsFile);
 			fs.chmodSync(jobsFile, 0o600);
-		} catch {
+			snapshotFailing = false;
+		} catch (error) {
 			try { fs.unlinkSync(tempFile); } catch {}
+			// One warning per failing spell; every update retries the write.
+			if (!snapshotFailing) reportWarning(`Subagent status panel not updated: cannot write ${jobsFile}: ${error instanceof Error ? error.message : String(error)}`);
+			snapshotFailing = true;
 		}
+		snapshotWrittenAt = Date.now();
 	}
 
-	function refreshWidget(): void {
-		writeJobsSnapshot();
-		if (!currentCtx?.hasUI) return;
-		// Keep agent progress only in the right-hand status panel.
-		currentCtx.ui.setWidget("subagents", undefined);
-		currentCtx.ui.setStatus("subagents", undefined);
+	function cancelSnapshotWrite(): void {
+		if (snapshotTimer) clearTimeout(snapshotTimer);
+		snapshotTimer = null;
+	}
+
+	/** Streaming updates write the status panel snapshot at most every 500 ms; `flush` writes terminal states at once. */
+	function refreshSnapshot(flush = false): void {
+		const wait = snapshotWrittenAt + SNAPSHOT_INTERVAL_MS - Date.now();
+		if (flush || wait <= 0) {
+			cancelSnapshotWrite();
+			writeJobsSnapshot();
+			return;
+		}
+		snapshotTimer ??= setTimeout(() => {
+			snapshotTimer = null;
+			writeJobsSnapshot();
+		}, wait);
+	}
+
+	/** Shows each distinct warning once per session; without a UI it rides along with the next launch result. */
+	function reportWarning(message: string): void {
+		if (reportedWarnings.has(message)) return;
+		reportedWarnings.add(message);
+		if (currentCtx?.hasUI) currentCtx.ui.notify(message, "warning");
+		else pendingWarnings.push(message);
+	}
+
+	function discoverAgentsFor(ctx: ExtensionContext): AgentConfig[] {
+		const { agents, warnings } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
+		for (const warning of warnings) reportWarning(warning);
+		return agents;
 	}
 
 	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string, wake = true, details?: unknown): boolean {
@@ -1494,13 +1538,6 @@ export default function (pi: ExtensionAPI) {
 			// Session replacement can invalidate a background callback.
 			return false;
 		}
-	}
-
-	function boundCoordinatorOutput(text: string): string {
-		const bytes = Buffer.from(text);
-		if (bytes.byteLength <= MAX_STATUS_OUTPUT_BYTES) return text;
-		const keep = Math.max(0, MAX_STATUS_OUTPUT_BYTES - 160);
-		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Truncated coordinator update: showing first ${keep} of ${bytes.byteLength} bytes]`;
 	}
 
 	function completionKey(jobId: string, index: number): string {
@@ -1521,13 +1558,6 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	function boundCompletionBlock(text: string, maxBytes: number): string {
-		const bytes = Buffer.from(text);
-		if (bytes.byteLength <= maxBytes) return text;
-		const keep = Math.max(0, maxBytes - 192);
-		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Child completion truncated. Use subagent action=status view=detail with id and index; the native session holds the full transcript.]`;
-	}
-
 	function formatChildCompletion(job: BackgroundJob, index: number, result: SingleResult, maxBytes: number): string {
 		const step = result.step ? `step ${result.step}` : `child ${index + 1}/${job.total}`;
 		const output = (getFinalOutput(result.messages) || "").trim() || "(no output)";
@@ -1545,7 +1575,7 @@ export default function (pi: ExtensionAPI) {
 			lines.push("error:");
 			lines.push(errors.join("; "));
 		}
-		return boundCompletionBlock(lines.join("\n"), maxBytes);
+		return boundedText(lines.join("\n"), maxBytes, "\n[Child completion truncated. Use subagent action=status view=detail with id and index; the native session holds the full transcript.]");
 	}
 
 	/** Multi-task jobs wake the parent once when every child is done, or for parallel stragglers. */
@@ -1710,7 +1740,7 @@ export default function (pi: ExtensionAPI) {
 				notices.push({ index, activityAt, line: `child ${index}: ${formatChildIdentity(result)} has had no activity for ${formatDuration(quietMs)}` });
 			}
 			if (notices.length === 0) continue;
-			const text = boundCoordinatorOutput([
+			const text = boundStatusOutput([
 				`${job.id} · ${job.mode} · possible stall`,
 				...notices.map((notice) => notice.line),
 				"Quiet does not always mean stuck. Inspect with subagent action=status view=detail before steering or stopping.",
@@ -1730,15 +1760,11 @@ export default function (pi: ExtensionAPI) {
 		stallTimer = null;
 	}
 
-	function boundStatusOutput(text: string): string {
-		return truncateUtf8(text, MAX_STATUS_OUTPUT_BYTES);
-	}
-
 	function recordDeliveryFailure(job: BackgroundJob, message: string): void {
 		job.deliveryFailures.push(safeOneLine(message));
 		if (job.deliveryFailures.length > 20) job.deliveryFailures.shift();
 		job.updatedAt = Date.now();
-		if (isCurrentOwner(job)) refreshWidget();
+		if (isCurrentOwner(job)) refreshSnapshot();
 	}
 
 	function trackDelivery(job: BackgroundJob, index: number, control: AgentControl, message: string, delivery: "steer" | "followUp"): void {
@@ -1931,7 +1957,7 @@ export default function (pi: ExtensionAPI) {
 					job.pendingInputs.push({ message, delivery: params.delivery ?? "steer", index });
 				}
 				job.updatedAt = Date.now();
-				refreshWidget();
+				refreshSnapshot();
 				return { content: [{ type: "text", text: `Queued ${params.delivery ?? "steer"} for child ${queuedIndices.join(", ")}; not yet delivered. Message: “${messagePreview}”` }], details: undefined };
 			}
 			const deliveryResults = await Promise.all(
@@ -1948,7 +1974,7 @@ export default function (pi: ExtensionAPI) {
 				if (!result.accepted) recordDeliveryFailure(job, `child ${result.index} did not accept ${params.delivery ?? "steer"} input`);
 			}
 			job.updatedAt = Date.now();
-			refreshWidget();
+			refreshSnapshot();
 			return {
 				content: [{ type: "text", text: delivered.length > 0
 					? `Accepted ${params.delivery ?? "steer"} by child ${delivered.map((item) => item.index).join(", ")}${delivered.length < targets.length ? "; other children rejected input" : ""}. Message: “${messagePreview}”`
@@ -1967,7 +1993,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `${job.id} is already ${job.state}.` }], details: undefined };
 			}
 			markJobStopping(job, "Subagent stopped by coordinator");
-			refreshWidget();
+			refreshSnapshot();
 			return { content: [{ type: "text", text: `Stop requested for ${job.id}.` }], details: undefined };
 		}
 
@@ -1992,7 +2018,7 @@ export default function (pi: ExtensionAPI) {
 		if (childSessionLeases.has(childSessionLeaseKey(record.sessionFile))) {
 			throw new Error(`Child ${params.index} of ${jobId} is still stopping from an earlier run in this process; try again once it stops`);
 		}
-		const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
+		const agents = discoverAgentsFor(ctx);
 		const agent = agents.find((candidate) => candidate.name === record.agent);
 		if (!agent) throw new Error(`Agent "${record.agent}" no longer exists, so child ${params.index} of ${jobId} cannot be resumed. Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
 		const gondolinProvider = getGondolinToolProvider();
@@ -2018,7 +2044,7 @@ export default function (pi: ExtensionAPI) {
 			id: resumedAs,
 			resume: { sessionFile: record.sessionFile, message },
 		});
-		refreshWidget();
+		refreshSnapshot();
 		return {
 			content: [{ type: "text" as const, text: `Resumed ${jobId} child ${params.index} as job ${job.id}\n${compactHeaderLine(job.results[0], 200)}` }],
 			details: { mode: job.mode, results: [...job.results], jobId: job.id, state: "running" } satisfies SubagentDetails,
@@ -2069,14 +2095,14 @@ export default function (pi: ExtensionAPI) {
 				jobId: job.id,
 				index,
 				agent: launch.agent,
-				task: truncateUtf8(launch.task, MAX_RECORD_TASK_BYTES),
+				task: boundedText(launch.task, MAX_RECORD_TASK_BYTES),
 				cwd: launch.cwd,
 				policy: launch.policy,
 				sessionFile: launch.sessionFile,
 			});
 		}
 		ensureStallMonitor();
-		refreshWidget();
+		refreshSnapshot();
 
 		const hooks: ChildHooks = {
 			onStateChange(index, result) {
@@ -2085,7 +2111,7 @@ export default function (pi: ExtensionAPI) {
 				syncChildRecord(job, index, result);
 				if (isTerminalResult(result)) queueCompletion(job, index, result);
 				job.updatedAt = Date.now();
-				if (isCurrentOwner(job)) refreshWidget();
+				if (isCurrentOwner(job)) refreshSnapshot(isTerminalResult(result));
 			},
 			onControlReady(index, control) {
 				job.controls.set(index, control);
@@ -2093,12 +2119,12 @@ export default function (pi: ExtensionAPI) {
 				job.pendingInputs = job.pendingInputs.filter((input) => input.index !== index);
 				for (const input of pending) trackDelivery(job, index, control, input.message, input.delivery);
 				job.updatedAt = Date.now();
-				if (isCurrentOwner(job)) refreshWidget();
+				if (isCurrentOwner(job)) refreshSnapshot();
 			},
 			onControlClosed(index) {
 				job.controls.delete(index);
 				job.updatedAt = Date.now();
-				if (isCurrentOwner(job)) refreshWidget();
+				if (isCurrentOwner(job)) refreshSnapshot();
 			},
 		};
 		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options.resume).then(async (results) => {
@@ -2134,7 +2160,7 @@ export default function (pi: ExtensionAPI) {
 		}).finally(() => {
 			job.endedAt = Date.now();
 			job.updatedAt = job.endedAt;
-			if (isCurrentOwner(job)) refreshWidget();
+			if (isCurrentOwner(job)) refreshSnapshot(true);
 			stopStallMonitorIfIdle();
 			pruneJobs();
 		});
@@ -2218,7 +2244,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (params.action === "resume") return resumeChild(params, ctx);
 
-			const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
+			const agents = discoverAgentsFor(ctx);
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
@@ -2273,8 +2299,8 @@ export default function (pi: ExtensionAPI) {
 
 			const job = startJob(ctx, params, agents, childLaunches);
 			const compact = job.results.map((result) => compactHeaderLine(result, 200)).join("\n");
-			const warning = pendingLimitWarning ? `\n${pendingLimitWarning}` : "";
-			pendingLimitWarning = undefined;
+			const warning = pendingWarnings.map((message) => `\n${message}`).join("");
+			pendingWarnings = [];
 			return {
 				content: [{ type: "text", text: `job ${job.id}\n${compact}${warning}` }],
 				details: { mode: job.mode, results: [...job.results], jobId: job.id, state: "running" } satisfies SubagentDetails,
@@ -2353,18 +2379,28 @@ export default function (pi: ExtensionAPI) {
 		currentSessionId = ctx.sessionManager.getSessionId();
 		currentSessionFile = ctx.sessionManager.getSessionFile();
 		restoreChildRecords(ctx);
+		pendingWarnings = [];
+		reportedWarnings.clear();
+		cancelSnapshotWrite();
+		snapshotFailing = false;
+		if (ctx.hasUI) {
+			// Keep agent progress only in the right-hand status panel.
+			ctx.ui.setWidget("subagents", undefined);
+			ctx.ui.setStatus("subagents", undefined);
+		}
 		const sessionDir = currentSessionFile ? path.dirname(currentSessionFile) : path.join(os.tmpdir(), `pi-session-${process.pid}`);
-		try { fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 }); } catch {}
-		jobsFile = path.join(sessionDir, `${process.pid}-subagents.json`);
+		try {
+			fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+			jobsFile = path.join(sessionDir, `${process.pid}-subagents.json`);
+		} catch (error) {
+			jobsFile = "";
+			reportWarning(`Subagent status panel disabled: cannot create ${sessionDir}: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		const loaded = loadSubagentLimits(ctx.cwd, isParentProjectTrusted(ctx));
 		limits = loaded.limits;
 		childLimiter.setLimit(limits.maxConcurrent);
-		pendingLimitWarning = loaded.warnings.length > 0 ? `Subagent settings: ${loaded.warnings.join("; ")}` : undefined;
-		if (pendingLimitWarning && ctx.hasUI) {
-			ctx.ui.notify(pendingLimitWarning, "warning");
-			pendingLimitWarning = undefined;
-		}
-		refreshWidget();
+		if (loaded.warnings.length > 0) reportWarning(`Subagent settings: ${loaded.warnings.join("; ")}`);
+		refreshSnapshot(true);
 	});
 
 	// Tree navigation moves the branch the records come from. Jobs launched on this branch
@@ -2376,12 +2412,12 @@ export default function (pi: ExtensionAPI) {
 			if (!isCurrentOwner(job)) continue;
 			for (let index = 0; index < job.results.length; index++) syncChildRecord(job, index, job.results[index]);
 		}
-		refreshWidget();
+		refreshSnapshot(true);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		currentCtx = ctx;
-		const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
+		const agents = discoverAgentsFor(ctx);
 		const systemPrompt = `${event.systemPrompt}\n\n${formatAgentCatalogForPrompt(agents)}`;
 		const active = activeJobs();
 		if (active.length === 0) return { systemPrompt };
@@ -2450,6 +2486,7 @@ export default function (pi: ExtensionAPI) {
 			jobs.delete(job.id);
 			clearCompletionTracking(job.id);
 		}
+		cancelSnapshotWrite();
 		try { if (jobsFile) fs.unlinkSync(jobsFile); } catch {}
 		jobsFile = "";
 		if (ctx.hasUI) {
