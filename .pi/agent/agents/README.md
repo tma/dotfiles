@@ -36,10 +36,10 @@ pasting the parent's full system prompt into a task.
 
 The required contents of a delegated task packet (scope, instruction
 pointers, writable paths/ownership, granted permissions, verification and
-blocked outcomes) are owned by the "Delegate substantial work" section of
-[`.agents/AGENTS.md`](../../../.agents/AGENTS.md). That contract applies to
-every launch mode of the `subagent` tool — single, parallel, and chain alike
-— not just this file's model-policy mechanics.
+blocked outcomes) are owned by the
+[`delegation` skill](../../../.agents/skills/delegation/SKILL.md). That
+contract applies to every launch mode of the `subagent` tool — single,
+parallel, and chain alike — not just this file's model-policy mechanics.
 
 ## Project trust and child guards
 

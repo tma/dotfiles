@@ -32,81 +32,28 @@ Use the shortest answer that is still useful:
 
 ## Work style
 
-### Delegate substantial work
+### Delegation
 
-The main session is primarily a coordinator: delegate substantial work,
-supervise subagents, and own decisions and final acceptance.
+Delegate substantial investigations, plans, implementations, long-running test
+runs, reviews, and independent work that benefits from parallel execution.
+Handle simple questions, quick lookups, small localized edits, and focused
+checks directly unless the user asks for delegation. If scope is unclear,
+inspect briefly first and delegate only once the work is clearly substantial
+or parallelizable. Before launching a subagent or acting on a subagent
+notification, load the `delegation` skill; it owns the context packet and
+supervision rules.
 
-- Delegate substantial investigations, plans, implementations, long-running
-  test runs, and reviews, or independent work that benefits from parallel
-  execution.
-- Handle simple tasks directly. Do not launch subagents for simple questions,
-  quick lookups, small localized edits, or focused checks that take only a few
-  tool calls, unless the user explicitly asks for delegation.
-- If scope is unclear, start with a brief direct inspection. Delegate only when
-  the work is clearly substantial or benefits from parallel execution.
-- Use parallel subagents for independent lanes and one writer per shared
-  worktree. Give each child a self-contained task, constraints, expected output,
-  and verification steps.
-- Launch delegated work asynchronously. Never block the main session waiting
-  for it. After launching, tell the user what is running and remain available.
-- Keep ownership of user intent, task routing, decisions, approvals, synthesis,
-  and final acceptance in the main session.
+### Planning and progress
 
-Children are isolated: a subagent does not automatically receive the parent
-conversation, project or global instruction files, loaded skills, or extension
-tools. Every delegated task must carry its own context packet instead of
-assuming any of that comes along for free:
-
-- a scoped task with concrete acceptance criteria
-- the relevant instructions, or pointers to accessible files the child must
-  read, not the entire global prompt
-- writable paths or worktree, with single-writer ownership when a worktree is
-  shared with other agents
-- only the permissions the user has explicitly granted for this task (for
-  example, publishing, committing, or destructive actions)
-- how to verify the result, and what a blocked outcome looks like so the
-  child reports it instead of guessing
-
-This contract applies to every launch mode of the `subagent` tool — single,
-parallel, and chain alike.
-
-Treat active delegated agents as work that must be supervised:
-
-- On every new user turn while delegated work is active, inspect live child
-  state first and report only material progress, completions, failures, stalls,
-  or requests for a decision.
-- Treat delivered child completion output as primary evidence when it contains
-  full results. Query live status when the user explicitly asks for status,
-  when details are missing, or when control actions are needed.
-- When a progress or completion notification wakes the main session, inspect
-  the relevant status, transcript, or output before summarizing it. Do not just
-  echo the notification.
-- Inspect child results and the resulting diff/checks before accepting work,
-  updating todos, or starting dependent work. Reassign or steer work when
-  evidence is incomplete.
-- When the user redirects active work, steer the existing task instead of
-  launching duplicate replacement work.
-- Provide brief updates at meaningful milestones; do not poll in a tight loop
-  or flood the conversation with unchanged status.
-
-For multi-step or multi-file tasks:
-
-- make a short plan
-- use the todo list
-- complete one step at a time
-- update the todo list as work finishes
-
-For longer tasks, do not go silent for minutes at a time. Send brief one-line progress updates when:
-
-- starting a longer investigation or code change
-- moving between major steps
-- waiting on slow commands, tests, or tool calls
-- retrying after an error or changing approach
-
-Keep progress updates short and factual. Do not expose private chain-of-thought; summarize what you are doing instead.
-
+For multi-step or multi-file tasks, make a short plan, track it in the todo
+list, complete one step at a time, and update the list as each step finishes.
 For small tasks, just do the work.
+
+During longer work, do not go silent for minutes. Send one-line progress
+updates when starting a longer investigation or code change, moving between
+major steps, waiting on slow commands, tests, or tool calls, and retrying after
+an error or changing approach. Keep them short and factual, and summarize what
+you are doing instead of exposing private chain-of-thought.
 
 ## Writing on my behalf
 
