@@ -708,6 +708,15 @@ async function runAgent(
 		result.state = state;
 		opts.onStateChange?.(controlIndex, result);
 	};
+	let outputCapped = false;
+	// The terminal state change snapshots the completion for the parent, so cap first.
+	const finishState = (state: ChildState) => {
+		if (agent?.maxOutputLines && !outputCapped) {
+			outputCapped = true;
+			capFinalOutput(result.messages, agent.maxOutputLines);
+		}
+		updateState(state);
+	};
 	const emitUpdate = () => {
 		if (result.sessionFile) result.sessionSaved = fs.existsSync(result.sessionFile);
 		opts.onStateChange?.(controlIndex, result);
@@ -912,22 +921,22 @@ async function runAgent(
 			result.exitCode = 1;
 			result.stopReason = "aborted";
 			result.errorMessage ||= "Subagent stopped";
-			updateState("aborted");
+			finishState("aborted");
 		} else if (result.stopReason === "error") {
 			result.exitCode = 1;
-			updateState("failed");
+			finishState("failed");
 		} else {
 			result.exitCode = 0;
-			updateState("completed");
+			finishState("completed");
 		}
 	} catch (error) {
 		result.exitCode = 1;
 		result.errorMessage = error instanceof Error ? error.message : String(error);
 		if (opts.signal?.aborted) {
 			result.stopReason = "aborted";
-			updateState("aborted");
+			finishState("aborted");
 		} else {
-			updateState("failed");
+			finishState("failed");
 		}
 	} finally {
 		result.durationMs = Date.now() - startedAt;
@@ -955,21 +964,25 @@ async function runAgent(
 		emitUpdate();
 	}
 
-	if (agent?.maxOutputLines) {
-		for (let index = result.messages.length - 1; index >= 0; index--) {
-			const message = result.messages[index];
-			if (message.role !== "assistant") continue;
-			for (const part of message.content) {
-				if (part.type !== "text") continue;
-				const lines = part.text.split("\n");
-				if (lines.length > agent.maxOutputLines) {
-					part.text = `${lines.slice(0, agent.maxOutputLines).join("\n")}\n\n[Truncated: ${lines.length} → ${agent.maxOutputLines} lines]`;
-				}
-			}
-			break;
-		}
-	}
 	return result;
+}
+
+/** Replaces the final assistant message with a capped copy; the child session keeps the original. */
+function capFinalOutput(messages: Message[], maxLines: number): void {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role !== "assistant") continue;
+		messages[index] = {
+			...message,
+			content: message.content.map((part) => {
+				if (part.type !== "text") return part;
+				const lines = part.text.split("\n");
+				if (lines.length <= maxLines) return part;
+				return { ...part, text: `${lines.slice(0, maxLines).join("\n")}\n\n[Truncated: ${lines.length} → ${maxLines} lines]` };
+			}),
+		};
+		return;
+	}
 }
 
 // ─── Truncation ─────────────────────────────────────────────────────────────
