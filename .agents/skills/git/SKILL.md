@@ -1,6 +1,6 @@
 ---
 name: git
-description: Apply git conventions for branch setup, topic commits, pulls, pushes, merge conflicts, history rewriting, and branch cleanup. Use whenever local git work is involved.
+description: Apply git conventions for branches, commits, pulls, pushes, conflicts, and history. Use when starting a task branch, committing, pulling or pushing, resolving merge conflicts, amending or rebasing, or cleaning up branches. Read-only git status, diff, or log alone does not need it.
 ---
 
 # Git

@@ -1,6 +1,6 @@
 ---
 name: github
-description: "Use gh for GitHub work: issues, PRs, reviews, Copilot reviewer requests, Actions, Codespaces, releases, and code search. Use whenever a task touches a GitHub repository, issue, or pull request."
+description: "Use the gh CLI for GitHub. Use when creating or updating PRs or issues, reading PR, issue, or Actions data, requesting a Copilot review, working with releases or Codespaces, searching code across GitHub, or writing GitHub prose."
 ---
 
 # GitHub

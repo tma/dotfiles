@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review local changes, a branch, a commit, or a GitHub PR for requirements coverage and code quality, process Copilot review comments, and judge merge readiness.
+description: Review local changes, a commit, a branch, or a GitHub PR for requirements coverage, code quality, and merge readiness. Use when the user asks for a review, a deep or thorough review, merge readiness, or to process Copilot review comments on a PR.
 ---
 
 # Code Review
