@@ -3,9 +3,10 @@
 Read this when the user asks for a deep, thorough, comprehensive, or extra careful
 review. For normal reviews, the primary review in `SKILL.md` is the whole job.
 
-The `second-opinion` skill owns reviewer routing, the child-agent contract, and
-error handling. This file states only what a deep code review additionally
-requires from it.
+Run the reviewers through the `second-opinion` skill, which owns the reviewer
+contract, launch mechanics, and error handling. This file owns what a deep code
+review requires on top of that skill's defaults: routes, count, focus split, and
+synthesis. Give `second-opinion` these requirements when you delegate.
 
 ## Before delegating
 

@@ -4,7 +4,7 @@ Use this reference after loading the `second-opinion` skill. Child reviewers are
 
 ## Relationship to the primary review workflow
 
-The calling review workflow supplies the rubric and output style; this file owns the operations. When the caller is the `code-review` skill running a deep review, its [deep review reference](../../code-review/references/deep-review.md) states the required routes, count, and focus split, and the root agent there owns synthesis and reranking.
+The calling review workflow supplies the rubric and output style, plus any required routes, count, focus split, or synthesis it owns; this file owns the operations and follows those requirements.
 
 Use the primary review prompt only for:
 
@@ -41,9 +41,9 @@ If the user asks for more than three, explain the cap and proceed with three unl
 Reviewer selection:
 
 - `auto` — prefer model families different from the current/root agent
-- `opus` — dynamically selected strong Claude Opus-family child reviewer with `max` thinking
-- `gpt` — dynamically selected strong GPT-family child reviewer with `max` thinking
-- `grok` — dynamically selected strong Grok-family child reviewer with `max` thinking
+- `opus` — dynamically selected strong Claude Opus-family child reviewer with `max` thinking (Pi `family: "claude-opus"`)
+- `gpt` — dynamically selected strong GPT-family child reviewer with `max` thinking (Pi `family: "gpt"`)
+- `grok` — dynamically selected strong Grok-family child reviewer with `max` thinking (Pi `family: "grok"`)
 - `mixed` — use multiple routed reviewers when available
 
 Focus:
@@ -59,19 +59,21 @@ Focus:
 
 For a single review, use the opposite family when the current/root family is known:
 
-| Current/root model family | Reviewer route | Pi subagent |
+| Current/root model family | Reviewer route | Pi `family` |
 |---------------------------|----------------|-------------|
-| GPT/OpenAI | Strong Claude Opus-family route | `second-opinion-opus` |
-| Opus/Anthropic | Strong GPT-family route | `second-opinion-gpt` |
-| Grok/xAI | Strong Claude Opus-family route | `second-opinion-opus` |
+| GPT/OpenAI | Strong Claude Opus-family route | `claude-opus` |
+| Opus/Anthropic | Strong GPT-family route | `gpt` |
+| Grok/xAI | Strong Claude Opus-family route | `claude-opus` |
+
+In Pi, every route launches `agent: "second-opinion"` with the `family` above.
 
 For multiple reviews:
 
-1. If invoked by the `code-review` skill for a deep/thorough review, always include both `second-opinion-gpt` and `second-opinion-opus` when available, even if one matches the current/root model family. Add `second-opinion-grok` when the user asks for three reviewers.
+1. If a calling workflow requires specific routes, include each one when available, even if it matches the current/root model family.
 2. Otherwise, prefer distinct non-current reviewer routes.
 3. If only one non-current route is configured, reuse that route with separate tasks and different reviewer focuses.
 4. If the user explicitly requests a current-family reviewer, ask for confirmation unless their wording already makes the override clear.
-5. Same-family reviewers are allowed when needed to reach the requested count for deep/thorough reviews; label the route/focus clearly.
+5. Same-family reviewers are allowed when needed to reach a count the calling workflow requires; label the route/focus clearly.
 
 Suggested focus split when reusing one route:
 
@@ -161,18 +163,31 @@ For multiple reviewers, keep the shared packet identical and vary only reviewer 
 
 Use the Pi `subagent` tool.
 
+Every launch uses `agent: "second-opinion"` with an explicit `family` on each task, and the task text names the reviewer label and route. Never launch without `family`: the agent has no family of its own, so the selector could pick any family, including the root agent's own.
+
 Single review:
 
-- Current/root GPT/OpenAI → `agent: "second-opinion-opus"`.
-- Current/root Opus/Anthropic → `agent: "second-opinion-gpt"`.
-- Current/root Grok/xAI → `agent: "second-opinion-opus"`.
-- Deep/thorough code-review workflow → include both `agent: "second-opinion-gpt"` and `agent: "second-opinion-opus"`. Add `agent: "second-opinion-grok"` for a third reviewer.
+- Current/root GPT/OpenAI → `agent: "second-opinion"`, `family: "claude-opus"`.
+- Current/root Opus/Anthropic → `agent: "second-opinion"`, `family: "gpt"`.
+- Current/root Grok/xAI → `agent: "second-opinion"`, `family: "claude-opus"`.
+- Calling workflow with required routes → one task per required route, each with its own `family`.
 
 Multiple reviews:
 
 - Prefer one `subagent` call with `tasks: [...]` for parallel delegation.
-- Set each task's `agent`, `task`, and `cwd` when reviewing a local repository.
+- Set each task's `agent`, `family`, `task`, and `cwd` when reviewing a local repository.
 - If parallel delegation is unavailable, run reviewers sequentially.
+
+Example parallel launch:
+
+```json
+{
+  "tasks": [
+    { "agent": "second-opinion", "family": "gpt", "cwd": "<repo>", "task": "You are Reviewer 1, on the GPT route. ..." },
+    { "agent": "second-opinion", "family": "claude-opus", "cwd": "<repo>", "task": "You are Reviewer 2, on the Opus route. ..." }
+  ]
+}
+```
 
 ### Other harnesses
 
@@ -207,7 +222,7 @@ If multiple tasks reused the same route, mention that plainly.
 |-------|--------|
 | Current/root model unknown | Ask which route(s) to use if needed |
 | Requested reviewer unavailable | Tell the user what routed child agent is missing; do not use model CLIs |
-| Same-family reviewer requested | Ask for confirmation unless explicitly requested or invoked by a deep/thorough review workflow |
+| Same-family reviewer requested | Ask for confirmation unless explicitly requested or required by the calling workflow |
 | Count > 3 | Explain the cap and use three unless narrowed |
 | Empty diff/input | Tell user there is nothing to review |
 | Review packet too large | Ask the user to narrow scope or confirm proceeding |

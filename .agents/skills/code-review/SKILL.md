@@ -100,8 +100,8 @@ Do not invent problems. If the diff is clean, say so.
 
 **Deep** applies when the user says "deep", "thorough", "comprehensive", or "extra
 careful", or asks for more than one reviewer. Run the normal review yourself
-first, then delegate to the `second-opinion` skill, which owns reviewer routing
-and the child-agent contract. Deep code review requires both the latest GPT and
+first, then delegate to the `second-opinion` skill, which owns the reviewer
+contract and launch mechanics. Deep code review requires both the latest GPT and
 the latest Opus routes at max thinking; read the
 [deep review reference](./references/deep-review.md) before delegating.
 

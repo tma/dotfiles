@@ -61,7 +61,7 @@ native and Gondolin sessions. Children run without a UI, so a dangerous command
 is blocked instead of prompting. The guards are best-effort speed bumps, not a
 sandbox: they catch common commands and paths, not every way to write a file.
 
-An agent's `tools` list is its real capability boundary. The second-opinion
-reviewers have no `bash`, so the caller supplies command output. `scout`,
+An agent's `tools` list is its real capability boundary. The `second-opinion`
+reviewer has no `bash`, so the caller supplies command output. `scout`,
 `planner`, and `researcher` keep `bash` for investigation; they're read-only
 by instruction only, so delegate to them only what the parent may authorize.

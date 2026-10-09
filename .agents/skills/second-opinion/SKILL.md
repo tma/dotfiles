@@ -5,17 +5,17 @@ description: Get 1-3 independent read-only reviews of changes, PRs, commits, bra
 
 # Second Opinion
 
-Get one, two, or three independent advisory reviews by delegating self-contained review packets to child/subagents. Default to one review, or two when invoked by a deep/thorough code review; follow an explicit request for more, up to three.
+Get one, two, or three independent advisory reviews by delegating self-contained review packets to child/subagents. Default to one review; follow a calling workflow's required count or an explicit request for more, up to three.
 
 This skill is harness-agnostic: prepare a review packet, then delegate it through the host harness's native child-agent/subagent mechanism. Do **not** shell out to model CLIs such as Codex, Claude, Gemini, or similar.
 
-This skill owns reviewer routing, the child-reviewer contract, and reviewer error handling. Other skills that need reviewers state what they require and leave the routing here. The `code-review` skill's [deep review reference](../code-review/references/deep-review.md) is the one caller with extra requirements.
+This skill owns the child-reviewer contract, launch mechanics, default routing, and reviewer error handling. A calling workflow may impose its own route, count, focus, or synthesis requirements; follow them within the three-reviewer cap and the read-only contract.
 
 For routing tables, task templates, examples, and detailed error handling, read the [operations reference](./references/operations.md).
 
 ## Core contract
 
-1. Determine review count: `1` by default, `2` for a deep/thorough code review; infer `2` or `3` when the user asks for multiple opinions. Cap at `3`. For deep reviews, read the caller's [deep review reference](../code-review/references/deep-review.md) for the required count and routes.
+1. Determine review count: `1` by default, or the count a calling workflow requires; infer `2` or `3` when the user asks for multiple opinions. Cap at `3`.
 2. Identify the current/root model family when the harness exposes it.
 3. Prefer reviewers from a different model family than the current/root agent.
 4. Gather the review material and relevant project instructions into a concise review packet.
@@ -24,7 +24,7 @@ For routing tables, task templates, examples, and detailed error handling, read 
 
 For a single review, never choose the same model family as the current/root agent unless the user explicitly confirms that override.
 
-For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests it, confirms it, or this skill was invoked by a deep/thorough code-review workflow that requires both GPT and Opus routes.
+For multiple reviews, use distinct non-current model families when available. If only one non-current routed reviewer exists, you may run multiple independent tasks on that route with different reviewer labels/focuses; say so in the final summary. Use the current/root model family only when the user explicitly requests it, confirms it, or a calling workflow requires that route.
 
 ## When to use
 
@@ -39,13 +39,15 @@ Do not use this skill when the harness cannot launch child/subagent reviewers, w
 
 ## Pi adapter
 
-Use the `subagent` tool with configured reviewer agents:
+Use the `subagent` tool with the `second-opinion` reviewer agent, which selects a strong model with `max` thinking (clamped when needed). Every launch sets `agent: "second-opinion"` and an explicit `family` per task:
 
-- `second-opinion-opus` — a dynamically selected strong Claude Opus-family model with `max` thinking (clamped when needed).
-- `second-opinion-gpt` — a dynamically selected strong GPT-family model with `max` thinking (clamped when needed).
-- `second-opinion-grok` — a dynamically selected strong Grok-family model with `max` thinking (clamped when needed).
+- `family: "claude-opus"` — Claude Opus route.
+- `family: "gpt"` — GPT route.
+- `family: "grok"` — Grok route.
 
-For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its reviewer label and focus.
+Never launch `second-opinion` without `family`. The agent has no family of its own, so the selector could pick any family, including the root agent's own.
+
+For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its own `family`, and put its reviewer label, route, and focus in the task text.
 
 ## Review packet
 
@@ -91,8 +93,8 @@ Say which of these happened; do not present a partial run as a full one.
 ## Rules
 
 1. **Use child/subagent delegation only**; never shell out to external model CLIs.
-2. **Default to one review**, or two for a deep/thorough code review, and cap at three.
+2. **Default to one review**, follow a calling workflow's required count, and cap at three.
 3. **Prefer a different model family** from the current/root agent unless the user confirms otherwise.
 4. **Keep reviewers read-only**; they do not edit files or post GitHub comments.
-5. **Use both GPT and Opus routes** for deep/thorough code-review workflows when available. Add the Grok route when the user asks for three reviewers.
+5. **Follow caller route requirements** when a calling workflow names required routes, even when one matches the current/root family; label any reused or same-family route.
 6. **Stop on empty input**; do not ask reviewers to review nothing.
