@@ -1225,8 +1225,11 @@ export default function (pi: ExtensionAPI) {
 	const pendingCompletions = new Set<string>();
 	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
 	const deliveredCompletions = new Set<string>();
+	const groupStragglerTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	const stragglerDueJobs = new Set<string>();
 	const STALL_NOTICE_MS = 10 * 60_000;
 	const STALL_CHECK_MS = 60_000;
+	const GROUP_STRAGGLER_MS = 2 * 60_000;
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_ACTIVE_JOBS = 20;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
@@ -1368,14 +1371,14 @@ export default function (pi: ExtensionAPI) {
 		currentCtx.ui.setStatus("subagents", undefined);
 	}
 
-	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string): boolean {
+	function sendCoordinatorMessage(ownerSessionId: string, ownerSessionFile: string | undefined, customType: string, text: string, wake = true): boolean {
 		if (shuttingDown || ownerSessionId !== currentSessionId || ownerSessionFile !== currentSessionFile) return false;
 		try {
 			pi.sendMessage({
 				customType,
 				content: [{ type: "text", text }],
 				display: false,
-			}, { triggerTurn: true, deliverAs: "followUp" });
+			}, { triggerTurn: wake, deliverAs: "followUp" });
 			return true;
 		} catch {
 			// Session replacement can invalidate a background callback.
@@ -1408,15 +1411,14 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	function boundCompletionBlock(text: string): string {
-		const MAX_COMPLETION_BLOCK_BYTES = Math.max(2048, Math.floor(MAX_STATUS_OUTPUT_BYTES / 2));
+	function boundCompletionBlock(text: string, maxBytes: number): string {
 		const bytes = Buffer.from(text);
-		if (bytes.byteLength <= MAX_COMPLETION_BLOCK_BYTES) return text;
-		const keep = Math.max(0, MAX_COMPLETION_BLOCK_BYTES - 192);
+		if (bytes.byteLength <= maxBytes) return text;
+		const keep = Math.max(0, maxBytes - 192);
 		return `${bytes.subarray(0, keep).toString("utf8")}\n\n[Child completion truncated. Use subagent action=status view=detail with id and index; the native session holds the full transcript.]`;
 	}
 
-	function formatChildCompletion(job: BackgroundJob, index: number, result: SingleResult): string {
+	function formatChildCompletion(job: BackgroundJob, index: number, result: SingleResult, maxBytes: number): string {
 		const step = result.step ? `step ${result.step}` : `child ${index + 1}/${job.total}`;
 		const output = (getFinalOutput(result.messages) || "").trim() || "(no output)";
 		const errors = diagnosticParts(result).map((part) => safeOneLine(part, 500));
@@ -1433,31 +1435,84 @@ export default function (pi: ExtensionAPI) {
 			lines.push("error:");
 			lines.push(errors.join("; "));
 		}
-		return boundCompletionBlock(lines.join("\n"));
+		return boundCompletionBlock(lines.join("\n"), maxBytes);
 	}
 
-	function flushCompletions(): void {
+	/** Multi-task jobs wake the parent once when every child is done, or for parallel stragglers. */
+	function completionGroupReady(job: BackgroundJob): boolean {
+		if (job.total <= 1 || job.results.every(isTerminalResult)) return true;
+		return job.mode === "parallel" && stragglerDueJobs.has(job.id);
+	}
+
+	/** Finished intermediate chain steps only feed the next step; report the final answer and failures. */
+	function reportsCompletion(job: BackgroundJob, index: number, result: SingleResult): boolean {
+		if (job.mode !== "chain" || job.total <= 1) return true;
+		if (isFailedResult(result)) return result.stopReason !== "skipped";
+		return index === job.total - 1;
+	}
+
+	function clearGroupStraggler(jobId: string): void {
+		const timer = groupStragglerTimers.get(jobId);
+		if (timer) clearTimeout(timer);
+		groupStragglerTimers.delete(jobId);
+		stragglerDueJobs.delete(jobId);
+	}
+
+	function clearGroupStragglers(): void {
+		for (const timer of groupStragglerTimers.values()) clearTimeout(timer);
+		groupStragglerTimers.clear();
+		stragglerDueJobs.clear();
+	}
+
+	/** On shutdown, held completions are appended to the transcript without starting a turn. */
+	function flushCompletions(final = false): void {
+		if (completionTimer) clearTimeout(completionTimer);
 		completionTimer = null;
 		const pendingKeys = [...pendingCompletions];
 		pendingCompletions.clear();
-		const entries: Array<{ key: string; ownerSessionId: string; ownerSessionFile?: string; block: string }> = [];
+		const groups = new Map<string, { job: BackgroundJob; keys: string[] }>();
 		for (const key of pendingKeys) {
 			if (deliveredCompletions.has(key)) continue;
 			const snap = pendingCompletionSnapshots.get(key);
 			if (!snap) continue;
 			const job = jobs.get(snap.jobId);
 			if (!job || !isCurrentOwner(job)) continue;
-			entries.push({
-				key,
-				ownerSessionId: snap.ownerSessionId,
-				ownerSessionFile: snap.ownerSessionFile,
-				block: formatChildCompletion(job, snap.index, snap.result),
-			});
+			if (!final && !completionGroupReady(job)) {
+				pendingCompletions.add(key);
+				continue;
+			}
+			if (!(final ? snap.result.stopReason !== "skipped" : reportsCompletion(job, snap.index, snap.result))) {
+				deliveredCompletions.add(key);
+				pendingCompletionSnapshots.delete(key);
+				continue;
+			}
+			const group = groups.get(job.id) ?? { job, keys: [] };
+			group.keys.push(key);
+			groups.set(job.id, group);
 		}
-		if (entries.length === 0) return;
+		for (const { job } of groups.values()) {
+			if (job.results.every(isTerminalResult)) clearGroupStraggler(job.id);
+			else stragglerDueJobs.delete(job.id);
+		}
 
 		const separator = "\n\n---\n\n";
 		const maxBytes = MAX_STATUS_OUTPUT_BYTES;
+		// Size each block so a job's group fits one message and wakes the parent once.
+		const entries: Array<{ key: string; ownerSessionId: string; ownerSessionFile?: string; block: string }> = [];
+		for (const { job, keys } of groups.values()) {
+			const blockBytes = Math.min(Math.floor(maxBytes / 2), Math.floor(maxBytes / keys.length) - separator.length);
+			for (const key of keys) {
+				const snap = pendingCompletionSnapshots.get(key)!;
+				entries.push({
+					key,
+					ownerSessionId: snap.ownerSessionId,
+					ownerSessionFile: snap.ownerSessionFile,
+					block: formatChildCompletion(job, snap.index, snap.result, blockBytes),
+				});
+			}
+		}
+		if (entries.length === 0) return;
+
 		const batches: Array<{ ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string }> = [];
 		let current: { ownerSessionId: string; ownerSessionFile?: string; keys: string[]; text: string } | null = null;
 		for (const entry of entries) {
@@ -1475,8 +1530,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (current) batches.push(current);
 
+		let retry = false;
 		for (const batch of batches) {
-			const sent = sendCoordinatorMessage(batch.ownerSessionId, batch.ownerSessionFile, "subagent-completion", batch.text);
+			const sent = sendCoordinatorMessage(batch.ownerSessionId, batch.ownerSessionFile, "subagent-completion", batch.text, !final);
 			if (!sent) {
 				for (const key of batch.keys) {
 					const snap = pendingCompletionSnapshots.get(key);
@@ -1484,7 +1540,10 @@ export default function (pi: ExtensionAPI) {
 					const job = jobs.get(snap.jobId);
 					if (!job) continue;
 					recordDeliveryFailure(job, `completion delivery failed for child ${snap.index}`);
-					if (isCurrentOwner(job) && !shuttingDown) pendingCompletions.add(key);
+					if (isCurrentOwner(job) && !shuttingDown) {
+						pendingCompletions.add(key);
+						retry = true;
+					}
 				}
 				continue;
 			}
@@ -1494,7 +1553,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		if (pendingCompletions.size > 0 && !completionTimer) completionTimer = setTimeout(flushCompletions, 500);
+		if (retry && !completionTimer) completionTimer = setTimeout(() => flushCompletions(), 500);
 	}
 
 	function queueCompletion(job: BackgroundJob, index: number, result: SingleResult): void {
@@ -1509,7 +1568,14 @@ export default function (pi: ExtensionAPI) {
 			result: cloneResultSnapshot(result),
 		});
 		pendingCompletions.add(key);
-		if (!completionTimer) completionTimer = setTimeout(flushCompletions, 250);
+		if (job.mode === "parallel" && job.total > 1 && !groupStragglerTimers.has(job.id)) {
+			groupStragglerTimers.set(job.id, setTimeout(() => {
+				groupStragglerTimers.delete(job.id);
+				stragglerDueJobs.add(job.id);
+				if (!completionTimer) completionTimer = setTimeout(() => flushCompletions(), 0);
+			}, GROUP_STRAGGLER_MS));
+		}
+		if (!completionTimer) completionTimer = setTimeout(() => flushCompletions(), 250);
 	}
 
 	function childActivityAt(job: BackgroundJob, index: number): number {
@@ -1587,6 +1653,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function clearCompletionTracking(jobId: string): void {
+		clearGroupStraggler(jobId);
 		for (const key of [...pendingCompletions]) {
 			if (key.startsWith(`${jobId}:`)) pendingCompletions.delete(key);
 		}
@@ -2191,6 +2258,7 @@ export default function (pi: ExtensionAPI) {
 		if (completionTimer) clearTimeout(completionTimer);
 		stallTimer = null;
 		completionTimer = null;
+		clearGroupStragglers();
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
 		for (const job of activeJobs()) markJobStopping(job, "Parent session replaced");
@@ -2221,12 +2289,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		flushCompletions(true);
 		shuttingDown = true;
 		inspectorController?.abort();
 		if (stallTimer) clearInterval(stallTimer);
 		if (completionTimer) clearTimeout(completionTimer);
 		stallTimer = null;
 		completionTimer = null;
+		clearGroupStragglers();
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
 		deliveredCompletions.clear();
