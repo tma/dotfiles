@@ -28,6 +28,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { startKeepAwake } from "./keep-awake.js";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
 import permissionGate from "./permission-gate.js";
 import protectedPaths from "./protected-paths.js";
@@ -349,9 +350,17 @@ interface BackgroundJob {
 	deliveryPromises: Set<Promise<void>>;
 	abortController: AbortController;
 	execution: Promise<void>;
+	/** Releases this job's sleep-prevention assertion; idempotent. */
+	stopKeepAwake?: () => void;
 	error?: string;
 	/** Stopped by parent shutdown or session replacement, so children stay resumable. */
 	parentInterrupted?: boolean;
+}
+
+function releaseKeepAwake(job: BackgroundJob): void {
+	const stop = job.stopKeepAwake;
+	job.stopKeepAwake = undefined;
+	stop?.();
 }
 
 /** What the parent session records about each child it launches. */
@@ -2238,6 +2247,7 @@ export default function (pi: ExtensionAPI) {
 				if (isCurrentOwner(job)) refreshSnapshot();
 			},
 		};
+		job.stopKeepAwake = startKeepAwake(ctx);
 		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options).then(async (results) => {
 			job.results = results;
 			for (let index = 0; index < job.results.length; index++) {
@@ -2269,6 +2279,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			job.state = job.abortController.signal.aborted ? "stopped" : "failed";
 		}).finally(() => {
+			releaseKeepAwake(job);
 			job.endedAt = Date.now();
 			job.updatedAt = job.endedAt;
 			if (isCurrentOwner(job)) refreshSnapshot(true);
@@ -2596,6 +2607,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			job.state = "stopped";
+			releaseKeepAwake(job);
 			job.endedAt ??= Date.now();
 			jobs.delete(job.id);
 			clearCompletionTracking(job.id);

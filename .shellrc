@@ -137,6 +137,7 @@ pi-local() {
     --extension "$dir/extensions/env.ts" \
     --extension "$dir/extensions/lmstudio.ts" \
     --extension "$dir/extensions/paperless.ts" \
+    --extension "$dir/extensions/keep-awake.ts" \
     --no-builtin-tools --no-skills --no-context-files --no-prompt-templates "$@"
 }
 
