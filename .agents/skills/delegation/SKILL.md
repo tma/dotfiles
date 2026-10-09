@@ -47,7 +47,7 @@ Launch delegated work asynchronously and never block the main session waiting fo
 Treat active delegated agents as work that must be supervised:
 
 - On every new user turn while delegated work is active, inspect live child state first. Report only material progress, completions, failures, stalls, or requests for a decision.
-- Treat delivered child completion output as primary evidence when it contains full results. Query live status when the user explicitly asks for status, when details are missing, or when control actions are needed.
+- Read delivered child completion output first when it contains full results, and verify it as step 5 describes. Query live status when the user explicitly asks for status, when details are missing, or when control actions are needed.
 - When a stall or completion notification wakes the main session, inspect the relevant status, transcript, or output before summarizing it. Do not just echo the notification.
 - Report a child as running until its completion arrives. Never predict or summarize a result it has not delivered.
 - When the user redirects active work, steer the existing task instead of launching duplicate replacement work.
