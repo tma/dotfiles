@@ -104,8 +104,8 @@ while the parent model is still streaming, Pi can drop that final append too.
 
 The parent session records each child it launches as small custom entries:
 job id, index, agent, cwd, model overrides, the first 2 KB of the task, the
-child's native session file once Pi allocates it, and the final state. These
-entries aren't sent to the model.
+child's native session file once the task is saved in it, and the final state.
+These entries aren't sent to the model.
 
 When the parent quits, crashes, or reloads while a child is unfinished, there's
 no final state on record. Resuming that parent session (or `/reload`) lists the
@@ -126,8 +126,9 @@ child runs as a new background job under the normal limits, its turn count
 starts over, and its completion arrives like any other. A resumed chain step
 runs alone; later steps don't. Resuming fails if the child already finished or
 was stopped by the user, was already resumed, its agent no longer exists, or it
-stopped before writing its session file (Pi writes that file when it sends the
-child its task). If the resumed run itself fails, it's finished and can't be
+stopped before its task was saved in its session file. A forked child's file
+holds the parent's conversation before the task is sent, so it isn't recorded
+until the task is. If the resumed run itself fails, it's finished and can't be
 resumed again.
 
 Parent shutdown waits ten seconds for children to stop, then lets go of them,
@@ -162,6 +163,12 @@ without a result, such as one still running alongside the launch, is dropped.
 If the copy is estimated at more than half of the child model's context
 window, the child fails before it starts and asks for `fresh` instead; nothing
 is truncated.
+
+The copy keeps only the provider-neutral parts of each message: text and tool
+calls lose their signatures, and OpenAI Responses tool call ids lose the item
+id half that pairs them with the dropped reasoning. Pi would otherwise replay
+those as-is when the child runs the parent's model, and the provider can
+reject them without the reasoning they belong to.
 
 A forked child still gets its own agent prompt, tools, guards, cwd, and
 limits. Its session lives in the normal child session directory, so status,

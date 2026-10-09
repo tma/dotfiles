@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type Message } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type ExtensionAPI,
@@ -596,11 +596,18 @@ type ChildContext = "fresh" | "fork";
 const MAX_FORK_WINDOW_SHARE = 0.5;
 const FORK_TASK_PREFIX = "The conversation above is copied from the parent session for reference. You are a subagent: do only the task below and give your final answer.";
 
+/** A Responses API tool call id is `call_id|item_id`; the item id is bound to the reasoning a fork drops. */
+function forkToolCallId(id: string): string {
+	return id.split("|")[0];
+}
+
 /**
  * The parent's current branch as its model sees it, compaction and context edits applied, minus what a
  * child must not replay: thinking (signed blocks only replay on the model that wrote them), the parent's
  * system messages (the child has its own prompt and tools), coordinator messages, and `subagent` calls,
  * so it can't see or drive other children. Other tool calls keep their results; unpaired ones are dropped.
+ * Text and tool calls keep only provider-neutral fields: signatures, Responses item ids, and namespaces
+ * belong to the dropped reasoning, and Pi still replays them when the child runs the parent's model.
  */
 function forkParentContext(ctx: ExtensionContext): Message[] {
 	const coordinatorTypes = new Set([COMPLETION_MESSAGE, STALL_MESSAGE, REMINDER_MESSAGE]);
@@ -609,11 +616,19 @@ function forkParentContext(ctx: ExtensionContext): Message[] {
 	const kept: Message[] = [];
 	for (const message of convertToLlm(visible)) {
 		if (message.role === "system") continue;
+		if (message.role === "toolResult") {
+			kept.push({ ...message, toolCallId: forkToolCallId(message.toolCallId) });
+			continue;
+		}
 		if (message.role !== "assistant") {
 			kept.push(message);
 			continue;
 		}
-		const content = message.content.filter((part) => part.type !== "thinking" && (part.type !== "toolCall" || part.name !== "subagent"));
+		const content = message.content.flatMap((part): AssistantMessage["content"] => {
+			if (part.type === "text") return [{ type: "text", text: part.text }];
+			if (part.type !== "toolCall" || part.name === "subagent") return [];
+			return [{ type: "toolCall", id: forkToolCallId(part.id), name: part.name, arguments: part.arguments }];
+		});
 		if (content.length > 0) kept.push({ ...message, content });
 	}
 	const callIds = new Set(kept.flatMap((message) => message.role === "assistant" ? message.content.flatMap((part) => part.type === "toolCall" ? [part.id] : []) : []));
@@ -915,18 +930,23 @@ async function runAgent(
 		const ownerFile = opts.parentCtx.sessionManager.getSessionFile();
 		// Take the lease before opening, so a refused resume never writes to a session another run holds.
 		if (opts.resume) sessionLease = acquireChildSessionLease(opts.resume.sessionFile);
+		let sessionFile: string | undefined;
 		try {
 			childSession = opts.resume
 				? openChildSession(opts.resume.sessionFile, effectiveCwd, ownerId, ownerFile)
 				: createChildSession(effectiveCwd, ownerId, ownerFile);
 			for (const message of forkedContext ?? []) childSession.appendMessage(message);
-			result.sessionFile = childSession.getSessionFile();
+			sessionFile = childSession.getSessionFile();
 		} catch (error) {
 			result.persistenceError = `Cannot ${opts.resume ? "open" : "create"} native child session: ${error instanceof Error ? error.message : String(error)}`;
 			throw new Error(result.persistenceError);
 		}
-		if (!sessionLease && result.sessionFile) sessionLease = acquireChildSessionLease(result.sessionFile);
-		if (opts.resume) result.sessionName = childSession.getSessionName() ?? result.sessionName;
+		if (!sessionLease && sessionFile) sessionLease = acquireChildSessionLease(sessionFile);
+		// A new session is only resumable once it holds the task: a forked one is written before that.
+		if (opts.resume) {
+			result.sessionFile = sessionFile;
+			result.sessionName = childSession.getSessionName() ?? result.sessionName;
+		}
 		const created = await createAgentSession({
 			cwd: effectiveCwd,
 			agentDir: getAgentDir(),
@@ -988,6 +1008,8 @@ async function runAgent(
 				return;
 			}
 			const message = event.message as Message;
+			// Pi saves the message to the session right after its listeners return, in the same tick.
+			if (message.role === "user" && !result.sessionFile) result.sessionFile = sessionFile;
 			if (message.role === "assistant" || message.role === "toolResult") appendBoundedMessage(result, message);
 			if (message.role === "assistant") {
 				result.usage.turns++;
