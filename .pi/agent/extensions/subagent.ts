@@ -10,14 +10,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type Message } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type ToolDefinition,
+	convertToLlm,
 	createAgentSession,
 	DefaultResourceLoader,
+	estimateTokens,
 	getAgentDir,
 	ModelRuntime,
 	parseFrontmatter,
@@ -376,6 +379,9 @@ interface ChildRecord extends ChildLaunch {
 
 const CHILD_RECORD_ENTRY = "subagent-child";
 const MAX_RECORD_TASK_BYTES = 2048;
+const COMPLETION_MESSAGE = "subagent-completion";
+const STALL_MESSAGE = "subagent-stall";
+const REMINDER_MESSAGE = "subagent-status-reminder";
 const DEFAULT_RESUME_MESSAGE = "You were interrupted. Continue the task from where you left off and give your final answer.";
 
 // ─── Output extraction ─────────────────────────────────────────────────────
@@ -582,6 +588,44 @@ function acquireChildSessionLease(file: string): string {
 	return key;
 }
 
+// ─── Forked context ─────────────────────────────────────────────────────────
+
+type ChildContext = "fresh" | "fork";
+
+/** A forked child must fit its parent's context in this share of its model's window, leaving room to work. */
+const MAX_FORK_WINDOW_SHARE = 0.5;
+const FORK_TASK_PREFIX = "The conversation above is copied from the parent session for reference. You are a subagent: do only the task below and give your final answer.";
+
+/**
+ * The parent's current branch as its model sees it, compaction and context edits applied, minus what a
+ * child must not replay: thinking (signed blocks only replay on the model that wrote them), the parent's
+ * system messages (the child has its own prompt and tools), coordinator messages, and `subagent` calls,
+ * so it can't see or drive other children. Other tool calls keep their results; unpaired ones are dropped.
+ */
+function forkParentContext(ctx: ExtensionContext): Message[] {
+	const coordinatorTypes = new Set([COMPLETION_MESSAGE, STALL_MESSAGE, REMINDER_MESSAGE]);
+	const visible = ctx.sessionManager.buildSessionProjection().messages
+		.filter((message: AgentMessage) => message.role !== "custom" || !coordinatorTypes.has(message.customType));
+	const kept: Message[] = [];
+	for (const message of convertToLlm(visible)) {
+		if (message.role === "system") continue;
+		if (message.role !== "assistant") {
+			kept.push(message);
+			continue;
+		}
+		const content = message.content.filter((part) => part.type !== "thinking" && (part.type !== "toolCall" || part.name !== "subagent"));
+		if (content.length > 0) kept.push({ ...message, content });
+	}
+	const callIds = new Set(kept.flatMap((message) => message.role === "assistant" ? message.content.flatMap((part) => part.type === "toolCall" ? [part.id] : []) : []));
+	const resultIds = new Set(kept.flatMap((message) => message.role === "toolResult" ? [message.toolCallId] : []));
+	return kept.flatMap((message): Message[] => {
+		if (message.role === "toolResult") return callIds.has(message.toolCallId) ? [message] : [];
+		if (message.role !== "assistant") return [message];
+		const content = message.content.filter((part) => part.type !== "toolCall" || resultIds.has(part.id));
+		return content.length > 0 ? [{ ...message, content }] : [];
+	});
+}
+
 // ─── In-process Pi agent sessions ───────────────────────────────────────────
 
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024;
@@ -719,6 +763,8 @@ async function runAgent(
 		defaultMaxTurns: number;
 		/** Continue a saved child session with this message instead of starting the task. */
 		resume?: { sessionFile: string; message: string };
+		/** Parent messages a new child session starts with, from `forkParentContext()`. */
+		forkedContext?: Message[];
 		signal?: AbortSignal;
 		parentCtx: ExtensionContext;
 	} & Partial<ChildHooks>,
@@ -816,6 +862,15 @@ async function runAgent(
 		if (!projectTrusted && isParentProjectTrusted(opts.parentCtx)) {
 			result.selectionReason += "; project resources not loaded: cwd is outside the trusted parent workspace";
 		}
+		const forkedContext = opts.resume ? undefined : opts.forkedContext;
+		if (forkedContext) {
+			const forkTokens = forkedContext.reduce((sum, message) => sum + estimateTokens(message), 0);
+			const window = model.contextWindow || 128000;
+			if (forkTokens > window * MAX_FORK_WINDOW_SHARE) {
+				throw new Error(`Forked parent context is about ${formatTokens(forkTokens)} tokens, more than ${MAX_FORK_WINDOW_SHARE * 100}% of ${result.model}'s ${formatTokens(window)}-token window. Launch with context "fresh" and put what the child needs in the task.`);
+			}
+			result.selectionReason += `; forked parent context, about ${formatTokens(forkTokens)} tokens`;
+		}
 		const modelRuntime = await waitWithDeadline((signal) => getChildModelRuntime(opts.parentCtx, signal), {
 			signal: opts.signal,
 			label: "Child model runtime setup",
@@ -864,6 +919,7 @@ async function runAgent(
 			childSession = opts.resume
 				? openChildSession(opts.resume.sessionFile, effectiveCwd, ownerId, ownerFile)
 				: createChildSession(effectiveCwd, ownerId, ownerFile);
+			for (const message of forkedContext ?? []) childSession.appendMessage(message);
 			result.sessionFile = childSession.getSessionFile();
 		} catch (error) {
 			result.persistenceError = `Cannot ${opts.resume ? "open" : "create"} native child session: ${error instanceof Error ? error.message : String(error)}`;
@@ -957,7 +1013,8 @@ async function runAgent(
 			abortListener = () => opts.signal?.removeEventListener("abort", abort);
 		}
 
-		await session.prompt(opts.resume ? opts.resume.message : `Task: ${task}`, {
+		const prompt = opts.resume ? opts.resume.message : `${forkedContext ? `${FORK_TASK_PREFIX}\n\n` : ""}Task: ${task}`;
+		await session.prompt(prompt, {
 			expandPromptTemplates: false,
 			// Pi's prompt preflight ignores abort, so a child stopped meanwhile must not start its run.
 			preflightResult: (disposition) => {
@@ -1174,6 +1231,7 @@ export default function (pi: ExtensionAPI) {
 	// ─── Tool schemas ─────────────────────────────────────────────────────
 
 	const CWD_DESCRIPTION = "Working directory. Omit to inherit the parent workspace. Under Gondolin, omit or use /workspace; other paths are rejected.";
+	const CONTEXT_DESCRIPTION = "fresh (default): the child sees only its task. fork: it starts from a copy of this conversation, without thinking or subagent calls; only for continuing work that needs evidence gathered here, never for reviews.";
 	const ModelPolicyFields = {
 		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin, or a comma-separated fallback list of them; the first available candidate wins" })),
 		thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Requested thinking level" })),
@@ -1185,6 +1243,7 @@ export default function (pi: ExtensionAPI) {
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task to delegate" }),
 		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
+		context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: CONTEXT_DESCRIPTION })),
 		...ModelPolicyFields,
 	});
 
@@ -1192,6 +1251,7 @@ export default function (pi: ExtensionAPI) {
 		agent: Type.String({ description: "Agent name" }),
 		task: Type.String({ description: "Task with optional {previous} placeholder" }),
 		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
+		context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: CONTEXT_DESCRIPTION })),
 		...ModelPolicyFields,
 	});
 
@@ -1217,6 +1277,7 @@ export default function (pi: ExtensionAPI) {
 		tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks to run in parallel" })),
 		chain: Type.Optional(Type.Array(ChainItem, { description: "Sequential chain steps" })),
 		cwd: Type.Optional(Type.String({ description: CWD_DESCRIPTION })),
+		context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: `Launch default; a task's own context wins. ${CONTEXT_DESCRIPTION}` })),
 		...ModelPolicyFields,
 	});
 
@@ -1254,7 +1315,6 @@ export default function (pi: ExtensionAPI) {
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
 	const MAX_STATUS_OUTPUT_BYTES = 64 * 1024;
 	const SNAPSHOT_INTERVAL_MS = 500;
-	const COMPLETION_MESSAGE = "subagent-completion";
 
 	function isCurrentOwner(job: BackgroundJob): boolean {
 		return job.ownerSessionId === currentSessionId && job.ownerSessionFile === currentSessionFile;
@@ -1745,7 +1805,7 @@ export default function (pi: ExtensionAPI) {
 				...notices.map((notice) => notice.line),
 				"Quiet does not always mean stuck. Inspect with subagent action=status view=detail before steering or stopping.",
 			].join("\n"));
-			if (!sendCoordinatorMessage(job.ownerSessionId, job.ownerSessionFile, "subagent-stall", text)) continue;
+			if (!sendCoordinatorMessage(job.ownerSessionId, job.ownerSessionFile, STALL_MESSAGE, text)) continue;
 			for (const notice of notices) job.stallNoticeFor.set(notice.index, notice.activityAt);
 		}
 	}
@@ -1844,6 +1904,11 @@ export default function (pi: ExtensionAPI) {
 		return `[Earlier output truncated: kept last ${kept.length} of ${previousOutput.length} characters]\n\n${kept}`;
 	}
 
+	/** A task's own `context` wins over the launch default; children start fresh unless one says fork. */
+	function childContext(item: any, params: any): ChildContext {
+		return (item.context ?? params.context) === "fork" ? "fork" : "fresh";
+	}
+
 	/** Runs a launch the tool already validated; resolves with each child's final result. */
 	async function runLaunch(
 		params: any,
@@ -1851,10 +1916,11 @@ export default function (pi: ExtensionAPI) {
 		hooks: ChildHooks,
 		ctx: ExtensionContext,
 		agents: AgentConfig[],
-		resume?: { sessionFile: string; message: string },
+		options: { resume?: { sessionFile: string; message: string }; forkedContext?: Message[] },
 	): Promise<SingleResult[]> {
 		const launchPolicy = modelPolicyFrom(params);
 		const common = { signal, launchPolicy, defaultMaxTurns: limits.defaultMaxTurns, parentCtx: ctx };
+		const forkFor = (item: any) => childContext(item, params) === "fork" ? options.forkedContext : undefined;
 
 		if (params.chain?.length) {
 			const results: SingleResult[] = params.chain.map((step: any, index: number) => makePlaceholder(step.agent, step.task, index + 1));
@@ -1869,6 +1935,7 @@ export default function (pi: ExtensionAPI) {
 					step: i + 1,
 					controlIndex: i,
 					itemPolicy: modelPolicyFrom(step),
+					forkedContext: forkFor(step),
 				});
 				if (isFailedResult(results[i])) {
 					for (let pendingIndex = i + 1; pendingIndex < results.length; pendingIndex++) {
@@ -1897,6 +1964,7 @@ export default function (pi: ExtensionAPI) {
 					cwd: task.cwd,
 					controlIndex: index,
 					itemPolicy: modelPolicyFrom(task),
+					forkedContext: forkFor(task),
 					onStateChange: (childIndex, result) => {
 						live[childIndex] = result;
 						hooks.onStateChange(childIndex, result);
@@ -1914,7 +1982,14 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 
-		return [await runAgent(ctx.cwd, agents, params.agent, params.task, { ...common, ...hooks, cwd: params.cwd, controlIndex: 0, resume })];
+		return [await runAgent(ctx.cwd, agents, params.agent, params.task, {
+			...common,
+			...hooks,
+			cwd: params.cwd,
+			controlIndex: 0,
+			resume: options.resume,
+			forkedContext: forkFor(params),
+		})];
 	}
 
 	async function controlJob(params: { action: string; id?: string; message?: string; delivery?: "steer" | "followUp"; index?: number }): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined; isError?: boolean }> {
@@ -2064,7 +2139,7 @@ export default function (pi: ExtensionAPI) {
 		params: any,
 		agents: AgentConfig[],
 		launches: ChildLaunch[],
-		options: { id?: string; resume?: { sessionFile: string; message: string } } = {},
+		options: { id?: string; resume?: { sessionFile: string; message: string }; forkedContext?: Message[] } = {},
 	): BackgroundJob {
 		const shape = getLaunchShape(params);
 		const job: BackgroundJob = {
@@ -2127,7 +2202,7 @@ export default function (pi: ExtensionAPI) {
 				if (isCurrentOwner(job)) refreshSnapshot();
 			},
 		};
-		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options.resume).then(async (results) => {
+		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options).then(async (results) => {
 			job.results = results;
 			for (let index = 0; index < job.results.length; index++) {
 				syncChildRecord(job, index, job.results[index]);
@@ -2182,7 +2257,8 @@ export default function (pi: ExtensionAPI) {
 			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
 			"Available agent names and descriptions are listed under the Subagents section of the system prompt; select an agent by its exact discovered name only.",
-			"Children do not inherit the parent conversation, project/global instructions, skills, or extension tools — make each task self-contained: scoped goal and acceptance criteria, pointers to instructions/files the child must read, writable paths with single-writer ownership, only user-granted permissions, and how to verify or report a blocked outcome.",
+			"Children start fresh by default. context=fork copies this conversation (without thinking or subagent calls) into the child; use it only for continuing work that depends on evidence gathered here, and keep reviews, independent research, and adversarial checks fresh.",
+			"Children do not inherit project/global instructions, skills, or extension tools, nor the conversation unless forked — make each task self-contained: scoped goal and acceptance criteria, pointers to instructions/files the child must read, writable paths with single-writer ownership, only user-granted permissions, and how to verify or report a blocked outcome.",
 			"Parallel read-only exploration is fine, but only one writer may operate in a shared worktree at a time; non-overlapping files does not waive this — use separate worktrees only when explicitly authorized.",
 		].join(" "),
 		parameters: SubagentParams,
@@ -2286,7 +2362,7 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			const launches: Array<{ agent: string; task: string; cwd?: string }> = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
+			const launches: Array<{ agent: string; task: string; cwd?: string; context?: ChildContext }> = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
 			const launchPolicy = modelPolicyFrom(params);
 			const childLaunches: ChildLaunch[] = [];
 			for (const launch of launches) {
@@ -2297,7 +2373,9 @@ export default function (pi: ExtensionAPI) {
 				childLaunches.push({ agent: launch.agent, task: launch.task, cwd, policy: overridePolicy(launchPolicy, modelPolicyFrom(launch)) });
 			}
 
-			const job = startJob(ctx, params, agents, childLaunches);
+			// Snapshot now: children may start later, after the parent's branch has moved on.
+			const forkedContext = launches.some((launch) => childContext(launch, params) === "fork") ? forkParentContext(ctx) : undefined;
+			const job = startJob(ctx, params, agents, childLaunches, { forkedContext });
 			const compact = job.results.map((result) => compactHeaderLine(result, 200)).join("\n");
 			const warning = pendingWarnings.map((message) => `\n${message}`).join("");
 			pendingWarnings = [];
@@ -2424,7 +2502,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			systemPrompt,
 			message: {
-				customType: "subagent-status-reminder",
+				customType: REMINDER_MESSAGE,
 				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Self-contained child completions are delivered automatically; inspect details directly, and use subagent action=status only when the user asks for status, details are missing, or control actions are needed.`,
 				display: false,
 			},

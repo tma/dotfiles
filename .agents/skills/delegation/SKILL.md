@@ -15,7 +15,7 @@ Use parallel subagents for independent lanes. Give each shared worktree exactly 
 
 ## 2. Build a context packet for every child
 
-Children are isolated: a subagent does not automatically receive the parent conversation, project or global instruction files, loaded skills, or extension tools. Every delegated task carries its own self-contained packet:
+Children are isolated: a subagent does not automatically receive project or global instruction files, loaded skills, or extension tools, and by default not the parent conversation. Every delegated task carries its own self-contained packet:
 
 - a scoped task with concrete acceptance criteria and the expected output
 - the relevant instructions, or pointers to accessible files the child must read, not the entire global prompt
@@ -25,7 +25,9 @@ Children are isolated: a subagent does not automatically receive the parent conv
 
 This contract applies to every launch mode of the `subagent` tool: single, parallel, and chain alike.
 
-**Done when:** each task, read on its own with no parent context, contains all five items.
+Choose each child's context. Leave `context` at its default, `fresh`. Set `context: "fork"` only when the child needs evidence already gathered in this conversation, such as continuing an investigation; it copies the conversation without thinking or earlier subagent calls. Second-opinion reviews, independent research, and adversarial checks always run `fresh`, because a reviewer that has read the parent's reasoning is no longer independent. A forked task still carries the full packet.
+
+**Done when:** each task, read on its own with no parent context, contains all five items, and every forked task continues work rather than reviewing it.
 
 ## 3. Launch asynchronously
 

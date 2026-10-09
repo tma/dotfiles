@@ -143,11 +143,33 @@ that fail to save show a warning, and `subagent` status lists them.
 ## Parent-to-child context contract
 
 Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and
-`noContextFiles` set, so a child never automatically receives the parent
-conversation, project or global instruction files (`AGENTS.md`,
-`.agents/AGENTS.md`, `.github/copilot-instructions.md`, etc.), loaded skills,
-or extension tools. This isolation is intentional; don't work around it by
-pasting the parent's full system prompt into a task.
+`noContextFiles` set, so a child never automatically receives project or global
+instruction files (`AGENTS.md`, `.agents/AGENTS.md`,
+`.github/copilot-instructions.md`, etc.), loaded skills, or extension tools,
+and by default it doesn't see the parent conversation either. This isolation is
+intentional; don't work around it by pasting the parent's full system prompt
+into a task.
+
+`context: "fork"` on a launch, task, or chain step (a task's own value wins over
+the launch default) starts the child from a copy of the parent's current branch
+as the parent model sees it, compaction summary included, with the task as the
+next user message. The copy is taken when the launch is made, and it leaves out
+thinking blocks (signed thinking only replays on the model that wrote it), the
+parent's system messages, the extension's completion, stall, and reminder
+messages, and every `subagent` call with its result, so the child can't
+see or drive other children. Other tool calls keep their results; a call
+without a result, such as one still running alongside the launch, is dropped.
+If the copy is estimated at more than half of the child model's context
+window, the child fails before it starts and asks for `fresh` instead; nothing
+is truncated.
+
+A forked child still gets its own agent prompt, tools, guards, cwd, and
+limits. Its session lives in the normal child session directory, so status,
+the inspector, and resume work as usual, and it never becomes the parent's
+`pi -c` target. Use `fork` for continuing work that depends on evidence in the
+conversation. Reviews, independent research, and adversarial checks stay
+`fresh`, which is the default: a reviewer that reads the parent's reasoning
+stops being independent.
 
 The required contents of a delegated task packet (scope, instruction
 pointers, writable paths/ownership, granted permissions, verification and
