@@ -81,7 +81,7 @@ Long pieces get edited between turns. When you return to a draft:
 
 - Do not create working files, outlines, or fragment collections that live on past
   the task. Draft in the conversation or in the document the user named. The
-  `context-memory` skill owns that policy.
+  global instructions (`AGENTS.md`) own that policy.
 - Do not add frontmatter, metadata, or platform formatting the user did not ask
   for.
 - Do not invent names, numbers, dates, links, or quotes. Ask for what is missing.

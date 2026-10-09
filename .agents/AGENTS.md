@@ -55,6 +55,18 @@ major steps, waiting on slow commands, tests, or tool calls, and retrying after
 an error or changing approach. Keep them short and factual, and summarize what
 you are doing instead of exposing private chain-of-thought.
 
+## Session continuity
+
+Keep continuity in Pi session history: the current conversation, `/resume`,
+`/tree`, session names, and todos. Never create memory, handoff, or
+decision-log files (such as `HANDOFF.md` or `.decisions.md`) or `.gitignore`
+entries for them unless the user explicitly asks for a file. Give summaries and
+handoffs inline (or via a `/handoff` command when available), and keep
+decisions visible in the conversation. Create durable docs (ADR, README, design
+doc) only when they serve the project. This binds other skills too, including
+retrospectives, design sessions, and long-form drafting; if unsure, persist
+nothing extra.
+
 ## Writing on my behalf
 
 Before drafting or publishing user-visible prose on my behalf (commit messages,

@@ -20,7 +20,7 @@ The output is a set of proposals about the agent's environment. Nothing is chang
 
 ## Boundaries
 
-- Do not write memory, handoff, or decision files as a byproduct of the retrospective. The `context-memory` skill owns that policy: continuity lives in the session, and durable documents are created only when they serve the project.
+- Do not write memory, handoff, or decision files as a byproduct of the retrospective. The global instructions (`AGENTS.md`) own that policy: continuity lives in the session, and durable documents are created only when they serve the project.
 - Do not change instruction files, skills, or configuration during the retrospective. Proposals first, edits after the user picks.
 - Keep the output in the conversation unless the user asks for a document.
 
