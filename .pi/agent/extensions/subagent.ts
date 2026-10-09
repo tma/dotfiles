@@ -10,7 +10,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, type Message } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
@@ -20,15 +19,11 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
-	getMarkdownTheme,
 	ModelRuntime,
 	parseFrontmatter,
 	SettingsManager,
-	truncateHead,
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
 import permissionGate from "./permission-gate.js";
@@ -278,18 +273,6 @@ function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 }
 
-function addUsage(a: UsageStats, b: UsageStats): UsageStats {
-	return {
-		input: a.input + b.input,
-		output: a.output + b.output,
-		cacheRead: a.cacheRead + b.cacheRead,
-		cacheWrite: a.cacheWrite + b.cacheWrite,
-		cost: a.cost + b.cost,
-		contextTokens: Math.max(a.contextTokens, b.contextTokens),
-		turns: a.turns + b.turns,
-	};
-}
-
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type ChildState = "queued" | "running" | "completed" | "failed" | "aborted";
@@ -328,6 +311,14 @@ type JobState = "running" | "stopping" | "completed" | "failed" | "stopped";
 
 interface AgentControl {
 	send(message: string, delivery: "steer" | "followUp"): Promise<boolean>;
+}
+
+/** How a running child reports to its job. */
+interface ChildHooks {
+	onStateChange(index: number, result: SingleResult): void;
+	onControlReady(index: number, control: AgentControl): void;
+	onControlClosed(index: number): void;
+	canApplyAsync(): boolean;
 }
 
 interface BackgroundJob {
@@ -590,8 +581,6 @@ function acquireChildSessionLease(file: string): string {
 
 // ─── In-process Pi agent sessions ───────────────────────────────────────────
 
-type OnUpdate = (partial: AgentToolResult<SubagentDetails>) => void;
-
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024;
 const catalogRefreshers = new WeakMap<ExtensionContext["modelRegistry"], CatalogRefreshCoordinator>();
 
@@ -780,14 +769,8 @@ async function runAgent(
 		/** Continue a saved child session with this message instead of starting the task. */
 		resume?: { sessionFile: string; message: string };
 		signal?: AbortSignal;
-		onUpdate?: OnUpdate;
-		onStateChange?: (index: number, result: SingleResult) => void;
-		onControlReady?: (index: number, control: AgentControl) => void;
-		onControlClosed?: (index: number) => void;
-		canApplyAsync?: () => boolean;
-		makeDetails: (results: SingleResult[]) => SubagentDetails;
 		parentCtx: ExtensionContext;
-	},
+	} & Partial<ChildHooks>,
 ): Promise<SingleResult> {
 	const agent = agents.find((candidate) => candidate.name === agentName);
 	const result: SingleResult = {
@@ -836,10 +819,6 @@ async function runAgent(
 	const emitUpdate = () => {
 		if (result.sessionFile) result.sessionSaved = fs.existsSync(result.sessionFile);
 		opts.onStateChange?.(controlIndex, result);
-		opts.onUpdate?.({
-			content: [{ type: "text", text: getFinalOutput(result.messages) || `(${result.state}…)` }],
-			details: opts.makeDetails([result]),
-		});
 	};
 
 	try {
@@ -1143,16 +1122,6 @@ function capFinalOutput(messages: Message[], maxLines: number): void {
 	};
 }
 
-// ─── Truncation ─────────────────────────────────────────────────────────────
-
-function truncateOutput(text: string): string {
-	const t = truncateHead(text, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-	if (t.truncated) {
-		return t.content + `\n\n[Truncated: showing ${t.outputLines}/${t.totalLines} lines]`;
-	}
-	return t.content;
-}
-
 // ─── Tool rendering helpers ─────────────────────────────────────────────────
 
 function renderResultIcon(r: SingleResult, theme: any): string {
@@ -1160,15 +1129,6 @@ function renderResultIcon(r: SingleResult, theme: any): string {
 	if (r.state === "running") return theme.fg("warning", "●");
 	if (isFailedResult(r)) return theme.fg("error", "✗");
 	return theme.fg("success", "✓");
-}
-
-function isRunning(r: SingleResult): boolean {
-	return r.state === "running";
-}
-
-function selectionSummary(r: SingleResult): string {
-	if (!r.model) return "model selection pending";
-	return `${r.model} · thinking ${r.thinkingLevel ?? "pending"}${r.selectionReason ? ` · ${r.selectionReason}` : ""}`;
 }
 
 const COLLAPSED_STATUS_CHILD_LIMIT = 3;
@@ -1266,6 +1226,7 @@ function renderCollapsedResult(r: SingleResult, theme: any): string {
 	return text;
 }
 
+/** Launch results hold the queued snapshot, so only the task is worth expanding; status carries live detail. */
 function renderExpandedResult(r: SingleResult, theme: any): Container {
 	const c = new Container();
 	const icon = renderResultIcon(r, theme);
@@ -1280,38 +1241,9 @@ function renderExpandedResult(r: SingleResult, theme: any): Container {
 		c.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
 	}
 
-	if (r.model) {
-		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("muted", "─── Model selection ───"), 0, 0));
-		c.addChild(new Text(theme.fg("dim", selectionSummary(r)), 0, 0));
-	}
-
 	c.addChild(new Spacer(1));
 	c.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
 	c.addChild(new Text(theme.fg("dim", r.task), 0, 0));
-
-	const toolCalls = getToolCallSummary(r.messages);
-	if (toolCalls.length > 0) {
-		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("muted", "─── Tools ───"), 0, 0));
-		for (const call of toolCalls) {
-			c.addChild(new Text(`${theme.fg("muted", "→ ")}${theme.fg("dim", call)}`, 0, 0));
-		}
-	}
-
-	const output = getFinalOutput(r.messages);
-	if (output) {
-		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
-		c.addChild(new Markdown(truncateOutput(output).trim(), 0, 0, getMarkdownTheme()));
-	}
-
-	const usage = formatUsage(r.usage);
-	if (usage) {
-		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("dim", usage), 0, 0));
-	}
-
 	return c;
 }
 
@@ -1957,218 +1889,89 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	async function executeDispatch(
+	/** Bounds a chain step's output for the next step; keeps the end, where conclusions usually are. */
+	function chainInput(previousOutput: string): string {
+		const MAX_PREVIOUS_CHARS = 4000;
+		if (previousOutput.length <= MAX_PREVIOUS_CHARS) return previousOutput;
+		let start = previousOutput.length - MAX_PREVIOUS_CHARS;
+		const code = previousOutput.charCodeAt(start);
+		// Starting on a low surrogate would leave half of a character.
+		if (code >= 0xdc00 && code <= 0xdfff) start++;
+		const kept = previousOutput.slice(start);
+		return `[Earlier output truncated: kept last ${kept.length} of ${previousOutput.length} characters]\n\n${kept}`;
+	}
+
+	/** Runs a launch the tool already validated; resolves with each child's final result. */
+	async function runLaunch(
 		params: any,
-		signal: AbortSignal | undefined,
-		onUpdate: OnUpdate | undefined,
-		onStateChange: ((index: number, result: SingleResult) => void) | undefined,
-		onControlReady: ((index: number, control: AgentControl) => void) | undefined,
-		onControlClosed: ((index: number) => void) | undefined,
-		canApplyAsync: (() => boolean) | undefined,
+		signal: AbortSignal,
+		hooks: ChildHooks,
 		ctx: ExtensionContext,
 		agents: AgentConfig[],
 		resume?: { sessionFile: string; message: string },
-	) {
-			const makeDetails = (mode: SubagentDetails["mode"]) => (results: SingleResult[]): SubagentDetails => ({ mode, results });
-			const launchPolicy = modelPolicyFrom(params);
+	): Promise<SingleResult[]> {
+		const launchPolicy = modelPolicyFrom(params);
+		const common = { signal, launchPolicy, defaultMaxTurns: limits.defaultMaxTurns, parentCtx: ctx };
 
-			const hasChain = (params.chain?.length ?? 0) > 0;
-			const hasTasks = (params.tasks?.length ?? 0) > 0;
-			const hasSingle = Boolean(params.agent && params.task);
-
-			if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
-				const list = agents.map((a) => `${a.name}: ${a.description}`).join("\n");
-				return {
-					content: [{ type: "text", text: `Provide exactly one mode (single/parallel/chain).\n\nAvailable agents:\n${list || "none"}` }],
-					details: makeDetails("single")([]),
-					isError: true,
-				};
-			}
-
-			// ── Chain ──
-			if (params.chain && params.chain.length > 0) {
-				const results: SingleResult[] = params.chain.map((step: any, index: number) =>
-					makePlaceholder(step.agent, step.task, index + 1),
-				);
-				let previousOutput = "";
-
-				for (let i = 0; i < params.chain.length; i++) {
-					const step = params.chain[i];
-
-					// Bound previous output for downstream steps; keep the end, where conclusions usually are.
-					const MAX_PREVIOUS_CHARS = 4000;
-					let previousForTask = previousOutput;
-					if (previousOutput.length > MAX_PREVIOUS_CHARS) {
-						let start = previousOutput.length - MAX_PREVIOUS_CHARS;
-						const code = previousOutput.charCodeAt(start);
-						// Starting on a low surrogate would leave half of a character.
-						if (code >= 0xdc00 && code <= 0xdfff) start++;
-						const kept = previousOutput.slice(start);
-						previousForTask = `[Earlier output truncated: kept last ${kept.length} of ${previousOutput.length} characters]\n\n${kept}`;
-					}
-					const task = step.task.replace(/\{previous\}/g, previousForTask);
-
-					const chainOnUpdate: OnUpdate | undefined = onUpdate
-						? (partial) => {
-								const cur = partial.details?.results[0];
-								if (cur) {
-									results[i] = cur;
-									onUpdate({ content: partial.content, details: makeDetails("chain")([...results]) });
-								}
-							}
-						: undefined;
-
-					const r = await runAgent(ctx.cwd, agents, step.agent, task, {
-						cwd: step.cwd,
-						step: i + 1,
-						controlIndex: i,
-						signal,
-						onUpdate: chainOnUpdate,
-						onStateChange,
-						onControlReady,
-						onControlClosed,
-						canApplyAsync,
-						makeDetails: makeDetails("chain"),
-						launchPolicy,
-						itemPolicy: modelPolicyFrom(step),
-						defaultMaxTurns: limits.defaultMaxTurns,
-						parentCtx: ctx,
-					});
-					results[i] = r;
-
-					if (isFailedResult(r)) {
-						for (let pendingIndex = i + 1; pendingIndex < results.length; pendingIndex++) {
-							results[pendingIndex] = {
-								...results[pendingIndex],
-								state: "aborted",
-								exitCode: 1,
-								stopReason: "skipped",
-								errorMessage: "Chain stopped before this step",
-							};
-							onStateChange?.(pendingIndex, results[pendingIndex]);
-						}
-						const err = r.errorMessage || r.stderr || getFinalOutput(r.messages) || "(no output)";
-						return {
-							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${err}` }],
-							details: makeDetails("chain")(results),
-							isError: true,
+		if (params.chain?.length) {
+			const results: SingleResult[] = params.chain.map((step: any, index: number) => makePlaceholder(step.agent, step.task, index + 1));
+			let previousOutput = "";
+			for (let i = 0; i < params.chain.length; i++) {
+				const step = params.chain[i];
+				const task = step.task.replace(/\{previous\}/g, chainInput(previousOutput));
+				results[i] = await runAgent(ctx.cwd, agents, step.agent, task, {
+					...common,
+					...hooks,
+					cwd: step.cwd,
+					step: i + 1,
+					controlIndex: i,
+					itemPolicy: modelPolicyFrom(step),
+				});
+				if (isFailedResult(results[i])) {
+					for (let pendingIndex = i + 1; pendingIndex < results.length; pendingIndex++) {
+						results[pendingIndex] = {
+							...results[pendingIndex],
+							state: "aborted",
+							exitCode: 1,
+							stopReason: "skipped",
+							errorMessage: "Chain stopped before this step",
 						};
+						hooks.onStateChange(pendingIndex, results[pendingIndex]);
 					}
-
-					previousOutput = getFinalOutput(r.messages);
+					break;
 				}
-
-				return {
-					content: [{ type: "text", text: truncateOutput(getFinalOutput(results[results.length - 1].messages) || "(no output)") }],
-					details: makeDetails("chain")(results),
-				};
+				previousOutput = getFinalOutput(results[i].messages);
 			}
+			return results;
+		}
 
-			// ── Parallel ──
-			if (params.tasks && params.tasks.length > 0) {
-				if (params.tasks.length > limits.maxTasksPerLaunch) {
-					return {
-						content: [{ type: "text", text: `Max ${limits.maxTasksPerLaunch} tasks` }],
-						details: makeDetails("parallel")([]),
-						isError: true,
-					};
-				}
-
-				const live: SingleResult[] = params.tasks.map((task: any) => makePlaceholder(task.agent, task.task));
-				const emitParallel = () => {
-					if (!onUpdate) return;
-					const done = live.filter(isTerminalResult).length;
-					onUpdate({
-						content: [{ type: "text", text: `${done}/${params.tasks!.length} done` }],
-						details: makeDetails("parallel")([...live]),
-					});
-				};
-				const executions = params.tasks.map((task: any, index: number) =>
-					runAgent(ctx.cwd, agents, task.agent, task.task, {
-						cwd: task.cwd,
-						controlIndex: index,
-						signal,
-						onUpdate: (partial) => {
-							const current = partial.details?.results[0];
-							if (current) live[index] = current;
-							emitParallel();
-						},
-						onStateChange: (childIndex, result) => {
-							live[childIndex] = result;
-							onStateChange?.(childIndex, result);
-						},
-						onControlReady,
-						onControlClosed,
-						canApplyAsync,
-						makeDetails: makeDetails("parallel"),
-						launchPolicy,
-						itemPolicy: modelPolicyFrom(task),
-						defaultMaxTurns: limits.defaultMaxTurns,
-						parentCtx: ctx,
-					}),
-				);
-				const settled = await Promise.allSettled(executions);
-				const results = settled.map((outcome, index) => {
-					if (outcome.status === "fulfilled") return outcome.value;
-					return {
-						...live[index],
-						state: "failed" as const,
-						exitCode: 1,
-						errorMessage: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
-					};
-				});
-
-				const ok = results.filter((r) => r.exitCode === 0).length;
-				const summaries = results.map((r) => {
-					const out = getFinalOutput(r.messages);
-					const preview = out.length > 200 ? out.slice(0, 200) + "…" : out;
-					return `[${r.agent}] ${r.exitCode === 0 ? "✓" : "✗"}: ${preview || "(no output)"}`;
-				});
-
+		if (params.tasks?.length) {
+			const live: SingleResult[] = params.tasks.map((task: any) => makePlaceholder(task.agent, task.task));
+			const settled = await Promise.allSettled(params.tasks.map((task: any, index: number) =>
+				runAgent(ctx.cwd, agents, task.agent, task.task, {
+					...common,
+					...hooks,
+					cwd: task.cwd,
+					controlIndex: index,
+					itemPolicy: modelPolicyFrom(task),
+					onStateChange: (childIndex, result) => {
+						live[childIndex] = result;
+						hooks.onStateChange(childIndex, result);
+					},
+				}),
+			));
+			return settled.map((outcome, index) => {
+				if (outcome.status === "fulfilled") return outcome.value;
 				return {
-					content: [{ type: "text", text: truncateOutput(`${ok}/${results.length} succeeded\n\n${summaries.join("\n\n")}`) }],
-					details: makeDetails("parallel")(results),
+					...live[index],
+					state: "failed" as const,
+					exitCode: 1,
+					errorMessage: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
 				};
-			}
+			});
+		}
 
-			// ── Single ──
-			if (params.agent && params.task) {
-				const r = await runAgent(ctx.cwd, agents, params.agent, params.task, {
-					cwd: params.cwd,
-					controlIndex: 0,
-					signal,
-					onUpdate,
-					onStateChange,
-					onControlReady,
-					onControlClosed,
-					canApplyAsync,
-					makeDetails: makeDetails("single"),
-					launchPolicy,
-					defaultMaxTurns: limits.defaultMaxTurns,
-					resume,
-					parentCtx: ctx,
-				});
-
-				const isErr = r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
-				if (isErr) {
-					return {
-						content: [{ type: "text", text: r.errorMessage || r.stderr || getFinalOutput(r.messages) || "Failed" }],
-						details: makeDetails("single")([r]),
-						isError: true,
-					};
-				}
-
-				return {
-					content: [{ type: "text", text: truncateOutput(getFinalOutput(r.messages) || "(no output)") }],
-					details: makeDetails("single")([r]),
-				};
-			}
-
-			return {
-				content: [{ type: "text", text: "Invalid params" }],
-				details: makeDetails("single")([]),
-				isError: true,
-			};
+		return [await runAgent(ctx.cwd, agents, params.agent, params.task, { ...common, ...hooks, cwd: params.cwd, controlIndex: 0, resume })];
 	}
 
 	async function controlJob(params: { action: string; id?: string; message?: string; delivery?: "steer" | "followUp"; index?: number }): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined; isError?: boolean }> {
@@ -2358,11 +2161,8 @@ export default function (pi: ExtensionAPI) {
 		ensureStallMonitor();
 		refreshWidget();
 
-		const dispatch = executeDispatch(
-			params,
-			job.abortController.signal,
-			undefined,
-			(index, result) => {
+		const hooks: ChildHooks = {
+			onStateChange(index, result) {
 				job.results[index] = result;
 				job.lastUpdateAt.set(index, Date.now());
 				syncChildRecord(job, index, result);
@@ -2370,7 +2170,7 @@ export default function (pi: ExtensionAPI) {
 				job.updatedAt = Date.now();
 				if (isCurrentOwner(job)) refreshWidget();
 			},
-			(index, control) => {
+			onControlReady(index, control) {
 				job.controls.set(index, control);
 				const pending = job.pendingInputs.filter((input) => input.index === index);
 				job.pendingInputs = job.pendingInputs.filter((input) => input.index !== index);
@@ -2378,23 +2178,18 @@ export default function (pi: ExtensionAPI) {
 				job.updatedAt = Date.now();
 				if (isCurrentOwner(job)) refreshWidget();
 			},
-			(index) => {
+			onControlClosed(index) {
 				job.controls.delete(index);
 				job.updatedAt = Date.now();
 				if (isCurrentOwner(job)) refreshWidget();
 			},
-			() => isCurrentOwner(job) && !shuttingDown,
-			ctx,
-			agents,
-			options.resume,
-		);
-		job.execution = dispatch.then(async (result) => {
-			if (result.details?.results) {
-				job.results = result.details.results;
-				for (let index = 0; index < job.results.length; index++) {
-					syncChildRecord(job, index, job.results[index]);
-					queueCompletion(job, index, job.results[index]);
-				}
+			canApplyAsync: () => isCurrentOwner(job) && !shuttingDown,
+		};
+		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options.resume).then(async (results) => {
+			job.results = results;
+			for (let index = 0; index < job.results.length; index++) {
+				syncChildRecord(job, index, job.results[index]);
+				queueCompletion(job, index, job.results[index]);
 			}
 			await Promise.allSettled([...job.deliveryPromises]);
 			for (const input of job.pendingInputs) {
@@ -2403,7 +2198,7 @@ export default function (pi: ExtensionAPI) {
 			job.pendingInputs = [];
 			job.state = job.abortController.signal.aborted
 				? "stopped"
-				: result.isError || job.results.some(isFailedResult) ? "failed" : "completed";
+				: job.results.some(isFailedResult) ? "failed" : "completed";
 		}).catch((error) => {
 			const message = error instanceof Error ? error.message : String(error);
 			job.error = message;
@@ -2601,24 +2396,15 @@ export default function (pi: ExtensionAPI) {
 			const statusText = firstTextContent(result.content);
 			let body: Container | Text;
 			if (isStatus) {
-				body = expanded
-					? new Text(statusText || "(no output)", 0, 0)
-					: new Text(renderCollapsedStatus(statusText, details, args.view, theme), 0, 0);
+				body = new Text(expanded ? statusText || "(no output)" : renderCollapsedStatus(statusText, details, args.view, theme), 0, 0);
 			} else if (!details || details.results.length === 0) {
 				body = new Text(statusText || "(no output)", 0, 0);
-			} else if (details.mode === "single" && details.results.length === 1) {
-				body = expanded
-					? renderExpandedResult(details.results[0], theme)
-					: new Text(renderCollapsedResult(details.results[0], theme), 0, 0);
 			} else if (expanded) {
-				const c = new Container();
-				let first = true;
-				for (const child of details.results) {
-					if (!first) c.addChild(new Spacer(1));
-					first = false;
-					c.addChild(renderExpandedResult(child, theme));
+				body = new Container();
+				for (const [index, child] of details.results.entries()) {
+					if (index > 0) body.addChild(new Spacer(1));
+					body.addChild(renderExpandedResult(child, theme));
 				}
-				body = c;
 			} else {
 				body = new Text(details.results.map((child) => renderCollapsedResult(child, theme)).join("\n"), 0, 0);
 			}
