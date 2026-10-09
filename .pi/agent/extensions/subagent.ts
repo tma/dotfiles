@@ -66,6 +66,7 @@ interface AgentConfig extends ModelPolicy {
 	description: string;
 	tools?: string[];
 	maxOutputLines?: number;
+	maxTurns?: number;
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -74,6 +75,11 @@ interface AgentConfig extends ModelPolicy {
 interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	const parsed = Number(value);
+	return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
@@ -116,6 +122,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			provider: frontmatter.provider,
 			family: frontmatter.family,
 			maxOutputLines: frontmatter.maxOutputLines ? Number(frontmatter.maxOutputLines) : undefined,
+			maxTurns: positiveInteger(frontmatter.maxTurns),
 			systemPrompt: body,
 			source,
 			filePath,
@@ -181,6 +188,9 @@ const TITLE_MAX_WORDS = 6;
 const TITLE_MAX_CHARS = 48;
 const TITLE_PROMPT_CHARS = 1000;
 const TITLE_TIMEOUT_MS = 5000;
+const DEFAULT_MAX_TURNS = 80;
+const MAX_TURNS_GRACE = 3;
+const TURN_LIMIT_MESSAGE = "You have reached your turn limit. Do not start new work. Give your final answer now with what you have, and say what is unfinished.";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -707,6 +717,9 @@ async function runAgent(
 	let titleController: AbortController | undefined;
 	let titleTimer: ReturnType<typeof setTimeout> | undefined;
 	let parentTitleAbortListener: (() => void) | undefined;
+	let turnCount = 0;
+	let turnLimitSteered = false;
+	let turnLimitError: string | undefined;
 
 	const updateState = (state: ChildState) => {
 		result.state = state;
@@ -873,7 +886,22 @@ async function runAgent(
 		result.thinkingLevel = session.thinkingLevel;
 		updateState("running");
 		emitUpdate();
+		const maxTurns = agent.maxTurns ?? DEFAULT_MAX_TURNS;
+		const recordControlError = (label: string, error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			result.stderr = `${result.stderr}${result.stderr ? "\n" : ""}${label} failed: ${message}`;
+		};
 		unsubscribe = session.subscribe((event: any) => {
+			if (event.type === "turn_end") {
+				turnCount++;
+				if (!turnLimitSteered && turnCount >= maxTurns) {
+					turnLimitSteered = true;
+					session?.steer(TURN_LIMIT_MESSAGE).catch((error) => recordControlError("Turn limit steer", error));
+				} else if (turnLimitSteered && !turnLimitError && turnCount >= maxTurns + MAX_TURNS_GRACE) {
+					turnLimitError = `Turn limit reached: stopped after ${turnCount} turns (limit ${maxTurns} plus ${MAX_TURNS_GRACE} to wrap up)`;
+					session?.abort().catch((error) => recordControlError("Turn limit abort", error));
+				}
+			}
 			if (event.type === "agent_start" && !controlRegistered) {
 				controlRegistered = true;
 				opts.onControlReady?.(controlIndex, {
@@ -921,7 +949,13 @@ async function runAgent(
 		}
 
 		await session.prompt(`Task: ${task}`, { expandPromptTemplates: false });
-		if (opts.signal?.aborted || result.stopReason === "aborted") {
+		if (turnLimitError && !opts.signal?.aborted) {
+			// Keep the transcript so the parent still gets the partial final output.
+			result.exitCode = 1;
+			result.stopReason = "turn limit reached";
+			result.errorMessage = turnLimitError;
+			finishState("failed");
+		} else if (opts.signal?.aborted || result.stopReason === "aborted") {
 			result.exitCode = 1;
 			result.stopReason = "aborted";
 			result.errorMessage ||= "Subagent stopped";
@@ -940,6 +974,7 @@ async function runAgent(
 			result.stopReason = "aborted";
 			finishState("aborted");
 		} else {
+			if (turnLimitError) result.stopReason = "turn limit reached";
 			finishState("failed");
 		}
 	} finally {
@@ -1230,6 +1265,7 @@ export default function (pi: ExtensionAPI) {
 	const STALL_NOTICE_MS = 10 * 60_000;
 	const STALL_CHECK_MS = 60_000;
 	const GROUP_STRAGGLER_MS = 2 * 60_000;
+	const SHUTDOWN_WAIT_MS = 10_000;
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_ACTIVE_JOBS = 20;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
@@ -2306,7 +2342,14 @@ export default function (pi: ExtensionAPI) {
 			job.ownerSessionId === ownerSessionId && job.ownerSessionFile === ownerSessionFile,
 		);
 		for (const job of ownedJobs) markJobStopping(job, "Parent session shut down");
-		await Promise.allSettled(ownedJobs.map((job) => job.execution));
+		let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = await Promise.race([
+			Promise.allSettled(ownedJobs.map((job) => job.execution)).then(() => false),
+			new Promise<boolean>((resolve) => {
+				shutdownTimer = setTimeout(() => resolve(true), SHUTDOWN_WAIT_MS);
+			}),
+		]);
+		clearTimeout(shutdownTimer);
 		for (const job of ownedJobs) {
 			for (let index = 0; index < job.results.length; index++) {
 				if (isTerminalResult(job.results[index])) continue;
@@ -2315,7 +2358,7 @@ export default function (pi: ExtensionAPI) {
 					state: "aborted",
 					exitCode: 1,
 					stopReason: "aborted",
-					errorMessage: "Parent session cleanup timed out",
+					errorMessage: timedOut ? "Parent session cleanup timed out" : "Parent session shut down",
 				};
 			}
 			job.state = "stopped";

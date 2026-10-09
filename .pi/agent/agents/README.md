@@ -25,6 +25,21 @@ Selection and authentication preflight have a ten-second total deadline and resp
 
 **Known authentication limitation:** child runtimes are isolated and preserve native and compatibility provider registrations, including per-model headers. Credentials stored only in the parent's runtime or SDK memory store are not shared. A parent can pass authentication preflight while its child cannot authenticate. General propagation needs a supported shared-runtime or authentication-delegation API; converting resolved OAuth or header-only authentication into an API key is not safe.
 
+## Turn limit
+
+Agent frontmatter can cap how many turns a child runs:
+
+```yaml
+maxTurns: 40 # positive integer; defaults to 80
+```
+
+A turn is one model response plus its tool calls. When a child reaches the
+limit, it gets one steering message telling it to stop new work and give its
+final answer, including what's unfinished. If it is still running three turns
+later, it's aborted and reported as failed with `turn limit reached`. The
+parent still receives the last output the child wrote. A value that isn't a
+positive integer falls back to the default.
+
 ## Parent-to-child context contract
 
 Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and
