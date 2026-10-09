@@ -183,15 +183,52 @@ function formatAgentCatalogForPrompt(agents: AgentConfig[]): string {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const MAX_PARALLEL = 8;
-const MAX_CONCURRENCY = 4;
 const TITLE_MAX_WORDS = 6;
 const TITLE_MAX_CHARS = 48;
 const TITLE_PROMPT_CHARS = 1000;
 const TITLE_TIMEOUT_MS = 5000;
-const DEFAULT_MAX_TURNS = 80;
 const MAX_TURNS_GRACE = 3;
 const TURN_LIMIT_MESSAGE = "You have reached your turn limit. Do not start new work. Give your final answer now with what you have, and say what is unfinished.";
+
+// ─── Limits ─────────────────────────────────────────────────────────────────
+
+interface SubagentLimits {
+	/** Parallel tasks in one launch. */
+	maxTasksPerLaunch: number;
+	/** Children running at once across all jobs in this process. */
+	maxConcurrent: number;
+	maxActiveJobs: number;
+	/** Turn cap for agents without frontmatter `maxTurns`. */
+	defaultMaxTurns: number;
+}
+
+const DEFAULT_LIMITS: SubagentLimits = { maxTasksPerLaunch: 8, maxConcurrent: 4, maxActiveJobs: 20, defaultMaxTurns: 80 };
+const LIMIT_CEILINGS: SubagentLimits = { maxTasksPerLaunch: 32, maxConcurrent: 16, maxActiveJobs: 100, defaultMaxTurns: 1000 };
+
+/** Reads the `subagents` settings object; project settings count only when the project is trusted. */
+function loadSubagentLimits(cwd: string, projectTrusted: boolean): { limits: SubagentLimits; warnings: string[] } {
+	const settings = SettingsManager.create(cwd, getAgentDir(), { projectTrusted }).getSettings() as Record<string, unknown>;
+	const config = settings.subagents;
+	const limits = { ...DEFAULT_LIMITS };
+	if (config === undefined) return { limits, warnings: [] };
+	if (typeof config !== "object" || config === null || Array.isArray(config)) {
+		return { limits, warnings: ["`subagents` must be an object; using default limits"] };
+	}
+	const warnings: string[] = [];
+	for (const [key, value] of Object.entries(config)) {
+		if (!Object.hasOwn(DEFAULT_LIMITS, key)) {
+			warnings.push(`unknown key subagents.${key} ignored`);
+			continue;
+		}
+		const name = key as keyof SubagentLimits;
+		if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > LIMIT_CEILINGS[name]) {
+			warnings.push(`subagents.${key} must be an integer from 1 to ${LIMIT_CEILINGS[name]}; using ${DEFAULT_LIMITS[name]}`);
+			continue;
+		}
+		limits[name] = value;
+	}
+	return { limits, warnings };
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -448,7 +485,12 @@ class ChildLimiter {
 		onAbort?: () => void;
 	}> = [];
 
-	constructor(private readonly limit: number) {}
+	constructor(private limit: number) {}
+
+	setLimit(limit: number): void {
+		this.limit = limit;
+		this.startNext();
+	}
 
 	acquire(signal?: AbortSignal): Promise<() => void> {
 		if (signal?.aborted) return Promise.reject(new Error("Subagent aborted while queued"));
@@ -493,7 +535,7 @@ class ChildLimiter {
 	}
 }
 
-const childLimiter = new ChildLimiter(MAX_CONCURRENCY);
+const childLimiter = new ChildLimiter(DEFAULT_LIMITS.maxConcurrent);
 
 // ─── In-process Pi agent sessions ───────────────────────────────────────────
 
@@ -683,6 +725,7 @@ async function runAgent(
 		controlIndex?: number;
 		launchPolicy?: ModelPolicy;
 		itemPolicy?: ModelPolicy;
+		defaultMaxTurns: number;
 		signal?: AbortSignal;
 		onUpdate?: OnUpdate;
 		onStateChange?: (index: number, result: SingleResult) => void;
@@ -888,7 +931,7 @@ async function runAgent(
 		result.thinkingLevel = session.thinkingLevel;
 		updateState("running");
 		emitUpdate();
-		const maxTurns = agent.maxTurns ?? DEFAULT_MAX_TURNS;
+		const maxTurns = agent.maxTurns ?? opts.defaultMaxTurns;
 		const recordControlError = (label: string, error: unknown) => {
 			const message = error instanceof Error ? error.message : String(error);
 			result.stderr = `${result.stderr}${result.stderr ? "\n" : ""}${label} failed: ${message}`;
@@ -1259,6 +1302,9 @@ export default function (pi: ExtensionAPI) {
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let shuttingDown = false;
 	let inspectorController: AbortController | undefined;
+	let limits: SubagentLimits = { ...DEFAULT_LIMITS };
+	/** Settings problems not yet shown; without a UI they ride along with the next launch result. */
+	let pendingLimitWarning: string | undefined;
 	const pendingCompletions = new Set<string>();
 	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
 	const deliveredCompletions = new Set<string>();
@@ -1269,7 +1315,6 @@ export default function (pi: ExtensionAPI) {
 	const GROUP_STRAGGLER_MS = 2 * 60_000;
 	const SHUTDOWN_WAIT_MS = 10_000;
 	const MAX_RETAINED_JOBS = 30;
-	const MAX_ACTIVE_JOBS = 20;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
 	const MAX_STATUS_OUTPUT_BYTES = 64 * 1024;
 
@@ -1801,6 +1846,7 @@ export default function (pi: ExtensionAPI) {
 						makeDetails: makeDetails("chain"),
 						launchPolicy,
 						itemPolicy: modelPolicyFrom(step),
+						defaultMaxTurns: limits.defaultMaxTurns,
 						parentCtx: ctx,
 					});
 					results[i] = r;
@@ -1835,9 +1881,9 @@ export default function (pi: ExtensionAPI) {
 
 			// ── Parallel ──
 			if (params.tasks && params.tasks.length > 0) {
-				if (params.tasks.length > MAX_PARALLEL) {
+				if (params.tasks.length > limits.maxTasksPerLaunch) {
 					return {
-						content: [{ type: "text", text: `Max ${MAX_PARALLEL} tasks` }],
+						content: [{ type: "text", text: `Max ${limits.maxTasksPerLaunch} tasks` }],
 						details: makeDetails("parallel")([]),
 						isError: true,
 					};
@@ -1872,6 +1918,7 @@ export default function (pi: ExtensionAPI) {
 						makeDetails: makeDetails("parallel"),
 						launchPolicy,
 						itemPolicy: modelPolicyFrom(task),
+						defaultMaxTurns: limits.defaultMaxTurns,
 						parentCtx: ctx,
 					}),
 				);
@@ -1912,6 +1959,7 @@ export default function (pi: ExtensionAPI) {
 					canApplyAsync,
 					makeDetails: makeDetails("single"),
 					launchPolicy,
+					defaultMaxTurns: limits.defaultMaxTurns,
 					parentCtx: ctx,
 				});
 
@@ -2096,11 +2144,11 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			if (hasTasks && params.tasks!.length > MAX_PARALLEL) {
-				return { content: [{ type: "text", text: `Max ${MAX_PARALLEL} parallel tasks` }], details: undefined, isError: true };
+			if (hasTasks && params.tasks!.length > limits.maxTasksPerLaunch) {
+				return { content: [{ type: "text", text: `Max ${limits.maxTasksPerLaunch} parallel tasks` }], details: undefined, isError: true };
 			}
-			if (activeJobs().length >= MAX_ACTIVE_JOBS) {
-				return { content: [{ type: "text", text: `Max ${MAX_ACTIVE_JOBS} active background jobs` }], details: undefined, isError: true };
+			if (activeJobs().length >= limits.maxActiveJobs) {
+				return { content: [{ type: "text", text: `Max ${limits.maxActiveJobs} active background jobs` }], details: undefined, isError: true };
 			}
 			const gondolinProvider = getGondolinToolProvider();
 			try {
@@ -2226,8 +2274,10 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			const compact = shape.results.map((result) => compactHeaderLine(result, 200)).join("\n");
+			const warning = pendingLimitWarning ? `\n${pendingLimitWarning}` : "";
+			pendingLimitWarning = undefined;
 			return {
-				content: [{ type: "text", text: `job ${job.id}\n${compact}` }],
+				content: [{ type: "text", text: `job ${job.id}\n${compact}${warning}` }],
 				details: { mode: shape.mode, results: shape.results, jobId: job.id, state: "running" } satisfies SubagentDetails,
 			};
 		},
@@ -2311,6 +2361,14 @@ export default function (pi: ExtensionAPI) {
 		const sessionDir = currentSessionFile ? path.dirname(currentSessionFile) : path.join(os.tmpdir(), `pi-session-${process.pid}`);
 		try { fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 }); } catch {}
 		jobsFile = path.join(sessionDir, `${process.pid}-subagents.json`);
+		const loaded = loadSubagentLimits(ctx.cwd, isParentProjectTrusted(ctx));
+		limits = loaded.limits;
+		childLimiter.setLimit(limits.maxConcurrent);
+		pendingLimitWarning = loaded.warnings.length > 0 ? `Subagent settings: ${loaded.warnings.join("; ")}` : undefined;
+		if (pendingLimitWarning && ctx.hasUI) {
+			ctx.ui.notify(pendingLimitWarning, "warning");
+			pendingLimitWarning = undefined;
+		}
 		refreshWidget();
 	});
 

@@ -38,7 +38,7 @@ Selection and authentication preflight have a ten-second total deadline and resp
 Agent frontmatter can cap how many turns a child runs:
 
 ```yaml
-maxTurns: 40 # positive integer; defaults to 80
+maxTurns: 40 # positive integer; defaults to subagents.defaultMaxTurns (80)
 ```
 
 A turn is one model response plus its tool calls. When a child reaches the
@@ -47,6 +47,41 @@ final answer, including what's unfinished. If it is still running three turns
 later, it's aborted and reported as failed with `turn limit reached`. The
 parent still receives the last output the child wrote. A value that isn't a
 positive integer falls back to the default.
+
+## Limits
+
+The extension reads an optional `subagents` object from Pi's global
+`settings.json` (`~/.pi/agent/settings.json`). Pi keeps unknown top-level keys
+when it rewrites that file, so the object survives settings changes made from
+Pi. In a trusted project, `.pi/settings.json` can override individual keys; an
+untrusted project's settings are ignored, the same as its agents.
+
+```json
+{
+  "subagents": {
+    "maxTasksPerLaunch": 8,
+    "maxConcurrent": 4,
+    "maxActiveJobs": 20,
+    "defaultMaxTurns": 80
+  }
+}
+```
+
+| Key | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `maxTasksPerLaunch` | 8 | 1–32 | Tasks in one parallel launch. Chains aren't capped. |
+| `maxConcurrent` | 4 | 1–16 | Children running at once across all jobs; the rest wait queued. |
+| `maxActiveJobs` | 20 | 1–100 | Running background jobs in the session. |
+| `defaultMaxTurns` | 80 | 1–1000 | Turn limit for agents without `maxTurns`. |
+
+Settings load when the session starts, so run `/reload` after editing them. A
+value outside its range, a non-integer, or an unknown key keeps that key's
+default and shows a warning. Without a UI, the warning is added to the next
+launch result.
+
+Nesting depth is fixed at 1. Children load with `noExtensions` plus only the
+guard extensions (and a prompt helper under Gondolin), so they never get the
+`subagent` tool and can't launch children of their own.
 
 ## Parent-to-child context contract
 
