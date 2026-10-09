@@ -1763,12 +1763,16 @@ export default function (pi: ExtensionAPI) {
 				for (let i = 0; i < params.chain.length; i++) {
 					const step = params.chain[i];
 
-					// Compress previous output to avoid context bloat in downstream steps
+					// Bound previous output for downstream steps; keep the end, where conclusions usually are.
 					const MAX_PREVIOUS_CHARS = 4000;
 					let previousForTask = previousOutput;
 					if (previousOutput.length > MAX_PREVIOUS_CHARS) {
-						previousForTask = previousOutput.slice(0, MAX_PREVIOUS_CHARS)
-							+ `\n\n[Output truncated: ${previousOutput.length} chars total, showing first ${MAX_PREVIOUS_CHARS}]`;
+						let start = previousOutput.length - MAX_PREVIOUS_CHARS;
+						const code = previousOutput.charCodeAt(start);
+						// Starting on a low surrogate would leave half of a character.
+						if (code >= 0xdc00 && code <= 0xdfff) start++;
+						const kept = previousOutput.slice(start);
+						previousForTask = `[Earlier output truncated: kept last ${kept.length} of ${previousOutput.length} characters]\n\n${kept}`;
 					}
 					const task = step.task.replace(/\{previous\}/g, previousForTask);
 
