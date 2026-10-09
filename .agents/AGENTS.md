@@ -57,32 +57,16 @@ you are doing instead of exposing private chain-of-thought.
 
 ## Writing on my behalf
 
-Before drafting or publishing user-visible prose on my behalf, load and apply:
+Before drafting or publishing user-visible prose on my behalf (commit messages,
+PR titles and bodies, issue bodies and comments, PR review comments, PR
+comments, release notes, emails, Slack drafts, docs, reviews, and status
+updates), load the `writing-voice` skill and follow it; it decides which
+references to read. Draft the text first, run its final checklist, then
+publish. Do not compose polished
+prose directly inside a `gh` or `git commit -m` command.
 
-- `$HOME/.agents/skills/writing-voice/SKILL.md`
-- `$HOME/.agents/skills/writing-voice/references/tma-curated-voice.md`
-
-This applies to:
-
-- GitHub PR titles and bodies
-- GitHub issue bodies and comments
-- GitHub PR review comments
-- GitHub PR comments
-- release notes
-- git commit messages
-- emails, Slack drafts, docs, reviews, and status updates
-
-Draft the text first, apply the writing-voice final checklist, then publish it.
-Do not compose polished prose directly inside a `gh` or `git commit -m` command.
-
-Git and GitHub prose must lead with why:
-
-- Commit messages and PR titles start with the intended outcome, problem being
-  solved, or risk being avoided; implementation details come second.
-- PR descriptions make the rationale the first substantive focus. Use `## Why`
-  as the first substantive heading unless a repository template fixes the order.
-- Preserve repository PR templates. When their order is fixed, make the first
-  substantive prose explain why before how.
+Git and GitHub prose leads with why; the `writing-voice` skill's why-first
+reference owns that rule.
 
 ## Approval before publishing or destructive actions
 
