@@ -39,7 +39,7 @@ Treat active delegated agents as work that must be supervised:
 
 - On every new user turn while delegated work is active, inspect live child state first. Report only material progress, completions, failures, stalls, or requests for a decision.
 - Treat delivered child completion output as primary evidence when it contains full results. Query live status when the user explicitly asks for status, when details are missing, or when control actions are needed.
-- When a progress or completion notification wakes the main session, inspect the relevant status, transcript, or output before summarizing it. Do not just echo the notification.
+- When a stall or completion notification wakes the main session, inspect the relevant status, transcript, or output before summarizing it. Do not just echo the notification.
 - When the user redirects active work, steer the existing task instead of launching duplicate replacement work.
 - Give brief updates at meaningful milestones. Do not poll in a tight loop or flood the conversation with unchanged status.
 

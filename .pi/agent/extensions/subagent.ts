@@ -295,6 +295,10 @@ interface BackgroundJob {
 	results: SingleResult[];
 	controls: Map<number, AgentControl>;
 	pendingInputs: Array<{ message: string; delivery: "steer" | "followUp"; index: number }>;
+	/** Last parent-observed update per child; the inspection clock covers events that skip updates. */
+	lastUpdateAt: Map<number, number>;
+	/** Activity timestamp each child's stall notice was sent for, so one quiet spell wakes the parent once. */
+	stallNoticeFor: Map<number, number>;
 	deliveryFailures: string[];
 	deliveryPromises: Set<Promise<void>>;
 	abortController: AbortController;
@@ -1214,15 +1218,15 @@ export default function (pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | null = null;
 	let currentSessionId = "";
 	let currentSessionFile: string | undefined;
-	let progressTimer: ReturnType<typeof setInterval> | null = null;
+	let stallTimer: ReturnType<typeof setInterval> | null = null;
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let shuttingDown = false;
 	let inspectorController: AbortController | undefined;
-	let lastProgressFingerprint = "";
 	const pendingCompletions = new Set<string>();
 	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
 	const deliveredCompletions = new Set<string>();
-	const PROGRESS_INTERVAL_MS = 60_000;
+	const STALL_NOTICE_MS = 10 * 60_000;
+	const STALL_CHECK_MS = 60_000;
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_ACTIVE_JOBS = 20;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
@@ -1508,30 +1512,43 @@ export default function (pi: ExtensionAPI) {
 		if (!completionTimer) completionTimer = setTimeout(flushCompletions, 250);
 	}
 
-	function reportProgress(): void {
-		const active = activeJobs();
-		if (active.length === 0) return;
-		const fingerprint = active.map((job) => `${job.id}:${job.updatedAt}`).join("|");
-		if (fingerprint === lastProgressFingerprint) return;
-		lastProgressFingerprint = fingerprint;
-		const summaries = active.map((job) => formatJob(job)).join("\n\n");
-		sendCoordinatorMessage(
-			active[0].ownerSessionId,
-			active[0].ownerSessionFile,
-			"subagent-progress",
-			boundCoordinatorOutput(`Background subagents are still active. Material progress snapshot:\n\n${summaries}`),
-		);
+	function childActivityAt(job: BackgroundJob, index: number): number {
+		return Math.max(job.lastUpdateAt.get(index) ?? job.createdAt, job.results[index].inspection?.lastActivityAt ?? 0);
 	}
 
-	function ensureProgressReporter(): void {
-		if (!progressTimer) progressTimer = setInterval(reportProgress, PROGRESS_INTERVAL_MS);
+	/** Wakes the parent once per quiet spell; routine progress stays in the status panel. */
+	function reportStalls(): void {
+		const now = Date.now();
+		for (const job of activeJobs()) {
+			if (job.state !== "running") continue;
+			const notices: Array<{ index: number; activityAt: number; line: string }> = [];
+			for (let index = 0; index < job.results.length; index++) {
+				const result = job.results[index];
+				if (result.state !== "running") continue;
+				const activityAt = childActivityAt(job, index);
+				const quietMs = now - activityAt;
+				if (quietMs < STALL_NOTICE_MS || job.stallNoticeFor.get(index) === activityAt) continue;
+				notices.push({ index, activityAt, line: `child ${index}: ${formatChildIdentity(result)} has had no activity for ${formatDuration(quietMs)}` });
+			}
+			if (notices.length === 0) continue;
+			const text = boundCoordinatorOutput([
+				`${job.id} · ${job.mode} · possible stall`,
+				...notices.map((notice) => notice.line),
+				"Quiet does not always mean stuck. Inspect with subagent action=status view=detail before steering or stopping.",
+			].join("\n"));
+			if (!sendCoordinatorMessage(job.ownerSessionId, job.ownerSessionFile, "subagent-stall", text)) continue;
+			for (const notice of notices) job.stallNoticeFor.set(notice.index, notice.activityAt);
+		}
 	}
 
-	function stopProgressReporterIfIdle(): void {
-		if (activeJobs().length > 0 || !progressTimer) return;
-		clearInterval(progressTimer);
-		progressTimer = null;
-		lastProgressFingerprint = "";
+	function ensureStallMonitor(): void {
+		if (!stallTimer) stallTimer = setInterval(reportStalls, STALL_CHECK_MS);
+	}
+
+	function stopStallMonitorIfIdle(): void {
+		if (activeJobs().length > 0 || !stallTimer) return;
+		clearInterval(stallTimer);
+		stallTimer = null;
 	}
 
 	function boundStatusOutput(text: string): string {
@@ -2022,13 +2039,15 @@ export default function (pi: ExtensionAPI) {
 				results: shape.results,
 				controls: new Map(),
 				pendingInputs: [],
+				lastUpdateAt: new Map(),
+				stallNoticeFor: new Map(),
 				deliveryFailures: [],
 				deliveryPromises: new Set(),
 				abortController: new AbortController(),
 				execution: Promise.resolve(),
 			};
 			jobs.set(job.id, job);
-			ensureProgressReporter();
+			ensureStallMonitor();
 			refreshWidget();
 
 			const dispatch = executeDispatch(
@@ -2037,6 +2056,7 @@ export default function (pi: ExtensionAPI) {
 				undefined,
 				(index, result) => {
 					job.results[index] = result;
+					job.lastUpdateAt.set(index, Date.now());
 					if (isTerminalResult(result)) queueCompletion(job, index, result);
 					job.updatedAt = Date.now();
 					if (isCurrentOwner(job)) refreshWidget();
@@ -2092,7 +2112,7 @@ export default function (pi: ExtensionAPI) {
 				job.endedAt = Date.now();
 				job.updatedAt = job.endedAt;
 				if (isCurrentOwner(job)) refreshWidget();
-				stopProgressReporterIfIdle();
+				stopStallMonitorIfIdle();
 				pruneJobs();
 			});
 
@@ -2167,9 +2187,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		inspectorController?.abort();
-		if (progressTimer) clearInterval(progressTimer);
+		if (stallTimer) clearInterval(stallTimer);
 		if (completionTimer) clearTimeout(completionTimer);
-		progressTimer = null;
+		stallTimer = null;
 		completionTimer = null;
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
@@ -2203,9 +2223,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		shuttingDown = true;
 		inspectorController?.abort();
-		if (progressTimer) clearInterval(progressTimer);
+		if (stallTimer) clearInterval(stallTimer);
 		if (completionTimer) clearTimeout(completionTimer);
-		progressTimer = null;
+		stallTimer = null;
 		completionTimer = null;
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
