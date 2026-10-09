@@ -83,6 +83,33 @@ Nesting depth is fixed at 1. Children load with `noExtensions` plus only the
 guard extensions (and a prompt helper under Gondolin), so they never get the
 `subagent` tool and can't launch children of their own.
 
+## Interrupted children
+
+The parent session records each child it launches as small custom entries:
+job id, index, agent, cwd, model overrides, the first 2 KB of the task, the
+child's native session file once Pi allocates it, and the final state. These
+entries aren't sent to the model.
+
+When the parent quits, crashes, or reloads while a child is unfinished, there's
+no final state on record. Resuming that parent session (or `/reload`) lists the
+child as `interrupted` in `subagent` status, the `/agents` inspector, and the
+`interrupted` list in the status snapshot file. Records only count in the
+session that made them, so a fork doesn't inherit them. Interrupted children
+never restart on their own.
+
+`subagent action=resume id=<job> index=<n>` continues one interrupted child. It
+reopens the child's native session, sets the child up the same way a launch
+does (current agent definition, tools, guards, trust checks, and the recorded
+model overrides re-resolved against the catalog), and sends `message`, or a
+default asking it to pick up where it left off and give its final answer. The
+child runs as a new background job under the normal limits, its turn count
+starts over, and its completion arrives like any other. A resumed chain step
+runs alone; later steps don't. Resuming fails if the child already finished or
+was stopped by the user, was already resumed, its agent no longer exists, or it
+stopped before writing its session file (Pi writes that file after the first
+assistant reply). If the resumed run itself fails, it's finished and can't be
+resumed again.
+
 ## Parent-to-child context contract
 
 Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and

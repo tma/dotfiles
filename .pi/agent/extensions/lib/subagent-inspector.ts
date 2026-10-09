@@ -183,6 +183,16 @@ export function createChildSession(cwd: string, ownerId: string, ownerFile?: str
 	return manager;
 }
 
+/** Reopens a saved child session; only files in this parent's child session directory qualify. */
+export function openChildSession(file: string, cwd: string, ownerId: string, ownerFile?: string): SessionManager {
+	if (!fs.existsSync(file)) throw new Error(`Child session file is missing: ${file}`);
+	const directory = fs.realpathSync(childSessionDir(cwd, ownerId, ownerFile));
+	if (path.dirname(fs.realpathSync(file)) !== directory) {
+		throw new Error(`Child session file is outside this session's child session directory: ${file}`);
+	}
+	return SessionManager.open(file, undefined, cwd);
+}
+
 export async function savedChildSessions(cwd: string, ownerId: string, ownerFile?: string): Promise<string> {
 	const directory = childSessionDir(cwd, ownerId, ownerFile);
 	const sessions = await SessionManager.list(cwd, directory);

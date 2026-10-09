@@ -51,6 +51,7 @@ import {
 	finishInspection,
 	inspectionActivity,
 	newInspection,
+	openChildSession,
 	savedChildSessions,
 	showInspector,
 	terminalText,
@@ -352,7 +353,36 @@ interface BackgroundJob {
 	abortController: AbortController;
 	execution: Promise<void>;
 	error?: string;
+	/** Stopped by parent shutdown or session replacement, so children stay resumable. */
+	parentInterrupted?: boolean;
 }
+
+/** What the parent session records about each child it launches. */
+interface ChildLaunch {
+	agent: string;
+	task: string;
+	cwd: string;
+	/** Launch and per-task model overrides; the agent definition supplies the rest at resume time. */
+	policy: ModelPolicy;
+	sessionFile?: string;
+}
+
+type ChildRecordEntry =
+	| ({ kind: "launch"; parentSessionId: string; jobId: string; index: number } & ChildLaunch)
+	| { kind: "session"; jobId: string; index: number; sessionFile: string }
+	| { kind: "end"; jobId: string; index: number; state: string; stopReason?: string };
+
+interface ChildRecord extends ChildLaunch {
+	jobId: string;
+	index: number;
+	/** Set once the child reached a terminal state or was resumed; unset means interrupted unless still live. */
+	state?: string;
+	stopReason?: string;
+}
+
+const CHILD_RECORD_ENTRY = "subagent-child";
+const MAX_RECORD_TASK_BYTES = 2048;
+const DEFAULT_RESUME_MESSAGE = "You were interrupted. Continue the task from where you left off and give your final answer.";
 
 // ─── Output extraction ─────────────────────────────────────────────────────
 
@@ -726,6 +756,8 @@ async function runAgent(
 		launchPolicy?: ModelPolicy;
 		itemPolicy?: ModelPolicy;
 		defaultMaxTurns: number;
+		/** Continue a saved child session with this message instead of starting the task. */
+		resume?: { sessionFile: string; message: string };
 		signal?: AbortSignal;
 		onUpdate?: OnUpdate;
 		onStateChange?: (index: number, result: SingleResult) => void;
@@ -875,13 +907,18 @@ async function runAgent(
 		await loader.reload();
 		opts.signal?.throwIfAborted();
 
+		const ownerId = opts.parentCtx.sessionManager.getSessionId();
+		const ownerFile = opts.parentCtx.sessionManager.getSessionFile();
 		try {
-			childSession = createChildSession(effectiveCwd, opts.parentCtx.sessionManager.getSessionId(), opts.parentCtx.sessionManager.getSessionFile());
+			childSession = opts.resume
+				? openChildSession(opts.resume.sessionFile, effectiveCwd, ownerId, ownerFile)
+				: createChildSession(effectiveCwd, ownerId, ownerFile);
 			result.sessionFile = childSession.getSessionFile();
 		} catch (error) {
-			result.persistenceError = `Cannot create native child session: ${error instanceof Error ? error.message : String(error)}`;
+			result.persistenceError = `Cannot ${opts.resume ? "open" : "create"} native child session: ${error instanceof Error ? error.message : String(error)}`;
 			throw new Error(result.persistenceError);
 		}
+		if (opts.resume) result.sessionName = childSession.getSessionName() ?? result.sessionName;
 		const created = await createAgentSession({
 			cwd: effectiveCwd,
 			agentDir: getAgentDir(),
@@ -905,7 +942,8 @@ async function runAgent(
 			opts.signal.addEventListener("abort", onParentAbort, { once: true });
 			parentTitleAbortListener = () => opts.signal?.removeEventListener("abort", onParentAbort);
 		}
-		void refineSessionName(opts.parentCtx, task, titleController.signal)
+		// A resumed child keeps the name its session already has.
+		if (!opts.resume) void refineSessionName(opts.parentCtx, task, titleController.signal)
 			.then((refined) => {
 				if (!refined || !session) return;
 				if (opts.signal?.aborted || isTerminalResult(result)) return;
@@ -993,7 +1031,7 @@ async function runAgent(
 			abortListener = () => opts.signal?.removeEventListener("abort", abort);
 		}
 
-		await session.prompt(`Task: ${task}`, { expandPromptTemplates: false });
+		await session.prompt(opts.resume ? opts.resume.message : `Task: ${task}`, { expandPromptTemplates: false });
 		if (turnLimitError && !opts.signal?.aborted) {
 			// Keep the transcript so the parent still gets the partial final output.
 			result.exitCode = 1;
@@ -1274,16 +1312,17 @@ export default function (pi: ExtensionAPI) {
 			Type.Literal("status"),
 			Type.Literal("send"),
 			Type.Literal("stop"),
-		], { description: "Launch work, inspect background jobs, send input, or stop one. Defaults to launch." })),
+			Type.Literal("resume"),
+		], { description: "Launch work, inspect background jobs, send input, stop one, or resume an interrupted child. Defaults to launch." })),
 		id: Type.Optional(Type.String({ description: "Background job id or unique id prefix" })),
 		view: Type.Optional(StringEnum(["summary", "detail"] as const, { description: "status detail requires id and index; bounded 16KiB transcript page, no thinking content" })),
 		offset: Type.Optional(Type.Integer({ minimum: 0, description: "Character offset returned by the previous detail page; default 0" })),
-		message: Type.Optional(Type.String({ description: "Input to send to an existing running subagent" })),
+		message: Type.Optional(Type.String({ description: "Input to send to an existing running subagent, or the first message for a resumed one" })),
 		delivery: Type.Optional(Type.Union([
 			Type.Literal("steer"),
 			Type.Literal("followUp"),
 		], { description: "Deliver after the current turn (steer) or after current work settles (followUp). Default: steer." })),
-		index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index; omit to send to all active children in the job" })),
+		index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index; omit to send to all active children in the job. Required for resume." })),
 		agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
 		task: Type.Optional(Type.String({ description: "Task (single mode)" })),
 		tasks: Type.Optional(Type.Array(TaskItem, { description: "Tasks to run in parallel" })),
@@ -1306,6 +1345,8 @@ export default function (pi: ExtensionAPI) {
 	/** Settings problems not yet shown; without a UI they ride along with the next launch result. */
 	let pendingLimitWarning: string | undefined;
 	const pendingCompletions = new Set<string>();
+	/** Children recorded in the current session's branch, keyed like completions. */
+	const childRecords = new Map<string, ChildRecord>();
 	const pendingCompletionSnapshots = new Map<string, { jobId: string; ownerSessionId: string; ownerSessionFile?: string; index: number; result: SingleResult }>();
 	const deliveredCompletions = new Set<string>();
 	const groupStragglerTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1330,6 +1371,92 @@ export default function (pi: ExtensionAPI) {
 			provider: optional(value?.provider) as string | undefined,
 			family: optional(value?.family) as string | undefined,
 		};
+	}
+
+	function overridePolicy(launch: ModelPolicy, item: ModelPolicy): ModelPolicy {
+		const { sources: _sources, ...policy } = mergeModelPolicy({}, launch, item);
+		return policy;
+	}
+
+	function applyChildRecord(entry: ChildRecordEntry): void {
+		const key = completionKey(entry.jobId, entry.index);
+		if (entry.kind === "launch") {
+			const { kind: _kind, parentSessionId: _parentSessionId, ...record } = entry;
+			childRecords.set(key, record);
+			return;
+		}
+		const record = childRecords.get(key);
+		if (!record) return;
+		if (entry.kind === "session") record.sessionFile = entry.sessionFile;
+		else {
+			record.state = entry.state;
+			record.stopReason = entry.stopReason;
+		}
+	}
+
+	function appendChildRecord(job: BackgroundJob, entry: ChildRecordEntry): void {
+		if (shuttingDown || !isCurrentOwner(job)) return;
+		try {
+			pi.appendEntry(CHILD_RECORD_ENTRY, entry);
+		} catch (error) {
+			recordDeliveryFailure(job, `child ${entry.index} ${entry.kind} record not saved: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		applyChildRecord(entry);
+	}
+
+	/** Records the child's session file once known and its terminal state, unless the parent interrupted it. */
+	function syncChildRecord(job: BackgroundJob, index: number, result: SingleResult): void {
+		const record = childRecords.get(completionKey(job.id, index));
+		if (!record || record.state !== undefined) return;
+		if (result.sessionFile && record.sessionFile !== result.sessionFile) {
+			appendChildRecord(job, { kind: "session", jobId: job.id, index, sessionFile: result.sessionFile });
+		}
+		if (isTerminalResult(result) && !job.parentInterrupted) {
+			appendChildRecord(job, { kind: "end", jobId: job.id, index, state: result.state, stopReason: result.stopReason });
+		}
+	}
+
+	/** Forked sessions copy the entries, so only records made by this session id count. */
+	function restoreChildRecords(ctx: ExtensionContext): void {
+		childRecords.clear();
+		const sessionId = ctx.sessionManager.getSessionId();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || entry.customType !== CHILD_RECORD_ENTRY) continue;
+			const data = entry.data as ChildRecordEntry | undefined;
+			if (!data || typeof data.jobId !== "string" || !Number.isInteger(data.index)) continue;
+			if (data.kind === "launch" && data.parentSessionId !== sessionId) continue;
+			applyChildRecord(data);
+		}
+	}
+
+	function interruptedChildren(): ChildRecord[] {
+		return [...childRecords.values()].filter((record) => {
+			if (record.state !== undefined) return false;
+			const job = jobs.get(record.jobId);
+			return !job || !isCurrentOwner(job) || (job.state !== "running" && job.state !== "stopping");
+		});
+	}
+
+	function formatInterrupted(record: ChildRecord): string {
+		return safeOneLine(`${record.jobId} [${record.index}] ${record.task} · ${record.agent} · interrupted`, 240);
+	}
+
+	function interruptedDetail(record: ChildRecord): string {
+		const saved = record.sessionFile && fs.existsSync(record.sessionFile);
+		return terminalText([
+			`job ${record.jobId} · child ${record.index} · interrupted`,
+			`agent: ${record.agent}`,
+			`cwd: ${record.cwd}`,
+			`model overrides: ${JSON.stringify(record.policy)}`,
+			`native session (${saved ? "file exists; read-only" : "no saved transcript"}): ${record.sessionFile ?? "not allocated"}`,
+			"The parent session ended while this child was unfinished. It does not restart on its own.",
+			saved
+				? `Resume with subagent action=resume id=${record.jobId} index=${record.index} and an optional message.`
+				: "It stopped before saving a transcript, so it can't be resumed; launch the task again.",
+			"\nTask (first 2 KB):",
+			record.task,
+		].join("\n"));
 	}
 
 	function makePlaceholder(agent: string, task: string, step?: number): SingleResult {
@@ -1432,9 +1559,16 @@ export default function (pi: ExtensionAPI) {
 				action: result.inspection?.tools.filter((tool) => tool.endedAt === undefined).map((tool) => safeOneLine(`${tool.name} ${tool.args}`, 160)).join(" · "),
 			})),
 		}));
+		const interrupted = interruptedChildren().map((record) => ({
+			jobId: record.jobId,
+			index: record.index,
+			agentType: safeOneLine(record.agent, 40),
+			state: "interrupted",
+			task: safeOneLine(record.task, 160),
+		}));
 		const tempFile = `${jobsFile}.${process.pid}.${Date.now()}.tmp`;
 		try {
-			fs.writeFileSync(tempFile, JSON.stringify({ active, updatedAt: Date.now() }), {
+			fs.writeFileSync(tempFile, JSON.stringify({ active, interrupted, updatedAt: Date.now() }), {
 				encoding: "utf-8",
 				mode: 0o600,
 				flag: "wx",
@@ -1960,6 +2094,7 @@ export default function (pi: ExtensionAPI) {
 					makeDetails: makeDetails("single"),
 					launchPolicy,
 					defaultMaxTurns: limits.defaultMaxTurns,
+					resume: params.resume,
 					parentCtx: ctx,
 				});
 
@@ -2068,6 +2203,153 @@ export default function (pi: ExtensionAPI) {
 		throw new Error("Unknown control action");
 	}
 
+	/** Continues an interrupted child's saved session as a new single-child job. */
+	function resumeChild(params: { id?: string; index?: number; message?: string }, ctx: ExtensionContext) {
+		if (!params.id || params.index === undefined) throw new Error("Resuming requires the interrupted child's job id and zero-based index");
+		const recordedJobs = [...new Set([...childRecords.values()].map((record) => record.jobId))];
+		const prefixed = recordedJobs.filter((jobId) => jobId.startsWith(params.id!));
+		const jobId = recordedJobs.includes(params.id) ? params.id : prefixed.length === 1 ? prefixed[0] : undefined;
+		if (!jobId) throw new Error(`No unique recorded subagent job in this session matches "${params.id}"`);
+		const record = childRecords.get(completionKey(jobId, params.index));
+		if (!record) throw new Error(`Job ${jobId} has no child ${params.index}`);
+		if (record.state === "resumed") throw new Error(`Child ${params.index} of ${jobId} was already resumed (${record.stopReason})`);
+		if (record.state !== undefined) throw new Error(`Child ${params.index} of ${jobId} already finished as ${record.state} and cannot be resumed`);
+		if (!interruptedChildren().includes(record)) throw new Error(`Child ${params.index} of ${jobId} is still running; use action=send to give it input`);
+		if (!record.sessionFile || !fs.existsSync(record.sessionFile)) {
+			throw new Error(`Child ${params.index} of ${jobId} has no saved session${record.sessionFile ? ` at ${record.sessionFile}` : ""}; it stopped before its first reply. Launch the task again.`);
+		}
+		const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
+		const agent = agents.find((candidate) => candidate.name === record.agent);
+		if (!agent) throw new Error(`Agent "${record.agent}" no longer exists, so child ${params.index} of ${jobId} cannot be resumed. Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
+		const gondolinProvider = getGondolinToolProvider();
+		const cwd = resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, record.cwd);
+		const trustError = projectAgentTrustError(agent, isChildProjectTrusted(ctx, gondolinProvider, cwd), cwd);
+		if (trustError) throw new Error(trustError);
+		if (activeJobs().length >= limits.maxActiveJobs) throw new Error(`Max ${limits.maxActiveJobs} active background jobs`);
+
+		const message = params.message?.trim() || DEFAULT_RESUME_MESSAGE;
+		const launch: ChildLaunch = { agent: record.agent, task: record.task, cwd, policy: record.policy, sessionFile: record.sessionFile };
+		const job = startJob(ctx, { agent: launch.agent, task: launch.task, cwd, ...launch.policy, resume: { sessionFile: record.sessionFile, message } }, agents, [launch]);
+		appendChildRecord(job, { kind: "end", jobId, index: params.index, state: "resumed", stopReason: `resumed as ${job.id}` });
+		refreshWidget();
+		return {
+			content: [{ type: "text" as const, text: `Resumed ${jobId} child ${params.index} as job ${job.id}\n${compactHeaderLine(job.results[0], 200)}` }],
+			details: { mode: job.mode, results: [...job.results], jobId: job.id, state: "running" } satisfies SubagentDetails,
+		};
+	}
+
+	/** Creates and dispatches a background job; `launches` describes each child for the parent session record. */
+	function startJob(ctx: ExtensionContext, params: any, agents: AgentConfig[], launches: ChildLaunch[]): BackgroundJob {
+		const shape = getLaunchShape(params);
+		const job: BackgroundJob = {
+			id: `agent-${Date.now().toString(36)}-${++jobSequence}`,
+			ownerSessionId: ctx.sessionManager.getSessionId(),
+			ownerSessionFile: ctx.sessionManager.getSessionFile(),
+			mode: shape.mode,
+			state: "running",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			total: shape.total,
+			cwd: getGondolinToolProvider()?.hostCwd ?? ctx.cwd,
+			results: shape.results,
+			controls: new Map(),
+			pendingInputs: [],
+			lastUpdateAt: new Map(),
+			stallNoticeFor: new Map(),
+			deliveryFailures: [],
+			deliveryPromises: new Set(),
+			abortController: new AbortController(),
+			execution: Promise.resolve(),
+		};
+		jobs.set(job.id, job);
+		for (const [index, launch] of launches.entries()) {
+			appendChildRecord(job, {
+				kind: "launch",
+				parentSessionId: job.ownerSessionId,
+				jobId: job.id,
+				index,
+				agent: launch.agent,
+				task: truncateUtf8(launch.task, MAX_RECORD_TASK_BYTES),
+				cwd: launch.cwd,
+				policy: launch.policy,
+				sessionFile: launch.sessionFile,
+			});
+		}
+		ensureStallMonitor();
+		refreshWidget();
+
+		const dispatch = executeDispatch(
+			params,
+			job.abortController.signal,
+			undefined,
+			(index, result) => {
+				job.results[index] = result;
+				job.lastUpdateAt.set(index, Date.now());
+				syncChildRecord(job, index, result);
+				if (isTerminalResult(result)) queueCompletion(job, index, result);
+				job.updatedAt = Date.now();
+				if (isCurrentOwner(job)) refreshWidget();
+			},
+			(index, control) => {
+				job.controls.set(index, control);
+				const pending = job.pendingInputs.filter((input) => input.index === index);
+				job.pendingInputs = job.pendingInputs.filter((input) => input.index !== index);
+				for (const input of pending) trackDelivery(job, index, control, input.message, input.delivery);
+				job.updatedAt = Date.now();
+				if (isCurrentOwner(job)) refreshWidget();
+			},
+			(index) => {
+				job.controls.delete(index);
+				job.updatedAt = Date.now();
+				if (isCurrentOwner(job)) refreshWidget();
+			},
+			() => isCurrentOwner(job) && !shuttingDown,
+			ctx,
+			agents,
+		);
+		job.execution = dispatch.then(async (result) => {
+			if (result.details?.results) {
+				job.results = result.details.results;
+				for (let index = 0; index < job.results.length; index++) {
+					syncChildRecord(job, index, job.results[index]);
+					queueCompletion(job, index, job.results[index]);
+				}
+			}
+			await Promise.allSettled([...job.deliveryPromises]);
+			for (const input of job.pendingInputs) {
+				recordDeliveryFailure(job, `child ${input.index} finished before queued ${input.delivery} input was delivered`);
+			}
+			job.pendingInputs = [];
+			job.state = job.abortController.signal.aborted
+				? "stopped"
+				: result.isError || job.results.some(isFailedResult) ? "failed" : "completed";
+		}).catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			job.error = message;
+			for (let index = 0; index < job.results.length; index++) {
+				if (isTerminalResult(job.results[index])) continue;
+				job.results[index] = {
+					...job.results[index],
+					state: job.abortController.signal.aborted ? "aborted" : "failed",
+					exitCode: 1,
+					stopReason: job.abortController.signal.aborted ? "aborted" : "error",
+					errorMessage: job.abortController.signal.aborted ? "Subagent stopped before launch" : message,
+				};
+				syncChildRecord(job, index, job.results[index]);
+				queueCompletion(job, index, job.results[index]);
+			}
+			job.state = job.abortController.signal.aborted ? "stopped" : "failed";
+		}).finally(() => {
+			job.endedAt = Date.now();
+			job.updatedAt = job.endedAt;
+			if (isCurrentOwner(job)) refreshWidget();
+			stopStallMonitorIfIdle();
+			pruneJobs();
+		});
+
+		return job;
+	}
+
 	// ─── Subagent tool ────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -2077,7 +2359,8 @@ export default function (pi: ExtensionAPI) {
 			"Launch specialized agents in the background so the main session remains responsive.",
 			"Launch modes: single (agent + task), parallel (tasks[]), chain (steps with {previous}).",
 			"Model, thinking, provider, and family can be shared launch defaults or per-task/per-step overrides.",
-			"Actions: launch (default), status, send (steer/follow-up input to running children), stop (whole job).",
+			"Actions: launch (default), status, send (steer/follow-up input to running children), stop (whole job), resume (continue one interrupted child from its saved session).",
+			"Children left unfinished when the parent session ended show as interrupted in status and never restart on their own; resume one only when the user wants that work continued.",
 			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
 			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
 			"Available agent names and descriptions are listed under the Subagents section of the system prompt; select an agent by its exact discovered name only.",
@@ -2102,6 +2385,10 @@ export default function (pi: ExtensionAPI) {
 				if (params.id) {
 					const job = resolveJob(params.id);
 					if (!job) {
+						const interrupted = interruptedChildren().filter((record) => record.jobId === params.id);
+						if (interrupted.length > 0) {
+							return { content: [{ type: "text", text: boundStatusOutput(interrupted.map(interruptedDetail).join("\n\n")) }], details: undefined };
+						}
 						return { content: [{ type: "text", text: `No unique subagent job matches "${params.id}".` }], details: undefined, isError: true };
 					}
 					return {
@@ -2118,9 +2405,14 @@ export default function (pi: ExtensionAPI) {
 					...ordered.filter((job) => job.state !== "running" && job.state !== "stopping").slice(0, 10),
 				];
 				const combined = visible.flatMap((job) => job.results);
+				const interrupted = interruptedChildren();
+				const sections = [
+					...(visible.length > 0 ? [visible.map((job) => `job ${job.id}`).join("\n") + `\n${formatAgentList(combined).join("\n")}`] : []),
+					...(interrupted.length > 0 ? [`interrupted (not running; resume with action=resume, id, and index):\n${interrupted.map(formatInterrupted).join("\n")}`] : []),
+				];
 				return {
-					content: [{ type: "text", text: visible.length > 0
-						? boundStatusOutput(visible.map((job) => `job ${job.id}`).join("\n") + `\n${formatAgentList(combined).join("\n")}`)
+					content: [{ type: "text", text: sections.length > 0
+						? boundStatusOutput(sections.join("\n\n"))
 						: "No subagent jobs have run in this session." }],
 					details: visible.length > 0 ? { mode: combined.length > 1 ? "parallel" : "single", results: combined } satisfies SubagentDetails : undefined,
 				};
@@ -2131,6 +2423,8 @@ export default function (pi: ExtensionAPI) {
 				if (response.isError) throw new Error(response.content[0].text);
 				return response;
 			}
+
+			if (params.action === "resume") return resumeChild(params, ctx);
 
 			const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
 			const hasChain = (params.chain?.length ?? 0) > 0;
@@ -2174,111 +2468,24 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			const launches: Array<{ agent: string; cwd?: string }> = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, cwd: params.cwd }];
+			const launches: Array<{ agent: string; task: string; cwd?: string }> = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
+			const launchPolicy = modelPolicyFrom(params);
+			const childLaunches: ChildLaunch[] = [];
 			for (const launch of launches) {
 				const agent = agents.find((candidate) => candidate.name === launch.agent)!;
 				const cwd = resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, launch.cwd);
 				const trustError = projectAgentTrustError(agent, isChildProjectTrusted(ctx, gondolinProvider, cwd), cwd);
 				if (trustError) return { content: [{ type: "text", text: trustError }], details: undefined, isError: true };
+				childLaunches.push({ agent: launch.agent, task: launch.task, cwd, policy: overridePolicy(launchPolicy, modelPolicyFrom(launch)) });
 			}
 
-			const shape = getLaunchShape(params);
-			const job: BackgroundJob = {
-				id: `agent-${Date.now().toString(36)}-${++jobSequence}`,
-				ownerSessionId: ctx.sessionManager.getSessionId(),
-				ownerSessionFile: ctx.sessionManager.getSessionFile(),
-				mode: shape.mode,
-				state: "running",
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-				total: shape.total,
-				cwd: gondolinProvider?.hostCwd ?? ctx.cwd,
-				results: shape.results,
-				controls: new Map(),
-				pendingInputs: [],
-				lastUpdateAt: new Map(),
-				stallNoticeFor: new Map(),
-				deliveryFailures: [],
-				deliveryPromises: new Set(),
-				abortController: new AbortController(),
-				execution: Promise.resolve(),
-			};
-			jobs.set(job.id, job);
-			ensureStallMonitor();
-			refreshWidget();
-
-			const dispatch = executeDispatch(
-				params,
-				job.abortController.signal,
-				undefined,
-				(index, result) => {
-					job.results[index] = result;
-					job.lastUpdateAt.set(index, Date.now());
-					if (isTerminalResult(result)) queueCompletion(job, index, result);
-					job.updatedAt = Date.now();
-					if (isCurrentOwner(job)) refreshWidget();
-				},
-				(index, control) => {
-					job.controls.set(index, control);
-					const pending = job.pendingInputs.filter((input) => input.index === index);
-					job.pendingInputs = job.pendingInputs.filter((input) => input.index !== index);
-					for (const input of pending) trackDelivery(job, index, control, input.message, input.delivery);
-					job.updatedAt = Date.now();
-					if (isCurrentOwner(job)) refreshWidget();
-				},
-				(index) => {
-					job.controls.delete(index);
-					job.updatedAt = Date.now();
-					if (isCurrentOwner(job)) refreshWidget();
-				},
-				() => isCurrentOwner(job) && !shuttingDown,
-				ctx,
-				agents,
-			);
-			job.execution = dispatch.then(async (result) => {
-				if (result.details?.results) {
-					job.results = result.details.results;
-					for (let index = 0; index < job.results.length; index++) {
-						queueCompletion(job, index, job.results[index]);
-					}
-				}
-				await Promise.allSettled([...job.deliveryPromises]);
-				for (const input of job.pendingInputs) {
-					recordDeliveryFailure(job, `child ${input.index} finished before queued ${input.delivery} input was delivered`);
-				}
-				job.pendingInputs = [];
-				job.state = job.abortController.signal.aborted
-					? "stopped"
-					: result.isError || job.results.some(isFailedResult) ? "failed" : "completed";
-			}).catch((error) => {
-				const message = error instanceof Error ? error.message : String(error);
-				job.error = message;
-				for (let index = 0; index < job.results.length; index++) {
-					if (isTerminalResult(job.results[index])) continue;
-					job.results[index] = {
-						...job.results[index],
-						state: job.abortController.signal.aborted ? "aborted" : "failed",
-						exitCode: 1,
-						stopReason: job.abortController.signal.aborted ? "aborted" : "error",
-						errorMessage: job.abortController.signal.aborted ? "Subagent stopped before launch" : message,
-					};
-					queueCompletion(job, index, job.results[index]);
-				}
-				job.state = job.abortController.signal.aborted ? "stopped" : "failed";
-			}).finally(() => {
-				job.endedAt = Date.now();
-				job.updatedAt = job.endedAt;
-				if (isCurrentOwner(job)) refreshWidget();
-				stopStallMonitorIfIdle();
-				pruneJobs();
-			});
-
-			const compact = shape.results.map((result) => compactHeaderLine(result, 200)).join("\n");
+			const job = startJob(ctx, params, agents, childLaunches);
+			const compact = job.results.map((result) => compactHeaderLine(result, 200)).join("\n");
 			const warning = pendingLimitWarning ? `\n${pendingLimitWarning}` : "";
 			pendingLimitWarning = undefined;
 			return {
 				content: [{ type: "text", text: `job ${job.id}\n${compact}${warning}` }],
-				details: { mode: shape.mode, results: shape.results, jobId: job.id, state: "running" } satisfies SubagentDetails,
+				details: { mode: job.mode, results: [...job.results], jobId: job.id, state: "running" } satisfies SubagentDetails,
 			};
 		},
 		renderShell: "self",
@@ -2353,11 +2560,15 @@ export default function (pi: ExtensionAPI) {
 		clearGroupStragglers();
 		pendingCompletions.clear();
 		pendingCompletionSnapshots.clear();
-		for (const job of activeJobs()) markJobStopping(job, "Parent session replaced");
+		for (const job of activeJobs()) {
+			job.parentInterrupted = true;
+			markJobStopping(job, "Parent session replaced");
+		}
 		shuttingDown = false;
 		currentCtx = ctx;
 		currentSessionId = ctx.sessionManager.getSessionId();
 		currentSessionFile = ctx.sessionManager.getSessionFile();
+		restoreChildRecords(ctx);
 		const sessionDir = currentSessionFile ? path.dirname(currentSessionFile) : path.join(os.tmpdir(), `pi-session-${process.pid}`);
 		try { fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 }); } catch {}
 		jobsFile = path.join(sessionDir, `${process.pid}-subagents.json`);
@@ -2405,7 +2616,10 @@ export default function (pi: ExtensionAPI) {
 		const ownedJobs = [...jobs.values()].filter((job) =>
 			job.ownerSessionId === ownerSessionId && job.ownerSessionFile === ownerSessionFile,
 		);
-		for (const job of ownedJobs) markJobStopping(job, "Parent session shut down");
+		for (const job of ownedJobs) {
+			job.parentInterrupted = true;
+			markJobStopping(job, "Parent session shut down");
+		}
 		let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
 		const timedOut = await Promise.race([
 			Promise.allSettled(ownedJobs.map((job) => job.execution)).then(() => false),
@@ -2436,6 +2650,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setWidget("subagents", undefined);
 			ctx.ui.setStatus("subagents", undefined);
 		}
+		childRecords.clear();
 		currentCtx = null;
 		currentSessionId = "";
 		currentSessionFile = undefined;
@@ -2468,11 +2683,19 @@ export default function (pi: ExtensionAPI) {
 				else if (send) action = { action: send[1] === "steer" ? "steer" : "followUp", id: send[2], index: Number(send[3]), message: send[4] };
 				else throw new Error("Usage: /agents | /agents saved | /agents steer|follow-up <job> <zero-based index> <message> | /agents stop <job>");
 			} else {
-				action = await showInspector(ctx, () => [...jobs.values()].filter(isCurrentOwner).flatMap((job) => job.results.map((result, index) => ({
-					id: job.id, index,
-					label: `${job.id} [${index}] ${compactHeaderLine(result, 180)}`,
-					detail: () => `job ${job.id} · child ${index} · job ${job.state}\n${childDetail(result)}`,
-				}))), controller.signal);
+				action = await showInspector(ctx, () => [
+					...[...jobs.values()].filter(isCurrentOwner).flatMap((job) => job.results.map((result, index) => ({
+						id: job.id, index,
+						label: `${job.id} [${index}] ${compactHeaderLine(result, 180)}`,
+						detail: () => `job ${job.id} · child ${index} · job ${job.state}\n${childDetail(result)}`,
+					}))),
+					...interruptedChildren().map((record) => ({
+						id: `${record.jobId} (interrupted)`, index: record.index,
+						label: formatInterrupted(record),
+						detail: () => interruptedDetail(record),
+						readOnly: true,
+					})),
+				], controller.signal);
 			}
 			if (!action || !stillOwned()) return;
 			const job = resolveJob(action.id);
