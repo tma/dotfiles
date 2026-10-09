@@ -571,6 +571,23 @@ class ChildLimiter {
 
 const childLimiter = new ChildLimiter(DEFAULT_LIMITS.maxConcurrent);
 
+/**
+ * Child session files a run in this process still has open. Shutdown stops waiting after a
+ * timeout, so this lives on `globalThis` where a reloaded extension can still see those runs.
+ */
+const childSessionLeases: Set<string> = (globalThis as any)[Symbol.for("pi-subagent-child-session-leases")] ??= new Set<string>();
+
+function childSessionLeaseKey(file: string): string {
+	return path.join(canonicalPath(path.dirname(file)), path.basename(file));
+}
+
+function acquireChildSessionLease(file: string): string {
+	const key = childSessionLeaseKey(file);
+	if (childSessionLeases.has(key)) throw new Error(`Child session ${file} is still open by an earlier run in this process; try again once it stops`);
+	childSessionLeases.add(key);
+	return key;
+}
+
 // ─── In-process Pi agent sessions ───────────────────────────────────────────
 
 type OnUpdate = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -801,6 +818,7 @@ async function runAgent(
 	let turnCount = 0;
 	let turnLimitSteered = false;
 	let turnLimitError: string | undefined;
+	let sessionLease: string | undefined;
 
 	const updateState = (state: ChildState) => {
 		result.state = state;
@@ -913,6 +931,8 @@ async function runAgent(
 
 		const ownerId = opts.parentCtx.sessionManager.getSessionId();
 		const ownerFile = opts.parentCtx.sessionManager.getSessionFile();
+		// Take the lease before opening, so a refused resume never writes to a session another run holds.
+		if (opts.resume) sessionLease = acquireChildSessionLease(opts.resume.sessionFile);
 		try {
 			childSession = opts.resume
 				? openChildSession(opts.resume.sessionFile, effectiveCwd, ownerId, ownerFile)
@@ -922,6 +942,7 @@ async function runAgent(
 			result.persistenceError = `Cannot ${opts.resume ? "open" : "create"} native child session: ${error instanceof Error ? error.message : String(error)}`;
 			throw new Error(result.persistenceError);
 		}
+		if (!sessionLease && result.sessionFile) sessionLease = acquireChildSessionLease(result.sessionFile);
 		if (opts.resume) result.sessionName = childSession.getSessionName() ?? result.sessionName;
 		const created = await createAgentSession({
 			cwd: effectiveCwd,
@@ -1036,7 +1057,13 @@ async function runAgent(
 			abortListener = () => opts.signal?.removeEventListener("abort", abort);
 		}
 
-		await session.prompt(opts.resume ? opts.resume.message : `Task: ${task}`, { expandPromptTemplates: false });
+		await session.prompt(opts.resume ? opts.resume.message : `Task: ${task}`, {
+			expandPromptTemplates: false,
+			// Pi's prompt preflight ignores abort, so a child stopped meanwhile must not start its run.
+			preflightResult: (disposition) => {
+				if (disposition === "started") opts.signal?.throwIfAborted();
+			},
+		});
 		if (turnLimitError && !opts.signal?.aborted) {
 			// Keep the transcript so the parent still gets the partial final output.
 			result.exitCode = 1;
@@ -1088,6 +1115,7 @@ async function runAgent(
 		}
 		if (result.inspection) finishInspection(result.inspection);
 		releaseSlot?.();
+		if (sessionLease) childSessionLeases.delete(sessionLease);
 		emitUpdate();
 	}
 
@@ -1405,15 +1433,17 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** Memory follows every record, so a failed write can't make a finished child look resumable here. */
 	function appendChildRecord(job: BackgroundJob, entry: ChildRecordEntry): void {
 		if (shuttingDown || !isCurrentOwner(job)) return;
+		applyChildRecord(entry);
 		try {
 			pi.appendEntry(CHILD_RECORD_ENTRY, entry);
 		} catch (error) {
-			recordDeliveryFailure(job, `child ${entry.index} ${entry.kind} record not saved: ${error instanceof Error ? error.message : String(error)}`);
-			return;
+			const message = `child ${entry.index} ${entry.kind} record not saved in the parent session: ${error instanceof Error ? error.message : String(error)}`;
+			recordDeliveryFailure(job, message);
+			if (currentCtx?.hasUI) currentCtx.ui.notify(`Subagent ${job.id}: ${message}`, "warning");
 		}
-		applyChildRecord(entry);
 	}
 
 	/** Records the child's session file once known and its terminal state, unless the parent interrupted it. */
@@ -1935,6 +1965,7 @@ export default function (pi: ExtensionAPI) {
 		canApplyAsync: (() => boolean) | undefined,
 		ctx: ExtensionContext,
 		agents: AgentConfig[],
+		resume?: { sessionFile: string; message: string },
 	) {
 			const makeDetails = (mode: SubagentDetails["mode"]) => (results: SingleResult[]): SubagentDetails => ({ mode, results });
 			const launchPolicy = modelPolicyFrom(params);
@@ -2112,7 +2143,7 @@ export default function (pi: ExtensionAPI) {
 					makeDetails: makeDetails("single"),
 					launchPolicy,
 					defaultMaxTurns: limits.defaultMaxTurns,
-					resume: params.resume,
+					resume,
 					parentCtx: ctx,
 				});
 
@@ -2236,6 +2267,9 @@ export default function (pi: ExtensionAPI) {
 		if (!record.sessionFile || !fs.existsSync(record.sessionFile)) {
 			throw new Error(`Child ${params.index} of ${jobId} has no saved session${record.sessionFile ? ` at ${record.sessionFile}` : ""}; it stopped before its first reply. Launch the task again.`);
 		}
+		if (childSessionLeases.has(childSessionLeaseKey(record.sessionFile))) {
+			throw new Error(`Child ${params.index} of ${jobId} is still stopping from an earlier run in this process; try again once it stops`);
+		}
 		const { agents } = discoverAgents(ctx.cwd, "both", isParentProjectTrusted(ctx));
 		const agent = agents.find((candidate) => candidate.name === record.agent);
 		if (!agent) throw new Error(`Agent "${record.agent}" no longer exists, so child ${params.index} of ${jobId} cannot be resumed. Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
@@ -2247,8 +2281,21 @@ export default function (pi: ExtensionAPI) {
 
 		const message = params.message?.trim() || DEFAULT_RESUME_MESSAGE;
 		const launch: ChildLaunch = { agent: record.agent, task: record.task, cwd, policy: record.policy, sessionFile: record.sessionFile };
-		const job = startJob(ctx, { agent: launch.agent, task: launch.task, cwd, ...launch.policy, resume: { sessionFile: record.sessionFile, message } }, agents, [launch]);
-		appendChildRecord(job, { kind: "end", jobId, index: params.index, state: "resumed", stopReason: `resumed as ${job.id}` });
+		// Reserve the source first, and start only once the parent session holds the handoff.
+		const resumedAs = nextJobId();
+		const handoff: ChildRecordEntry = { kind: "end", jobId, index: params.index, state: "resumed", stopReason: `resumed as ${resumedAs}` };
+		applyChildRecord(handoff);
+		try {
+			pi.appendEntry(CHILD_RECORD_ENTRY, handoff);
+		} catch (error) {
+			record.state = undefined;
+			record.stopReason = undefined;
+			throw new Error(`Child ${params.index} of ${jobId} was not resumed: the parent session could not record the resume (${error instanceof Error ? error.message : String(error)})`);
+		}
+		const job = startJob(ctx, { agent: launch.agent, task: launch.task, cwd, ...launch.policy }, agents, [launch], {
+			id: resumedAs,
+			resume: { sessionFile: record.sessionFile, message },
+		});
 		refreshWidget();
 		return {
 			content: [{ type: "text" as const, text: `Resumed ${jobId} child ${params.index} as job ${job.id}\n${compactHeaderLine(job.results[0], 200)}` }],
@@ -2256,11 +2303,24 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	/** Creates and dispatches a background job; `launches` describes each child for the parent session record. */
-	function startJob(ctx: ExtensionContext, params: any, agents: AgentConfig[], launches: ChildLaunch[]): BackgroundJob {
+	function nextJobId(): string {
+		return `agent-${Date.now().toString(36)}-${++jobSequence}`;
+	}
+
+	/**
+	 * Creates and dispatches a background job; `launches` describes each child for the parent session record.
+	 * Only `resumeChild()` passes `resume`, so tool params can't reopen a session past its checks.
+	 */
+	function startJob(
+		ctx: ExtensionContext,
+		params: any,
+		agents: AgentConfig[],
+		launches: ChildLaunch[],
+		options: { id?: string; resume?: { sessionFile: string; message: string } } = {},
+	): BackgroundJob {
 		const shape = getLaunchShape(params);
 		const job: BackgroundJob = {
-			id: `agent-${Date.now().toString(36)}-${++jobSequence}`,
+			id: options.id ?? nextJobId(),
 			ownerSessionId: ctx.sessionManager.getSessionId(),
 			ownerSessionFile: ctx.sessionManager.getSessionFile(),
 			mode: shape.mode,
@@ -2324,6 +2384,7 @@ export default function (pi: ExtensionAPI) {
 			() => isCurrentOwner(job) && !shuttingDown,
 			ctx,
 			agents,
+			options.resume,
 		);
 		job.execution = dispatch.then(async (result) => {
 			if (result.details?.results) {

@@ -29,7 +29,7 @@ Selection is deterministic. A small, version-free naming heuristic recognizes ma
 
 After suitability, selection prefers a supplied thinking level, ranks numeric releases only within comparable series, then considers catalog price. Without a policy or parent thinking level, ranking has no thinking preference; the reported effective level is still explicit. Every finite nonnegative catalog price is valid, including zero; missing or invalid prices are unknown. Dates, context windows, and parameter counts do not determine recency or quality.
 
-Selection and authentication preflight have a ten-second total deadline and respond to stop/shutdown cancellation. Pi's registry authentication facade has no signal parameter, so cancelling stops the caller waiting, not the underlying authentication operation. Late results cannot resume selection or launch a child. These bounds do not cover Pi's later `session.prompt()` availability check, which does not pass a signal to authentication; a stalled SDK-internal check can still delay shutdown.
+Selection and authentication preflight have a ten-second total deadline and respond to stop/shutdown cancellation. Pi's registry authentication facade has no signal parameter, so cancelling stops the caller waiting, not the underlying authentication operation. Late results cannot resume selection or launch a child. These bounds do not cover Pi's later `session.prompt()` availability check, which does not pass a signal to authentication; a stalled SDK-internal check can still delay shutdown. A child stopped while that check runs doesn't start its run once the check returns.
 
 **Known authentication limitation:** child runtimes are isolated and preserve native and compatibility provider registrations, including per-model headers. Credentials stored only in the parent's runtime or SDK memory store are not shared. A parent can pass authentication preflight while its child cannot authenticate. General propagation needs a supported shared-runtime or authentication-delegation API; converting resolved OAuth or header-only authentication into an API key is not safe.
 
@@ -126,6 +126,16 @@ was stopped by the user, was already resumed, its agent no longer exists, or it
 stopped before writing its session file (Pi writes that file after the first
 assistant reply). If the resumed run itself fails, it's finished and can't be
 resumed again.
+
+Parent shutdown waits ten seconds for children to stop, then lets go of them,
+but a child stuck in a step Pi can't cancel may keep running. Until that run
+ends, resuming its session in the same Pi process fails and asks you to try
+again later, so two runs never write the same session file. A Pi process
+doesn't know about runs in another process.
+
+The resume is recorded in the parent session before the child starts. If that
+record can't be written, the resume fails and nothing runs. Other child records
+that fail to save show a warning, and `subagent` status lists them.
 
 ## Parent-to-child context contract
 
