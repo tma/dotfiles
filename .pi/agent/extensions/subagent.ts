@@ -38,7 +38,7 @@ import {
 	waitWithDeadline,
 	type ModelPolicy,
 } from "./lib/model-selection.js";
-import { cleanGeneratedSessionName, heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
+import { heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
 import {
 	childDetail,
 	createChildSession,
@@ -181,8 +181,6 @@ function formatAgentCatalogForPrompt(agents: AgentConfig[]): string {
 
 const TITLE_MAX_WORDS = 6;
 const TITLE_MAX_CHARS = 48;
-const TITLE_PROMPT_CHARS = 1000;
-const TITLE_TIMEOUT_MS = 5000;
 const MAX_TURNS_GRACE = 3;
 const TURN_LIMIT_MESSAGE = "You have reached your turn limit. Do not start new work. Give your final answer now with what you have, and say what is unfinished.";
 
@@ -318,7 +316,6 @@ interface ChildHooks {
 	onStateChange(index: number, result: SingleResult): void;
 	onControlReady(index: number, control: AgentControl): void;
 	onControlClosed(index: number): void;
-	canApplyAsync(): boolean;
 }
 
 interface BackgroundJob {
@@ -654,52 +651,6 @@ async function getChildModelRuntime(ctx: ExtensionContext, signal?: AbortSignal)
 	return runtime;
 }
 
-async function selectRefinementModel(ctx: ExtensionContext, signal?: AbortSignal) {
-	const selection = await waitWithDeadline(
-		(titleSignal) => resolveModelSelection({
-			policy: { model: "auto:cheap", thinking: "low" },
-			availableModels: ctx.modelRegistry.getAvailable(),
-			allModels: ctx.modelRegistry.getAll(),
-			parentModel: ctx.model,
-			parentThinkingLevel: ctx.thinkingLevel,
-			authenticate: async (candidate) => {
-				const auth = await waitWithDeadline(
-					() => ctx.modelRegistry.getApiKeyAndHeaders(candidate),
-					{ signal: titleSignal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming model auth" },
-				);
-				return auth.ok ? { ok: true as const } : { ok: false as const, error: auth.error };
-			},
-			getSupportedThinkingLevels,
-			clampThinkingLevel,
-			signal: titleSignal,
-			timeoutMs: TITLE_TIMEOUT_MS,
-		}),
-		{ signal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming model selection" },
-	);
-	return selection.model;
-}
-
-async function refineSessionName(ctx: ExtensionContext, task: string, signal?: AbortSignal): Promise<string | null> {
-	const model = await selectRefinementModel(ctx, signal);
-	const registry = ctx.modelRegistry as any;
-	if (typeof registry.complete !== "function") return null;
-	const promptText = task.length > TITLE_PROMPT_CHARS ? `${task.slice(0, TITLE_PROMPT_CHARS)}…` : task;
-	const response = await waitWithDeadline(
-		(titleSignal) => registry.complete(model, {
-			systemPrompt: "You name coding-agent sessions. Reply with ONLY a short Title Case name, 2 to 6 words. No quotes, no punctuation, no explanation.",
-			messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
-		}, { signal: titleSignal }),
-		{ signal, timeoutMs: TITLE_TIMEOUT_MS, label: "Subagent naming completion" },
-	);
-	if (!response || response.stopReason === "error" || response.stopReason === "aborted") return null;
-	const textParts = Array.isArray(response.content)
-		? response.content.filter((part: any): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text)
-		: [];
-	const raw = textParts.join(" ").trim();
-	if (!raw) return null;
-	return cleanGeneratedSessionName(raw, { maxWords: TITLE_MAX_WORDS, maxChars: TITLE_MAX_CHARS });
-}
-
 function truncateUtf8(value: string, maxBytes: number): string {
 	const bytes = Buffer.from(value);
 	if (bytes.byteLength <= maxBytes) return value;
@@ -795,9 +746,6 @@ async function runAgent(
 	let unsubscribe: (() => void) | undefined;
 	let abortListener: (() => void) | undefined;
 	let controlRegistered = false;
-	let titleController: AbortController | undefined;
-	let titleTimer: ReturnType<typeof setTimeout> | undefined;
-	let parentTitleAbortListener: (() => void) | undefined;
 	let turnCount = 0;
 	let turnLimitSteered = false;
 	let turnLimitError: string | undefined;
@@ -939,33 +887,6 @@ async function runAgent(
 		opts.signal?.throwIfAborted();
 		await session.bindExtensions({ mode: "print" });
 		session.setSessionName(result.sessionName);
-		titleController = new AbortController();
-		titleTimer = setTimeout(() => titleController?.abort(), TITLE_TIMEOUT_MS);
-		if (opts.signal) {
-			const onParentAbort = () => titleController?.abort();
-			opts.signal.addEventListener("abort", onParentAbort, { once: true });
-			parentTitleAbortListener = () => opts.signal?.removeEventListener("abort", onParentAbort);
-		}
-		// A resumed child keeps the name its session already has.
-		if (!opts.resume) void refineSessionName(opts.parentCtx, task, titleController.signal)
-			.then((refined) => {
-				if (!refined || !session) return;
-				if (opts.signal?.aborted || isTerminalResult(result)) return;
-				if (opts.canApplyAsync && !opts.canApplyAsync()) return;
-				result.sessionName = refined;
-				session.setSessionName(refined);
-				emitUpdate();
-			})
-			.catch((error) => {
-				if (titleController?.signal.aborted || opts.signal?.aborted || isTerminalResult(result)) return;
-				const message = error instanceof Error ? error.message : String(error);
-				result.stderr = `${result.stderr}${result.stderr ? "\n" : ""}Title refinement failed: ${message}`;
-				emitUpdate();
-			})
-			.finally(() => {
-				if (titleTimer) clearTimeout(titleTimer);
-				titleTimer = undefined;
-			});
 		result.model = session.model ? `${session.model.provider}/${session.model.id}` : `${model.provider}/${model.id}`;
 		if (session.thinkingLevel !== result.thinkingLevel) {
 			result.selectionReason += `; session clamped thinking ${result.thinkingLevel} to ${session.thinkingLevel}`;
@@ -1074,10 +995,6 @@ async function runAgent(
 	} finally {
 		result.durationMs = Date.now() - startedAt;
 		abortListener?.();
-		if (titleTimer) clearTimeout(titleTimer);
-		titleTimer = undefined;
-		titleController?.abort();
-		parentTitleAbortListener?.();
 		opts.onControlClosed?.(controlIndex);
 		unsubscribe?.();
 		await shutdownChildSession(session);
@@ -2183,7 +2100,6 @@ export default function (pi: ExtensionAPI) {
 				job.updatedAt = Date.now();
 				if (isCurrentOwner(job)) refreshWidget();
 			},
-			canApplyAsync: () => isCurrentOwner(job) && !shuttingDown,
 		};
 		job.execution = runLaunch(params, job.abortController.signal, hooks, ctx, agents, options.resume).then(async (results) => {
 			job.results = results;
