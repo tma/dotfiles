@@ -9,11 +9,11 @@ import { Box, matchesKey, SelectList, truncateToWidth, wrapTextWithAnsi } from "
 const DETAIL_BYTES = 16 * 1024;
 const LIVE_TEXT_BYTES = 4096;
 
-/** Keeps the head of `text` within `bytes`, cut on a character boundary, and ends it with `marker`. */
+/** Keeps the head of `text` within `bytes`, cut on a character boundary, and ends it with `marker` when that fits. */
 export function boundedText(text: string, bytes = DETAIL_BYTES, marker = "[truncated]"): string {
 	if (Buffer.byteLength(text) <= bytes) return text;
 	const buffer = Buffer.from(text);
-	const suffix = `\n${marker}`;
+	const suffix = Buffer.byteLength(`\n${marker}`) <= bytes ? `\n${marker}` : "";
 	let end = Math.max(0, bytes - Buffer.byteLength(suffix));
 	while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
 	return `${buffer.subarray(0, end).toString("utf8")}${suffix}`;

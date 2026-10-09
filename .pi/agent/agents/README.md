@@ -89,7 +89,9 @@ guard extensions (and a prompt helper under Gondolin), so they never get the
 Finished children reach the parent as hidden follow-up messages. A
 multi-task job wakes the parent once, when every child is done; a parallel job
 with a straggler also reports the finished children after two minutes. A job's
-children always arrive together in one message.
+children arrive together in one message, unless there are more than about 60
+to report at once (a long chain stopped at shutdown), which split across
+messages so each child keeps room for its summary.
 
 While the parent is busy, Pi only queues the message, and clearing the queue
 (for example, pressing Escape) drops it. The extension keeps each completion

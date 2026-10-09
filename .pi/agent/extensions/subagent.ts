@@ -1077,7 +1077,13 @@ async function runAgent(
 		opts.onControlClosed?.(controlIndex);
 		unsubscribe?.();
 		try {
-			await shutdownChildSession(session);
+			try {
+				await shutdownChildSession(session);
+			} catch (error) {
+				// The run already reported its outcome, so keep it and attach the cleanup failure.
+				const message = error instanceof Error ? error.message : String(error);
+				result.stderr = `${result.stderr}${result.stderr ? "\n" : ""}Child session cleanup failed: ${message}`;
+			}
 			if (childSession) {
 				try {
 					childSession.appendCustomEntry("subagent-outcome", { state: result.state, error: result.errorMessage });
@@ -1336,6 +1342,7 @@ export default function (pi: ExtensionAPI) {
 	const MAX_RETAINED_JOBS = 30;
 	const MAX_RETAINED_TRANSCRIPT_BYTES = 256 * 1024;
 	const MAX_STATUS_OUTPUT_BYTES = 64 * 1024;
+	const MIN_COMPLETION_BLOCK_BYTES = 1024;
 	const SNAPSHOT_INTERVAL_MS = 500;
 
 	function isCurrentOwner(job: BackgroundJob): boolean {
@@ -1715,11 +1722,18 @@ export default function (pi: ExtensionAPI) {
 
 		const separator = "\n\n---\n\n";
 		const maxBytes = MAX_STATUS_OUTPUT_BYTES;
-		// Size each block so a job's group fits one message, and pack whole groups so a job wakes the parent once.
+		// A block needs room for its header and truncation marker, so a job with more children than fit is split.
+		const maxKeysPerMessage = Math.floor(maxBytes / (MIN_COMPLETION_BLOCK_BYTES + separator.length));
+		const chunks = [...groups.values()].flatMap(({ job, keys }) =>
+			Array.from({ length: Math.ceil(keys.length / maxKeysPerMessage) }, (_, chunk) => ({
+				job,
+				keys: keys.slice(chunk * maxKeysPerMessage, (chunk + 1) * maxKeysPerMessage),
+			})));
+		// Size each block so a chunk fits one message, and pack whole chunks so an unsplit job wakes the parent once.
 		type Batch = { ownerSessionId: string; ownerSessionFile?: string; jobs: BackgroundJob[]; keys: string[]; text: string };
 		const batches: Batch[] = [];
 		let current: Batch | null = null;
-		for (const { job, keys } of groups.values()) {
+		for (const { job, keys } of chunks) {
 			const blockBytes = Math.min(Math.floor(maxBytes / 2), Math.floor(maxBytes / keys.length) - separator.length);
 			const text = keys.map((key) => {
 				const snap = pendingCompletionSnapshots.get(key)!;
@@ -1949,7 +1963,7 @@ export default function (pi: ExtensionAPI) {
 			let previousOutput = "";
 			for (let i = 0; i < params.chain.length; i++) {
 				const step = params.chain[i];
-				const task = step.task.replace(/\{previous\}/g, chainInput(previousOutput));
+				const task = step.task.replace(/\{previous\}/g, () => chainInput(previousOutput));
 				results[i] = await runAgent(ctx.cwd, agents, step.agent, task, {
 					...common,
 					...hooks,
