@@ -10,6 +10,7 @@ export PATH="$HOME/.local/bin:$HOME/.opencode/bin:$PATH"
 HOME_ITEMS=(.agents .bashrc .config .gemrc .gitconfig .shellrc .tmux.conf .zshrc)
 PI_AGENT_ITEMS=(agents extensions models.json settings.json)
 PI_LOCAL_ITEMS=(extensions models.json settings.json SYSTEM.md)
+PI_WORK_ITEMS=(agents extensions)
 
 log() {
   printf '%s\n' "$*"
@@ -348,6 +349,10 @@ link_pi_local() {
   link_pi_profile "$DOTFILES_DIR/.pi/local" "$HOME/.pi/local" "${PI_LOCAL_ITEMS[@]}"
 }
 
+link_pi_work() {
+  link_pi_profile "$HOME/.pi/agent" "${PI_WORK_DIR:-$HOME/.pi/work}" "${PI_WORK_ITEMS[@]}"
+}
+
 main() {
   local failures=0
 
@@ -360,6 +365,10 @@ main() {
   fi
 
   if ! link_pi_local; then
+    failures=$((failures + 1))
+  fi
+
+  if ! link_pi_work; then
     failures=$((failures + 1))
   fi
 

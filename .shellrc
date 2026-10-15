@@ -99,6 +99,18 @@ if [ "${CODESPACES:-}" = "true" ] || [ -n "${CODESPACE_NAME:-}" ]; then
   }
 fi
 
+# Work Pi: independent configuration, credentials, and session storage.
+# Keep this profile outside the repository; Pi creates it on first launch.
+pi-work() {
+  local dir="${PI_WORK_DIR:-$HOME/.pi/work}"
+  if ! command -v pi >/dev/null 2>&1; then
+    printf 'pi-work: pi is not installed\n' >&2
+    return 127
+  fi
+  PI_CODING_AGENT_DIR="$dir" \
+    command pi --session-dir "$dir/sessions" "$@"
+}
+
 # Local-only Pi: LM Studio + LAN tools. Separate configuration so the coding
 # agent extensions, skills, and cloud auth stay out of this session.
 # Pi reads .env itself (as data, never as shell code), so nothing from it ends
