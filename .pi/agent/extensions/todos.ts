@@ -1,7 +1,7 @@
 /**
  * Todo Tracker Extension (opencode-style)
  *
- * Gives the agent `todo_write` and `todo_read` tools to track multi-step tasks.
+ * Gives the agent `todo_write`, `todo_read`, and goal tools to track multi-step work.
  * Shows a persistent progress widget above the editor.
  * State survives branching, forking, and tree navigation via session entries.
  *
@@ -164,8 +164,6 @@ const GoalUpdateParams = Type.Object({
 	note: Type.Optional(Type.String({ description: "Optional short note about constraints, acceptance criteria, or blocker" })),
 });
 
-const GoalReadParams = Type.Object({});
-
 // ── Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -210,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
 			if (msg.role !== "toolResult") continue;
-			if (!["todo_write", "goal_set", "goal_update", "goal_read"].includes(msg.toolName)) continue;
+			if (!["todo_write", "goal_set", "goal_update"].includes(msg.toolName)) continue;
 			applyStateSnapshot(msg.details as TodoState | undefined);
 		}
 
@@ -303,11 +301,8 @@ export default function (pi: ExtensionAPI) {
 			"Only one task should be in_progress at a time.",
 		promptSnippet: "Track multi-step task progress with a visible todo list",
 		promptGuidelines: [
-			"Use todo_write proactively when a task has 3+ steps or involves multiple files.",
-			"Create the todo list at the start, update status as you work, mark tasks completed immediately after finishing each one.",
-			"Only have one task in_progress at a time. Complete it before starting the next.",
+			"Use todo_write for work with 3+ steps or multiple files, not for trivial or conversational requests. Create the list at the start and mark each task completed as soon as it is done.",
 			"When all work is finished, call todo_write once with the full list marked completed/cancelled; the list is cleared automatically.",
-			"Do NOT use todo_write for single trivial tasks or purely conversational requests.",
 		],
 		parameters: TodoWriteParams,
 
@@ -388,32 +383,27 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo_read",
 		label: "Todo Read",
-		description: "Read the current task list to check progress and decide what to work on next.",
-		promptSnippet: "Read current todo list state",
+		description: "Read the current goal and task list.",
+		promptSnippet: "Read current goal and todo list",
 		parameters: TodoReadParams,
 
 		async execute() {
-			if (state.tasks.length === 0) {
-				return {
-					content: [{ type: "text", text: "No tasks. Use todo_write to create a task list." }],
-					details: { tasks: [] } as TodoState,
-				};
-			}
-
-			const summary = formatTaskList(state.tasks);
+			const goal = state.goal ? formatGoalSummary(state.goal) : "No goal is set.";
+			const tasks = state.tasks.length > 0 ? formatTaskList(state.tasks) : "No tasks.";
 			return {
-				content: [{ type: "text", text: summary }],
+				content: [{ type: "text", text: `${goal}\n${tasks}` }],
 				details: { goal: state.goal ?? null, tasks: [...state.tasks] } as TodoState,
 			};
 		},
 
 		renderResult(result, _options, theme) {
 			const details = result.details as TodoState | undefined;
+			const goal = details?.goal ? renderGoal(details.goal, theme) : theme.fg("dim", "No goal");
 			if (!details?.tasks?.length) {
-				return new Text(theme.fg("dim", "No tasks"), 0, 0);
+				return new Text(`${goal}\n${theme.fg("dim", "No tasks")}`, 0, 0);
 			}
 			const done = details.tasks.filter((t) => t.status === "completed").length;
-			const line = theme.fg("muted", `${done}/${details.tasks.length} completed`)
+			const line = goal + "\n" + theme.fg("muted", `${done}/${details.tasks.length} completed`)
 				+ formatTaskListForRender(details.tasks, theme);
 			return new Text(line, 0, 0);
 		},
@@ -445,10 +435,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Set the durable objective / north star for the current work. Use for long-running, autonomous, or multi-turn work; use todos for the current execution plan.",
 		promptSnippet: "Set durable work goal / north star",
 		promptGuidelines: [
-			"Use goal_set when work has a durable objective that may span multiple turns, todo batches, compaction, or handoff.",
-			"Do not use goal_set for trivial, one-shot, or purely conversational tasks.",
-			"Use todos for the current execution plan; use the goal for the stable outcome/why.",
-			"If a goal already exists, read it and continue under it; do not replace it unless the prior goal is complete or clearly obsolete.",
+			"Use goal_set only when the objective may span multiple turns, todo batches, compaction, or handoff. If a goal already exists, continue under it unless it is complete or clearly obsolete.",
 		],
 		parameters: GoalSetParams,
 
@@ -484,8 +471,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Update the current goal objective, note, or status. Mark complete only when the durable objective is actually achieved.",
 		promptSnippet: "Update current goal objective or status",
 		promptGuidelines: [
-			"Use goal_update to mark a goal complete only when the user's durable objective is actually achieved.",
-			"Use goal_update with status blocked when the goal cannot proceed without a user decision, missing dependency, or external unblock.",
+			"Use goal_update with status blocked when the goal needs a user decision, a missing dependency, or an external unblock.",
 		],
 		parameters: GoalUpdateParams,
 
@@ -514,33 +500,6 @@ export default function (pi: ExtensionAPI) {
 			text += theme.fg("muted", args.status ?? "goal");
 			if (args.objective) text += theme.fg("dim", ` │ ${args.objective}`);
 			return new Text(text, 0, 0);
-		},
-
-		renderResult(result, _options, theme) {
-			const details = result.details as TodoState | undefined;
-			if (!details?.goal) return new Text(theme.fg("dim", "No goal"), 0, 0);
-			return new Text(renderGoal(details.goal, theme), 0, 0);
-		},
-	});
-
-	pi.registerTool({
-		name: "goal_read",
-		label: "Goal Read",
-		description: "Read the current durable goal and task list context.",
-		promptSnippet: "Read current durable goal",
-		parameters: GoalReadParams,
-
-		async execute() {
-			if (!state.goal) {
-				return {
-					content: [{ type: "text", text: "No goal is currently set." }],
-					details: { goal: null, tasks: [...state.tasks] } as TodoState,
-				};
-			}
-			return {
-				content: [{ type: "text", text: formatGoalSummary(state.goal) }],
-				details: { goal: state.goal, tasks: [...state.tasks] } as TodoState,
-			};
 		},
 
 		renderResult(result, _options, theme) {
