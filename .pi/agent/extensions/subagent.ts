@@ -183,7 +183,7 @@ function formatAgentCatalogForPrompt(agents: AgentConfig[]): string {
 		"## Subagents",
 		"Available agents (name: description):",
 		lines,
-		"For the subagent tool's single/parallel/chain launch modes, choose only the exact names listed above; do not invent names or aliases.",
+		"Use only these exact names with the subagent tool.",
 	].join("\n");
 }
 
@@ -1268,7 +1268,7 @@ export default function (pi: ExtensionAPI) {
 	// ─── Tool schemas ─────────────────────────────────────────────────────
 
 	const CWD_DESCRIPTION = "Working directory. Omit to inherit the parent workspace. Under Gondolin, omit or use /workspace; other paths are rejected.";
-	const CONTEXT_DESCRIPTION = "fresh (default): the child sees only its task. fork: it starts from a copy of this conversation, without thinking or subagent calls; only for continuing work that needs evidence gathered here, never for reviews.";
+	const CONTEXT_DESCRIPTION = "fresh (default): child sees only its task. fork: child gets a copy of this conversation; only to continue work that needs evidence gathered here, never for reviews or independent checks.";
 	const ModelPolicyFields = {
 		model: Type.Optional(Type.String({ description: "Model policy (auto:cheap|auto:balanced|auto:strong) or provider/model[:thinking] pin, or a comma-separated fallback list of them; the first available candidate wins" })),
 		thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Requested thinking level" })),
@@ -2296,17 +2296,12 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Agents",
 		description: [
-			"Launch specialized agents in the background so the main session remains responsive.",
+			"Run specialized agents in the background so the main session stays responsive.",
 			"Launch modes: single (agent + task), parallel (tasks[]), chain (steps with {previous}).",
-			"Model, thinking, provider, and family can be shared launch defaults or per-task/per-step overrides.",
-			"Actions: launch (default), status, send (steer/follow-up input to running children), stop (whole job), resume (continue one interrupted child from its saved session).",
-			"Children left unfinished when the parent session ended show as interrupted in status and never restart on their own; resume one only when the user wants that work continued.",
-			"For task, live tools/arguments/results and recent assistant text, use status view=detail with id and zero-based index. Pages are at most 16KiB; use returned offset for more. Native session paths contain full transcripts outside the workspace.",
-			"After launch, return control to the user. Inspect active jobs on later turns and before accepting their work.",
-			"Available agent names and descriptions are listed under the Subagents section of the system prompt; select an agent by its exact discovered name only.",
-			"Children start fresh by default. context=fork copies this conversation (without thinking or subagent calls) into the child; use it only for continuing work that depends on evidence gathered here, and keep reviews, independent research, and adversarial checks fresh.",
-			"Children do not inherit project/global instructions, skills, or extension tools, nor the conversation unless forked — make each task self-contained: scoped goal and acceptance criteria, pointers to instructions/files the child must read, writable paths with single-writer ownership, only user-granted permissions, and how to verify or report a blocked outcome.",
-			"Parallel read-only exploration is fine, but only one writer may operate in a shared worktree at a time; non-overlapping files does not waive this — use separate worktrees only when explicitly authorized.",
+			"Actions: launch (default), status, send (steer or follow up a running child), stop (whole job), resume (an interrupted child; interrupted children never restart on their own, so resume only when the user wants that work continued).",
+			"After launch, return control to the user.",
+			"Children never inherit project/global instructions, skills, or extension tools, and see this conversation only when forked. Make each task self-contained: goal, acceptance criteria, files to read, writable paths, user-granted permissions, and how to verify or report a blocked outcome.",
+			"Only one writer may work in a shared worktree at a time, even on non-overlapping files; use separate worktrees only when explicitly authorized.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -2550,7 +2545,7 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt,
 			message: {
 				customType: REMINDER_MESSAGE,
-				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Self-contained child completions are delivered automatically; inspect details directly, and use subagent action=status only when the user asks for status, details are missing, or control actions are needed.`,
+				content: `${active.length} background subagent job${active.length === 1 ? " is" : "s are"} active. Completions arrive automatically; use subagent action=status only when the user asks, details are missing, or you need a control action.`,
 				display: false,
 			},
 		};
