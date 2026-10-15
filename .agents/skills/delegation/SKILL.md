@@ -46,7 +46,7 @@ Launch delegated work asynchronously and never block the main session waiting fo
 
 Treat active delegated agents as work that must be supervised:
 
-- On every new user turn while delegated work is active, inspect live child state first. Report only material progress, completions, failures, stalls, or requests for a decision.
+- On a new user turn while delegated work is active, check live child state before answering about that work. Report only material progress, completions, failures, stalls, or requests for a decision.
 - Read delivered child completion output first when it contains full results, and verify it as step 5 describes. Query live status when the user explicitly asks for status, when details are missing, or when control actions are needed.
 - When a stall or completion notification wakes the main session, inspect the relevant status, transcript, or output before summarizing it. Do not just echo the notification.
 - Report a child as running until its completion arrives. Never predict or summarize a result it has not delivered.
@@ -57,9 +57,14 @@ Treat active delegated agents as work that must be supervised:
 
 ## 5. Accept or redirect results
 
-Treat a child's summary as a claim, not as evidence. Before accepting a writer's work, updating todos, or starting dependent work, read its diff and the raw output of its verification command. Before acting on a finding, open the cited `file:line`. When evidence is incomplete, reassign or steer the work instead of accepting it.
+Treat a child's summary as a claim, not as evidence. Check it in proportion to what it can break:
 
-**Done when:** each accepted result has been checked against its acceptance criteria using the diff, command output, or cited source, and the synthesis to the user comes from the main session.
+- **Writers:** before accepting the work, updating todos, or starting dependent work, read the diff and the raw output of its verification command.
+- **Read-only children:** open the cited `file:line` for each finding you act on or pass to the user. Findings you drop need no check.
+
+When evidence is incomplete, reassign or steer the work instead of accepting it.
+
+**Done when:** every accepted writer result has been checked against its diff and verification output, every finding you act on has been checked at its cited source, and the synthesis to the user comes from the main session.
 
 ## Blocked outcomes
 

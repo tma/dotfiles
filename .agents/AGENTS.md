@@ -49,11 +49,11 @@ For multi-step or multi-file tasks, make a short plan, track it in the todo
 list, complete one step at a time, and update the list as each step finishes.
 For small tasks, just do the work.
 
-During longer work, do not go silent for minutes. Send one-line progress
-updates when starting a longer investigation or code change, moving between
-major steps, waiting on slow commands, tests, or tool calls, and retrying after
-an error or changing approach. Keep them short and factual, and summarize what
-you are doing instead of exposing private chain-of-thought.
+During longer work, do not go silent for minutes. Send a one-line progress
+update at major milestones: starting a long investigation or code change,
+moving between major steps, or changing approach after an error. Do not narrate
+routine tool calls. Keep updates short and factual, and summarize what you are
+doing instead of exposing private chain-of-thought.
 
 ## Session continuity
 
