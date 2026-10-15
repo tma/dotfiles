@@ -97,16 +97,7 @@ If I explicitly ask you to do one of these actions, you can proceed without aski
 
 ## Git and GitHub defaults
 
-Prefer small, topic-based commits. Do not use `git add .` unless I explicitly ask.
-
-Before committing:
-
-- inspect `git status`
-- inspect the relevant diff
-- stage only the files for that topic
-- write a commit message that leads with the intended outcome, problem, or risk
-
-Do not amend, rebase, squash, or force-push a branch with an open non-draft PR.
+Before committing, pulling, pushing, or rewriting history, load the `git` skill; it owns commit, staging, and branch rules. Hard gates wherever you are: do not use `git add .` unless I explicitly ask, and do not amend, rebase, squash, or force-push a branch with an open non-draft PR.
 
 ## Checks
 

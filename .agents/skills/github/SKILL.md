@@ -5,7 +5,7 @@ description: "Use the gh CLI for GitHub. Use when creating or updating PRs or is
 
 # GitHub
 
-Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library; `gh` handles authentication, pagination, and API versioning.
+Use the `gh` CLI for all GitHub operations. Never use `curl` with raw API URLs or the `octokit` library; `gh` handles authentication, pagination, and API versioning. Do not use `web_search` or `web_read` for GitHub data either.
 
 For command examples, read the [GitHub command reference](./references/command-reference.md). For broad code searches and full-link requirements, read the [code search workflow](./workflows/code-search.md). When a PR body would benefit from before/after evidence or a note about rollback difficulty and blast radius, read the [PR evidence reference](./references/pr-evidence.md).
 
@@ -59,13 +59,8 @@ Never post `@copilot review this`; that does not create the requested-reviewer r
 
 ## Rules
 
-1. **Always use `gh` CLI** — never `curl`, `fetch`, or direct HTTP to `api.github.com`.
-2. **Use `--repo owner/repo`** when not in the target repository's directory.
-3. **Use `--json` + `--jq`** for structured output; do not parse human-readable text.
-4. **Use `gh api`** for endpoints without a dedicated subcommand.
-5. **Paginate with `--paginate`** when listing; default page size is 30.
-6. **Do not create tokens**; `gh` manages authentication.
-7. **Never use web_search or web_read** for GitHub data; use `gh` for issues, PRs, code search, Actions, and API data.
-8. **Use requested reviewers for review requests**; when the user asks for a GitHub Copilot review, add `copilot-pull-request-reviewer[bot]` as a reviewer/requested reviewer.
-9. **Lead PR titles and descriptions with why** — explain the motivation and intended impact before what changed or how it works.
-10. **Show real evidence** — when a PR body includes verification output, it comes from a command you actually ran; never fabricate results.
+1. **Use `--json` + `--jq`** for structured output; do not parse human-readable text.
+2. **Use `gh api`** for endpoints without a dedicated subcommand.
+3. **Paginate with `--paginate`** when listing; default page size is 30.
+4. **Do not create tokens**; `gh` manages authentication.
+5. **Show real evidence** — when a PR body includes verification output, it comes from a command you actually ran; never fabricate results.

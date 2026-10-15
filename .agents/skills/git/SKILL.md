@@ -36,9 +36,11 @@ Apply the same rule to worktree branch names.
 
 Always group changes into topic-based commits. Each commit should represent one logical change: a feature, bug fix, refactor, or configuration update. Never lump unrelated changes into a single commit.
 
-When multiple files were changed across different topics, review the full diff, identify the topics, and stage each topic separately using `git add <specific files>` or `git add -p`.
+Before every commit, inspect `git status` and the staged diff so nothing unrelated or already staged rides along.
 
-When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit. Read the [merge conflict reference](./references/merge-conflicts.md) for the resolution procedure, including when to stop and when aborting is appropriate.
+When multiple files were changed across different topics, review the full diff, identify the topics, and stage each topic separately using `git add <specific files>` or `git add -p`, never `git add .`.
+
+When a merge produces conflicts, resolve the conflicts and commit the merge before adding any unrelated changes. Do not fold follow-up fixes, refactors, or new work into the merge commit. Read the [merge conflict reference](./references/merge-conflicts.md) for the resolution procedure, including when to stop. Confirm with the user before aborting a merge, rebase, or cherry-pick.
 
 Before writing a commit message on tma's behalf, apply the `writing-voice` skill and its curated profile.
 
@@ -72,15 +74,3 @@ Before amending or rebasing, check the current branch PR state with `gh pr view 
 Use `git push -u origin HEAD` for the first push of a new branch. Use `git push --force-with-lease` only after a rebase on a personal branch with no open, non-draft PR.
 
 Never force push to `main` or shared branches. Never force push a branch with an open, non-draft PR.
-
-## Rules
-
-1. **Commit by topic** — one logical change per commit; never mix unrelated changes.
-2. **Lead with why** — state the intended outcome, problem, or avoided risk before implementation details.
-3. **Pull with rebase** — use `git pull --rebase` unless an open, non-draft PR makes a merge pull safer.
-4. **Commit merges first** — after resolving merge conflicts, commit the merge before adding new changes.
-5. **Never force push shared branches** — use `--force-with-lease` on personal branches only.
-6. **Never amend or rebase with an open PR** — check `gh pr view` first; add new commits instead.
-7. **Stage precisely** — use `git add <files>` or `git add -p`, not `git add .`.
-8. **Prefix branches when needed** — use `tma/` for branches on GitHub repositories not owned by `tma`; use the same rule for worktree branch names.
-9. **Resolve conflicts deliberately** — understand both sides, stage only resolved paths, and confirm before aborting an operation.
