@@ -225,18 +225,23 @@ build_panel_template() {
         p ""
       fi
 
-      # Token counts — match Pi's footer format: ↑input ↓output R{cache} W{cacheWrite} $cost
-      local in_tok out_tok cr_tok cw_tok cost turns
+      # Session token totals and the share of prompt tokens reused from cache.
+      local in_tok out_tok cache_pct cost turns
       in_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('inputTokens',0); print(f'{v/1000:.1f}k' if v>=1000 else v)" 2>/dev/null || true)
       out_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('outputTokens',0); print(f'{v/1000:.1f}k' if v>=1000 else v)" 2>/dev/null || true)
-      cr_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cacheRead',0); print(f'{v/1000:.1f}k' if v>=1000 else ('' if v==0 else v))" 2>/dev/null || true)
-      cw_tok=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cacheWrite',0); print(f'{v/1000:.1f}k' if v>=1000 else ('' if v==0 else v))" 2>/dev/null || true)
+      cache_pct=$(echo "$stats" | python3 -c "
+import sys,json
+s=json.load(sys.stdin)
+read=s.get('cacheRead',0)
+written=s.get('cacheWrite',0)
+total=s.get('inputTokens',0)+read+written
+print(f'{100*read/total:.0f}%' if total>0 and read+written>0 else '')
+" 2>/dev/null || true)
       cost=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('cost',0); print(f'\${v:.3f}' if v>0 else '')" 2>/dev/null || true)
       turns=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('turns',0))" 2>/dev/null || true)
 
       local tok_line=" ${GRAY}↑${in_tok} ↓${out_tok}"
-      [[ -n "$cr_tok" ]] && tok_line+=" R${cr_tok}"
-      [[ -n "$cw_tok" ]] && tok_line+=" W${cw_tok}"
+      [[ -n "$cache_pct" ]] && tok_line+=" ${cache_pct} cached"
       [[ -n "$cost" ]] && tok_line+="  ${cost}"
       [[ "$turns" != "0" ]] && tok_line+="  ${turns} turn$([[ "$turns" != "1" ]] && echo 's')"
       tok_line+="${RESET}"
