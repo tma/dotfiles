@@ -6,7 +6,7 @@ The output is a set of proposals about the agent's environment. Nothing is chang
 
 ## Steps
 
-1. **Collect evidence of friction.** Use the current session unless the user names another one. Look for concrete moments: a file the agent could not find, a mistake a check would have caught, a rule it broke, a tool call that burned context for little return, a piece of information it never had access to. An improvement with no moment behind it is speculation.
+1. **Collect evidence of friction.** Use the current session unless the user names another one. For an earlier session, read its JSONL transcript at the path the user gives (or a subagent's native session path); delegate long transcripts to a `scout` that returns cited friction moments. Look for concrete moments: a file the agent could not find, a mistake a check would have caught, a rule it broke, a tool call that burned context for little return, a piece of information it never had access to. An improvement with no moment behind it is speculation.
 
 2. **Inspect what already exists.** Before proposing a check, read the repository's own scripts (`package.json`, build configuration, CI workflow) and instruction files. A check that already exists but is unwired, silently failing, or never run is a better finding than a new one you invent. Note when a repository has no linting, typechecking, or test command at all.
 

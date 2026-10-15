@@ -1,6 +1,6 @@
 ---
 name: writing-for-agents
-description: Author or edit agent-facing instructions. Use when creating or changing a skill, a skill reference file, AGENTS.md, or other instructions an agent loads.
+description: Author or edit agent-facing instructions. Use when creating or changing a skill, a skill reference file, AGENTS.md, or other instructions an agent loads, or when the user asks for a retro on a past or current session.
 ---
 
 # Writing for Agents
