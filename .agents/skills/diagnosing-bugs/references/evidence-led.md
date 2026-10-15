@@ -15,7 +15,7 @@ Work from artifacts that already exist, read-only:
 - Deployments, configuration changes, feature flag flips, migrations, and infrastructure events near the first occurrence.
 - The code as it was at the failing version, not only `main`.
 
-The `datadog` and `kusto` skills own the query mechanics and their own safety rules. Use them for the actual queries.
+For Datadog queries, use the `datadog` skill; it owns the query mechanics and safety rules.
 
 Redact secrets, tokens, customer data, internal hostnames, and personal data in everything you quote.
 
