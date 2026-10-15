@@ -118,7 +118,7 @@ Prefer:
 - linters or typechecks when available
 - focused tests over full suites unless the change warrants it
 
-If checks are skipped, say why.
+Prove a change works by running something (a check, a test, or a reproduction), not by rereading it. Report a check as passed only if you ran it and saw it pass. If checks are skipped, say why.
 
 ## Information boundaries
 
