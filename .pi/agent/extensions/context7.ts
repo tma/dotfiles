@@ -11,6 +11,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const ENDPOINT = "https://mcp.context7.com/mcp";
+const MAX_DOC_CHARS = 30_000;
 const HEADERS = {
 	"Content-Type": "application/json",
 	Accept: "application/json, text/event-stream",
@@ -105,8 +106,12 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			const kb = (text.length / 1024).toFixed(1);
+			const shown =
+				text.length > MAX_DOC_CHARS
+					? `${text.slice(0, MAX_DOC_CHARS)}\n\n[Truncated at ${MAX_DOC_CHARS} of ${text.length} chars. Narrow the query for more.]`
+					: text;
 			return {
-				content: [{ type: "text", text: text || "No documentation found." }],
+				content: [{ type: "text", text: shown || "No documentation found." }],
 				details: { libraryId: params.libraryId, query: params.query, kb },
 			};
 		},

@@ -56,8 +56,6 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use web_search when the user asks about current events, recent releases, or anything not in your training data.",
 			"Follow up with web_read to get full page content when a search result looks relevant.",
-			"Do not call docs_search more than 3 times per question.",
-			"Do not call docs_read more than 3 times per question.",
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
