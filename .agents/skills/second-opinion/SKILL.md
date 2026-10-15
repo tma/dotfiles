@@ -39,7 +39,7 @@ Do not use this skill when the harness cannot launch child/subagent reviewers, w
 
 ## Pi adapter
 
-Use the `subagent` tool with the `second-opinion` reviewer agent, which selects a strong model with `max` thinking (clamped when needed). Every launch sets `agent: "second-opinion"` and an explicit `family` per task:
+Use the `subagent` tool with the `second-opinion` reviewer agent, which selects a strong model with `high` thinking. Pass `thinking: "max"` when a calling workflow, such as deep code review, requires maximum thinking. Every launch sets `agent: "second-opinion"` and an explicit `family` per task:
 
 - `family: "claude-opus"` — Claude Opus route.
 - `family: "gpt"` — GPT route.

@@ -22,7 +22,7 @@ its place rather than quietly reviewing alone.
 ## What deep review requires
 
 - **Routes.** Include both the latest GPT and the latest Opus routes at maximum
-  thinking (`xhigh`). This overrides the usual preference for a single
+  thinking (launch with `thinking: "max"`). This overrides the usual preference for a single
   non-current family: cross-family disagreement is the point of a deep review.
 - **Count.** Two reviewers by default. Three when the user asks for a very
   thorough review or explicitly asks for three; the third is the latest Grok route

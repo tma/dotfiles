@@ -41,9 +41,9 @@ If the user asks for more than three, explain the cap and proceed with three unl
 Reviewer selection:
 
 - `auto` — prefer model families different from the current/root agent
-- `opus` — dynamically selected strong Claude Opus-family child reviewer with `max` thinking (Pi `family: "claude-opus"`)
-- `gpt` — dynamically selected strong GPT-family child reviewer with `max` thinking (Pi `family: "gpt"`)
-- `grok` — dynamically selected strong Grok-family child reviewer with `max` thinking (Pi `family: "grok"`)
+- `opus` — dynamically selected strong Claude Opus-family child reviewer (Pi `family: "claude-opus"`)
+- `gpt` — dynamically selected strong GPT-family child reviewer (Pi `family: "gpt"`)
+- `grok` — dynamically selected strong Grok-family child reviewer (Pi `family: "grok"`)
 - `mixed` — use multiple routed reviewers when available
 
 Focus:
@@ -134,7 +134,7 @@ Each child task must be self-contained and include:
 Template:
 
 ```markdown
-You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on the configured <Claude Opus|GPT|Grok> family route with max thinking when supported.
+You are <Reviewer 1|Reviewer 2|Reviewer 3>, an independent second-opinion reviewer running on the configured <Claude Opus|GPT|Grok> family route.
 The root agent is running on <current model family or unknown>.
 
 Review scope: <scope>
