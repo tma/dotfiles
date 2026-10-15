@@ -76,6 +76,7 @@ function getStateDir(sessionFile: string | undefined): string {
 
 interface SessionStats {
 	model: string;
+	thinkingLevel: string;
 	contextTokens: number | null;
 	contextWindow: number;
 	contextPercent: number | null;
@@ -279,6 +280,7 @@ export default function (pi: ExtensionAPI) {
 		const usage = currentCtx?.getContextUsage?.();
 		writeStats({
 			model: currentModel,
+			thinkingLevel: pi.getThinkingLevel(),
 			contextTokens: usage?.tokens ?? null,
 			contextWindow: usage?.contextWindow ?? 0,
 			contextPercent: usage?.percent ?? null,
@@ -442,6 +444,11 @@ export default function (pi: ExtensionAPI) {
 		currentModel = event.model.name;
 		cmuxLog(`Model: ${currentModel}`);
 		cmuxSetStatus("pi-model", currentModel, "cpu", "#007aff");
+		flushStats();
+	});
+
+	pi.on("thinking_level_select", async () => {
+		flushStats();
 	});
 
 	// ── agent loop ───────────────────────────────────────────────────────

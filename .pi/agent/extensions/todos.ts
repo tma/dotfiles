@@ -51,6 +51,8 @@ function flushTodos(state: TodoState): void {
 
 function isCmux(): boolean {
 	if (process.env.CMUX_WORKSPACE_ID) return true;
+	// A background cmux socket must not hide the widget in an explicit tmux or Rex context.
+	if (isTmux() || isRex()) return false;
 	try {
 		const sockPath = process.env.CMUX_SOCKET_PATH
 			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
@@ -65,8 +67,12 @@ function isTmux(): boolean {
 	return !!process.env.TMUX && !!process.env.TMUX_PANE;
 }
 
-function isTmuxStatusPanelOpen(): boolean {
-	if (!isTmux()) return false;
+function isRex(): boolean {
+	return !!process.env.REX_SESSION && !!process.env.REX_BLOCK;
+}
+
+function isSplitStatusPanelOpen(): boolean {
+	if (!isTmux() && !isRex()) return false;
 	try {
 		accessSync(panelStateFile);
 		return true;
@@ -170,7 +176,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── State reconstruction from session ───────────────────────────
 
-	const shouldSuppressWidget = (): boolean => isCmux() || isTmuxStatusPanelOpen();
+	const shouldSuppressWidget = (): boolean => isCmux() || isSplitStatusPanelOpen();
 
 	const ensurePanelPolling = () => {
 		if (panelPoll) return;
@@ -249,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 		const suppressWidget = shouldSuppressWidget();
 		lastWidgetSuppressed = suppressWidget;
 
-		// In cmux, and in tmux while the right status panel is open, work state lives
+		// In cmux, and in tmux or Rex while the right status panel is open, work state lives
 		// in the side panel instead of the horizontal editor widget.
 		if (suppressWidget) {
 			ctx.ui.setWidget("todos", []);

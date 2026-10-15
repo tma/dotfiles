@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pi status panel — runs in a cmux right split pane
+# Pi status panel — runs in a cmux, tmux, or Rex right split pane
 # Shows session stats, active subagents, todos, and git status
 # Rebuilds data every second and shows a single Session state indicator
 # Requires bash 4+ for associative arrays (brew install bash)
@@ -98,6 +98,7 @@ enter_panel_mode() {
     [[ -n "$ORIGINAL_STTY" ]] && stty -echo -icanon min 1 time 0 2>/dev/null || true
   fi
   printf '\033[?1049h\033[?1000h\033[?1006h'
+  printf '\033]2;Status\007'
   tput civis 2>/dev/null || true
   PANEL_MODE_ACTIVE=1
 }
@@ -158,8 +159,9 @@ build_panel_template() {
     local stats
     stats=$(python3 "$PANEL_TEXT_HELPER" json < "$STATS_FILE" 2>/dev/null)
     if [[ -n "$stats" ]]; then
-      local model state ctx_pct ctx_window
+      local model thinking_level state ctx_pct ctx_window
       model=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model',''))" 2>/dev/null || true)
+      thinking_level=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('thinkingLevel'); print(v.strip() if isinstance(v,str) else '')" 2>/dev/null || true)
       state=$(echo "$stats" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))" 2>/dev/null || true)
       ctx_pct=$(echo "$stats" | python3 -c "import sys,json; p=json.load(sys.stdin).get('contextPercent'); print(f'{p:.0f}' if type(p) in (int,float) and 0 <= p < 1e9 else '')" 2>/dev/null || true)
       ctx_window=$(echo "$stats" | python3 -c "import sys,json; v=json.load(sys.stdin).get('contextWindow'); print(int(v) if type(v) in (int,float) and 0 <= v < 1e9 else 0)" 2>/dev/null || true)
@@ -194,7 +196,11 @@ build_panel_template() {
       hr
       p ""
 
-      [[ -n "$model" ]] && p " ${BOLD}${model}${RESET}"
+      if [[ -n "$model" ]]; then
+        local model_line=" ${BOLD}${model}${RESET}"
+        [[ -n "$thinking_level" ]] && model_line+="${GRAY} · ${thinking_level}${RESET}"
+        p "$model_line"
+      fi
 
       # Context window bar
       if [[ -n "$ctx_pct" && "$ctx_pct" != "0" ]]; then
