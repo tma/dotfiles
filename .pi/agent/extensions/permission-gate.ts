@@ -25,11 +25,6 @@ const envLongOptionsWithValue = new Set(["--unset", "--chdir", "--split-string"]
 const gitOptionsWithValue = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"]);
 const attentionNotificationEvent = "notify:attention";
 
-function summarizeCommand(command: string, maxLength = 120): string {
-	const singleLine = command.replace(/\s+/g, " ").trim();
-	return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength - 1)}…` : singleLine;
-}
-
 function tokenizeShell(command: string): string[] {
 	const tokens: string[] = [];
 	let current = "";
@@ -386,13 +381,10 @@ export default function (pi: ExtensionAPI) {
 				return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
 			}
 
-			const preview = summarizeCommand(command);
 			ctx.ui.notify("Dangerous bash command needs approval", "warning");
 			pi.events.emit(attentionNotificationEvent, {
 				title: "Pi",
 				body: "Needs input · Approve command",
-				logMessage: `Waiting for dangerous command approval: ${preview}`,
-				level: "warning",
 			});
 
 			const allowed = await ctx.ui.confirm("⚠️ Dangerous command", `${command}\n\nAllow this command?`);

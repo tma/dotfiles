@@ -1,12 +1,12 @@
 /**
  * Pi Status Panel Extension
  *
- * Opens a right split pane in cmux, tmux, or Rex showing modified files, git
+ * Opens a right split pane in Rex showing modified files, git
  * status, diff stats, and recent commits — like OpenCode's right sidebar.
  *
  * Toggle with /status or ctrl+shift+s. Pi's default footer is hidden while
  * the panel is open because the panel shows the same session details.
- * Requires cmux, tmux, or Rex. Child subagents can disable mux UI with
+ * Requires Rex. Child subagents can disable the panel with
  * PI_DISABLE_MUX_UI=1 to avoid nested panels.
  */
 
@@ -18,8 +18,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type PanelHandle =
-	| { backend: "cmux"; ref: string }
-	| { backend: "tmux"; ref: string }
 	| { backend: "rex"; session: string; ref: string };
 
 type RexPanelHandle = Extract<PanelHandle, { backend: "rex" }>;
@@ -43,58 +41,9 @@ function isMuxUiDisabled(): boolean {
 	return value === "1" || value === "true" || value === "yes";
 }
 
-function isCmux(): boolean {
-	if (isMuxUiDisabled()) return false;
-	if (process.env.CMUX_WORKSPACE_ID) return true;
-	try {
-		const sockPath = process.env.CMUX_SOCKET_PATH
-			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
-		accessSync(sockPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function isTmux(): boolean {
-	if (isMuxUiDisabled()) return false;
-	return !!process.env.TMUX && !!process.env.TMUX_PANE;
-}
-
 function isRex(): boolean {
 	if (isMuxUiDisabled()) return false;
 	return !!process.env.REX_SESSION && !!process.env.REX_BLOCK;
-}
-
-function getMuxBackend(): PanelHandle["backend"] | null {
-	// Prefer explicit current-session markers first. This lets tmux or Rex win
-	// when a cmux socket happens to exist on disk but Pi is running elsewhere.
-	// tmux is checked before Rex because tmux commonly runs inside Rex.
-	if (process.env.CMUX_WORKSPACE_ID && !isMuxUiDisabled()) return "cmux";
-	if (isTmux()) return "tmux";
-	if (isRex()) return "rex";
-	if (isCmux()) return "cmux";
-	return null;
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function cmuxSync(args: string[]): string | null {
-	try {
-		return execFileSync("cmux", args, { timeout: 3000, encoding: "utf-8" }).trim();
-	} catch {
-		return null;
-	}
-}
-
-function tmuxSync(args: string[]): string | null {
-	try {
-		return execFileSync("tmux", args, { timeout: 3000, encoding: "utf-8" }).trim();
-	} catch {
-		return null;
-	}
 }
 
 function rexSync(args: string[]): string {
@@ -165,7 +114,6 @@ export default function (pi: ExtensionAPI) {
 	let footerCtx: ExtensionContext | null = null;
 	const scriptPath = resolveStatusPanelScript();
 	const panelStateFile = path.join(os.tmpdir(), `pi-${process.pid}-status-panel.json`);
-	const tmuxStatusPaneStyle = "bg=#171a21";
 
 	function writePanelState(handle: PanelHandle | null): void {
 		try {
@@ -186,90 +134,6 @@ export default function (pi: ExtensionAPI) {
 				} catch {}
 			}
 		}
-	}
-
-	function openCmuxPanel(cwd: string): PanelHandle | null {
-		if (!sessionDir) return null;
-
-		// Create a right split — returns "OK surface:<id> workspace:<id>"
-		const result = cmuxSync(["new-split", "right"]);
-		if (!result) return null;
-
-		const match = result.match(/surface:(\S+)/);
-		const surfaceId = match ? `surface:${match[1]}` : null;
-		if (!surfaceId) return null;
-
-		// Resize pi's pane to ~3/4 width
-		// After 50/50 split, grow pi's (left) pane right so it gets 3/4, panel gets 1/4
-		try {
-			const tree = cmuxSync(["tree"]);
-			if (tree) {
-				let piPaneId: string | null = null;
-				let currentPaneId: string | null = null;
-				for (const line of tree.split("\n")) {
-					const paneMatch = line.match(/(pane:\d+)/);
-					if (paneMatch) currentPaneId = paneMatch[1];
-					if (line.includes("\u25c0 here")) {
-						piPaneId = currentPaneId;
-						break;
-					}
-				}
-				if (piPaneId) {
-					const cols = process.stdout.columns || 80;
-					execFileSync("cmux", ["resize-pane", "--pane", piPaneId, "-R", "--amount", String(Math.round(cols * 3 / 4))], { timeout: 2000 });
-					execFileSync("cmux", ["focus-pane", "--pane", piPaneId], { timeout: 2000 });
-				}
-			}
-		} catch {}
-
-		try {
-			execFileSync("cmux", ["rename-tab", "--surface", surfaceId, "Status"], { timeout: 2000 });
-		} catch {}
-
-		// Send cd + script to the new surface and press enter
-		setTimeout(() => {
-			const cmd = `cd ${shellQuote(cwd)} && PI_PID=${process.pid} PI_SESSION_DIR=${shellQuote(sessionDir)} ${shellQuote(scriptPath)}`;
-			execFile("cmux", ["send", "--surface", surfaceId, cmd], { timeout: 3000 }, () => {});
-			setTimeout(() => {
-				execFile("cmux", ["send-key", "--surface", surfaceId, "enter"], { timeout: 3000 }, () => {});
-			}, 100);
-		}, 300);
-
-		return { backend: "cmux", ref: surfaceId };
-	}
-
-	function openTmuxPanel(cwd: string): PanelHandle | null {
-		if (!sessionDir) return null;
-		const targetPane = process.env.TMUX_PANE;
-		if (!targetPane) return null;
-
-		const paneId = tmuxSync([
-			"split-window",
-			"-d",
-			"-h",
-			"-P",
-			"-F",
-			"#{pane_id}",
-			"-l",
-			"35%",
-			"-t",
-			targetPane,
-			"-c",
-			cwd,
-			"-e",
-			`PI_PID=${process.pid}`,
-			"-e",
-			`PI_SESSION_DIR=${sessionDir}`,
-			scriptPath,
-		]);
-		if (!paneId) return null;
-
-		try {
-			execFileSync("tmux", ["select-pane", "-t", paneId, "-T", "Status"], { timeout: 2000 });
-			execFileSync("tmux", ["set-option", "-pt", paneId, "window-style", tmuxStatusPaneStyle], { timeout: 2000 });
-		} catch {}
-
-		return { backend: "tmux", ref: paneId };
 	}
 
 	// Throws with the Rex error so callers can surface it.
@@ -313,18 +177,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function openPanel(cwd: string): boolean {
-		const backend = getMuxBackend();
-		if (!backend) return false;
+		if (!isRex()) return false;
 		if (!sessionDir) return false;
 		if (!fileExists(scriptPath)) return false;
 
-		if (backend === "cmux") {
-			panelHandle = openCmuxPanel(cwd);
-		} else if (backend === "tmux") {
-			panelHandle = openTmuxPanel(cwd);
-		} else {
-			panelHandle = openRexPanel(cwd);
-		}
+		panelHandle = openRexPanel(cwd);
 		writePanelState(panelHandle);
 		if (panelHandle?.backend === "rex") {
 			watchRexPanel(panelHandle);
@@ -445,23 +302,13 @@ export default function (pi: ExtensionAPI) {
 		if (!panelHandle) return false;
 
 		const handle = panelHandle;
-		if (handle.backend === "rex") {
-			// The renderer exits on INT, and Rex closes command blocks when their
-			// command exits. A missing block was already closed; keep the handle if
-			// Rex fails for any other reason.
-			try {
-				rexSync(["send-key", "-s", handle.session, "-b", handle.ref, "ctrl+c"]);
-			} catch (error) {
-				if (!isRexTargetMissing(error)) throw error;
-			}
-		} else {
-			try {
-				if (handle.backend === "cmux") {
-					execFileSync("cmux", ["close-surface", "--surface", handle.ref, "--force"], { timeout: 2000 });
-				} else {
-					execFileSync("tmux", ["kill-pane", "-t", handle.ref], { timeout: 2000 });
-				}
-			} catch {}
+		// The renderer exits on INT, and Rex closes command blocks when their
+		// command exits. A missing block was already closed; keep the handle if
+		// Rex fails for any other reason.
+		try {
+			rexSync(["send-key", "-s", handle.session, "-b", handle.ref, "ctrl+c"]);
+		} catch (error) {
+			if (!isRexTargetMissing(error)) throw error;
 		}
 
 		clearPanel();
@@ -512,7 +359,7 @@ export default function (pi: ExtensionAPI) {
 		process.off("exit", onProcessExit);
 		process.on("exit", onProcessExit);
 		if (ctx.mode !== "tui") return;
-		if (getMuxBackend() && !panelHandle) {
+		if (isRex() && !panelHandle) {
 			try {
 				togglePanel(ctx);
 			} catch (error) {
@@ -536,14 +383,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("status", {
-		description: "Toggle right status panel (cmux/tmux/Rex split)",
+		description: "Toggle right status panel (Rex split)",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Status panel requires the interactive TUI", "warning");
 				return;
 			}
-			if (!getMuxBackend()) {
-				ctx.ui.notify("Status panel requires cmux, tmux, or Rex", "warning");
+			if (!isRex()) {
+				ctx.ui.notify("Status panel requires Rex", "warning");
 				return;
 			}
 			const wasOpen = !!panelHandle;
@@ -562,7 +409,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("ctrl+shift+s", {
 		description: "Toggle right status panel",
 		handler: async (ctx) => {
-			if (getMuxBackend()) {
+			if (isRex()) {
 				const wasOpen = !!panelHandle;
 				try {
 					togglePanel(ctx);

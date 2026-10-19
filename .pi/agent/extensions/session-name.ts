@@ -1,12 +1,11 @@
 /**
- * Session names for /resume and tmux titles.
+ * Session names for /resume and the status panel.
  *
  * Auto-names unnamed sessions from the first user prompt using a cheap
  * flash/mini model. /session-name still sets or shows the name by hand.
  */
 
-import { execFile, execFileSync } from "node:child_process";
-import { accessSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { complete, type Message } from "@earendil-works/pi-ai";
@@ -45,47 +44,12 @@ function getStateDir(sessionFile: string | undefined): string {
 	return ephemeralDir;
 }
 
-function isCmux(): boolean {
-	if (process.env.CMUX_WORKSPACE_ID) return true;
-	try {
-		const sockPath = process.env.CMUX_SOCKET_PATH
-			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
-		accessSync(sockPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function cmux(args: string[]): void {
-	if (!isCmux()) return;
-	execFile("cmux", args, { timeout: 3000 }, () => {});
-}
-
-function syncTmuxSessionName(name: string | undefined): void {
-	if (!process.env.TMUX || !process.env.TMUX_PANE) return;
-
-	try {
-		if (name) {
-			execFileSync("tmux", ["set-option", "-pt", process.env.TMUX_PANE, "@pi_session_name", name], { timeout: 2000 });
-		} else {
-			execFileSync("tmux", ["set-option", "-pt", process.env.TMUX_PANE, "-u", "@pi_session_name"], { timeout: 2000 });
-		}
-	} catch {}
-}
-
 function syncSidebarName(name: string | undefined, nameFile: string): void {
-	syncTmuxSessionName(name);
 	if (nameFile) {
 		try {
 			if (name) writeFileSync(nameFile, name);
 			else unlinkSync(nameFile);
 		} catch {}
-	}
-	if (name) {
-		cmux(["set-status", "session", name, "--icon", "text.alignleft", "--color", "#64d2ff"]);
-	} else {
-		cmux(["clear-status", "session"]);
 	}
 }
 

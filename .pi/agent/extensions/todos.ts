@@ -16,7 +16,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth, matchesKey } from "@earendil-works/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
 import { writeFileSync, accessSync, mkdirSync } from "node:fs";
-import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -47,59 +46,17 @@ function flushTodos(state: TodoState): void {
 	} catch {}
 }
 
-// ── cmux detection ───────────────────────────────────────────────────────
-
-function isCmux(): boolean {
-	if (process.env.CMUX_WORKSPACE_ID) return true;
-	// A background cmux socket must not hide the widget in an explicit tmux or Rex context.
-	if (isTmux() || isRex()) return false;
-	try {
-		const sockPath = process.env.CMUX_SOCKET_PATH
-			?? `${process.env.HOME}/Library/Application Support/cmux/cmux.sock`;
-		accessSync(sockPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function isTmux(): boolean {
-	return !!process.env.TMUX && !!process.env.TMUX_PANE;
-}
-
 function isRex(): boolean {
 	return !!process.env.REX_SESSION && !!process.env.REX_BLOCK;
 }
 
 function isSplitStatusPanelOpen(): boolean {
-	if (!isTmux() && !isRex()) return false;
+	if (!isRex()) return false;
 	try {
 		accessSync(panelStateFile);
 		return true;
 	} catch {
 		return false;
-	}
-}
-
-// ── cmux sidebar metadata ───────────────────────────────────────────
-
-function cmux(args: string[]): void {
-	try {
-		execFile("cmux", args, { timeout: 3000 }, () => {});
-	} catch {}
-}
-
-function cmuxSetTaskStatus(tasks: Task[]): void {
-	// Tasks are shown in the right status panel (status-panel.sh), not the cmux left sidebar
-}
-
-function cmuxLogTask(task: Task): void {
-	if (task.status === "completed") {
-		cmux(["log", "--level", "success", "--source", "tasks", "--", `✓ ${task.title}`]);
-	} else if (task.status === "in_progress") {
-		cmux(["log", "--level", "progress", "--source", "tasks", "--", `▸ ${task.title}`]);
-	} else if (task.status === "cancelled") {
-		cmux(["log", "--level", "warning", "--source", "tasks", "--", `✗ ${task.title}`]);
 	}
 }
 
@@ -174,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── State reconstruction from session ───────────────────────────
 
-	const shouldSuppressWidget = (): boolean => isCmux() || isSplitStatusPanelOpen();
+	const shouldSuppressWidget = (): boolean => isSplitStatusPanelOpen();
 
 	const ensurePanelPolling = () => {
 		if (panelPoll) return;
@@ -248,12 +205,11 @@ export default function (pi: ExtensionAPI) {
 
 	const updateWidget = (ctx: ExtensionContext) => {
 		flushTodos(state);
-		cmuxSetTaskStatus(state.tasks);
 
 		const suppressWidget = shouldSuppressWidget();
 		lastWidgetSuppressed = suppressWidget;
 
-		// In cmux, and in tmux or Rex while the right status panel is open, work state lives
+		// In Rex while the right status panel is open, work state lives
 		// in the side panel instead of the horizontal editor widget.
 		if (suppressWidget) {
 			ctx.ui.setWidget("todos", []);
@@ -311,15 +267,6 @@ export default function (pi: ExtensionAPI) {
 			const submittedTasks = [...params.tasks];
 			const allSubmittedTasksDone = submittedTasks.length > 0
 				&& submittedTasks.every((t) => t.status === "completed" || t.status === "cancelled");
-
-			// Detect changes for logging
-			const oldMap = new Map(previousTasks.map((t) => [t.id, t.status]));
-			for (const task of submittedTasks) {
-				const prev = oldMap.get(task.id);
-				if (prev !== task.status && (task.status === "completed" || task.status === "in_progress" || task.status === "cancelled")) {
-					cmuxLogTask(task);
-				}
-			}
 
 			if (allSubmittedTasksDone) {
 				state = { ...state, tasks: [] };

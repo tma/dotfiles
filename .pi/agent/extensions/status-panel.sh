@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pi status panel — runs in a cmux, tmux, or Rex right split pane
+# Pi status panel — runs in a Rex right split pane
 # Shows session stats, active subagents, todos, and git status
 # Rebuilds data every second and shows a single Session state indicator
 # Requires bash 4+ for associative arrays (brew install bash)
@@ -66,7 +66,6 @@ PANEL_PAD_X="${PI_STATUS_PANEL_PAD_X:-1}"
 PANEL_PAD_BOTTOM="${PI_STATUS_PANEL_PAD_BOTTOM:-3}"
 [[ "$PANEL_PAD_BOTTOM" =~ ^[0-9]+$ ]] || PANEL_PAD_BOTTOM=3
 [[ "$PANEL_PAD_BOTTOM" -gt 20 ]] && PANEL_PAD_BOTTOM=20
-PANEL_BG="${PI_STATUS_PANEL_BG:-#171a21}"
 # Stats file scoped per project directory (matches notify.ts)
 if [[ -z "$PI_SESSION_DIR" ]]; then
   echo "PI_SESSION_DIR not set"
@@ -81,12 +80,6 @@ PANEL_WORKDIR=$(mktemp -d "${PANEL_TMPDIR%/}/pi-${PI_PID}-status-panel.XXXXXX") 
 chmod 700 "$PANEL_WORKDIR" 2>/dev/null || true
 TEMPLATE_FILE="${PANEL_WORKDIR}/template"
 TEMPLATE_BUILD_PID=""
-
-# Style this tmux pane directly so reopened panels get the same background even
-# before the Pi extension runtime has been reloaded.
-if [[ -n "$TMUX" && -n "$TMUX_PANE" ]]; then
-  tmux set-option -pt "$TMUX_PANE" window-style "bg=${PANEL_BG}" 2>/dev/null || true
-fi
 
 # Use an alternate screen and mouse reporting so the panel can maintain its own
 # stable viewport while still accepting wheel events.
@@ -151,7 +144,7 @@ build_panel_template() {
     printf '%s' "${out// /$char}"
   }
 
-  # Horizontal rule — match tmux pane border gray (#3b4252).
+  # Horizontal rule — match the border gray (#3b4252).
   hr() { local r; r=$(repeat_char "$content_cols" '─'); p "${BORDER_GRAY}${r}${RESET}"; }
 
   # ── Pi session info ─────────────────────────────────
