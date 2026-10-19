@@ -17,16 +17,7 @@
     "keepRecentTokens": 30000
   },
   "enabledModels": [
-    "github-copilot/gpt-6-astra",
-    "github-copilot/grok-4.5",
-    "github-copilot/grok-4.6",
-    "github-copilot/grok-4.7",
-    "github-copilot/claude-opus-5",
-    "xai/grok-4.3",
-    "xai/grok-4.5",
-    "xai/grok-4.6",
     "xai/grok-4.7",
-    "github-copilot/gpt-6.1-sol"
   ],
   "lastChangelogVersion": "99.99.99",
   "packages": [
