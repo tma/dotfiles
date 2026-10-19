@@ -20,6 +20,8 @@ Run `./install.sh`, then use `pi-work` from the project directory. The installer
 
 Use `/login` and `/model` inside `pi-work` to choose the project's provider and model. Its settings live in `~/.pi/work/settings.json`; custom providers and models belong in `~/.pi/work/models.json`. Continue with `pi-work -c`, and use `/session` to check the session path.
 
+Gondolin stays off in `pi-work`. The launcher sets `PI_DISABLE_GONDOLIN`, so that profile does not start a micro-VM even though it links the shared extensions. Restart `pi-work` after pulling this change; `/reload` in an already-open session does not see the new variable.
+
 Set `PI_WORK_DIR` to an absolute path for both installation and launch to use another profile. For example, run `PI_WORK_DIR="$HOME/.pi/another-project" ./install.sh`, then `PI_WORK_DIR="$HOME/.pi/another-project" pi-work`. Environment API keys, shared skill discovery, and project instructions still apply; this separates Pi's profile and session storage, not filesystem access.
 
 Shared skills belong in `~/.agents/skills`; the installer no longer deploys `~/.pi/agent/skills`. Existing manually installed skills there are left alone and aren't linked into the work profile.

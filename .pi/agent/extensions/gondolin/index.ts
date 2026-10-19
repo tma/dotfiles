@@ -663,7 +663,9 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 
 export default function (pi: ExtensionAPI) {
 	const inCodespace = process.env.CODESPACES === "true" || Boolean(process.env.CODESPACE_NAME);
-	if (inCodespace || !hasQemu()) {
+	// pi-work shares this extension directory but sets PI_DISABLE_GONDOLIN.
+	const disabled = process.env.PI_DISABLE_GONDOLIN === "1";
+	if (inCodespace || disabled || !hasQemu()) {
 		// Codespaces is already a container. Missing QEMU on a host is a setup gap;
 		// stay quiet either way so the footer/startup path stays stock.
 		return;

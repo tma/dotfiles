@@ -107,7 +107,8 @@ pi-work() {
     printf 'pi-work: pi is not installed\n' >&2
     return 127
   fi
-  PI_CODING_AGENT_DIR="$dir" \
+  # Gondolin is linked with the shared extensions. Keep it off for this profile.
+  PI_CODING_AGENT_DIR="$dir" PI_DISABLE_GONDOLIN=1 \
     command pi --session-dir "$dir/sessions" "$@"
 }
 
