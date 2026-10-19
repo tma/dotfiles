@@ -29,18 +29,23 @@ import {
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { startKeepAwake } from "./keep-awake.js";
+import { CLAUDE_REVIEW_EFFORTS, runClaudeReview, type ClaudeReviewEffort } from "./lib/claude-review.js";
 import { getGondolinToolProvider, type GondolinToolProvider } from "./lib/gondolin-provider.js";
 import permissionGate from "./permission-gate.js";
 import protectedPaths from "./protected-paths.js";
 import {
 	AUTO_POLICIES,
+	AutoModelUnavailableError,
 	CatalogRefreshCoordinator,
+	matchesFamily,
 	mergeModelPolicy,
 	modelCandidates,
 	resolveModelSelection,
 	THINKING_LEVELS,
 	waitWithDeadline,
+	type CatalogRefreshReport,
 	type ModelPolicy,
+	type SelectionResult,
 } from "./lib/model-selection.js";
 import { heuristicSessionName, sanitizeTitleText } from "./lib/session-title.js";
 import {
@@ -69,6 +74,8 @@ interface AgentConfig extends ModelPolicy {
 	tools?: string[];
 	maxOutputLines?: number;
 	maxTurns?: number;
+	/** `opus-review` runs a packet-only, no-tool Opus review, native Pi first and Claude Code CLI only if unavailable. */
+	runner?: string;
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -129,6 +136,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project", warnings: st
 			family: frontmatter.family,
 			maxOutputLines: frontmatter.maxOutputLines ? Number(frontmatter.maxOutputLines) : undefined,
 			maxTurns: positiveInteger(frontmatter.maxTurns),
+			runner: frontmatter.runner,
 			systemPrompt: body,
 			source,
 			filePath,
@@ -342,6 +350,8 @@ interface BackgroundJob {
 	results: SingleResult[];
 	controls: Map<number, AgentControl>;
 	pendingInputs: Array<{ message: string; delivery: "steer" | "followUp"; index: number }>;
+	/** Children of one-shot runner agents, which never accept steer or follow-up input. */
+	oneShotIndices: Set<number>;
 	/** Last parent-observed update per child; the inspection clock covers events that skip updates. */
 	lastUpdateAt: Map<number, number>;
 	/** Activity timestamp each child's stall notice was sent for, so one quiet spell wakes the parent once. */
@@ -655,11 +665,11 @@ function forkParentContext(ctx: ExtensionContext): Message[] {
 const MAX_CHILD_TRANSCRIPT_BYTES = 16 * 1024;
 const catalogRefreshers = new WeakMap<ExtensionContext["modelRegistry"], CatalogRefreshCoordinator>();
 
-async function refreshModelCatalog(ctx: ExtensionContext, policy: ModelPolicy, signal?: AbortSignal): Promise<{ notice?: string }> {
+async function refreshModelCatalog(ctx: ExtensionContext, policy: ModelPolicy, signal?: AbortSignal): Promise<CatalogRefreshReport> {
 	const candidates = policy.model === undefined ? [] : modelCandidates(policy.model);
 	if (!candidates.some((candidate) => AUTO_POLICIES.some((name) => candidate === `auto:${name}`))) {
 		const error = ctx.modelRegistry.getError();
-		return { notice: error ? `catalog may be stale (${error})` : undefined };
+		return { stale: Boolean(error), notice: error ? `catalog may be stale (${error})` : undefined };
 	}
 	let refresher = catalogRefreshers.get(ctx.modelRegistry);
 	if (!refresher) {
@@ -773,6 +783,28 @@ async function shutdownChildSession(session: AgentSession | undefined): Promise<
 	session.dispose();
 }
 
+// ─── Native-first Opus review runner ────────────────────────────────────────
+
+const OPUS_REVIEW_RUNNER = "opus-review";
+const CLAUDE_CODE_RUNNER = "claude-code";
+
+/** Validates the packet-only contract before selection; both routes accept the same thinking levels. */
+function opusReviewThinking(agent: AgentConfig, policy: ModelPolicy, launch: { fork: boolean; resume: boolean }): ClaudeReviewEffort {
+	if (agent.runner !== OPUS_REVIEW_RUNNER) throw new Error(`Agent "${agent.name}" has unknown runner "${agent.runner}"; the only supported runner is ${OPUS_REVIEW_RUNNER}`);
+	if (agent.tools) throw new Error(`Agent "${agent.name}" uses the ${OPUS_REVIEW_RUNNER} runner, which has no tools; remove its tools list`);
+	if (launch.resume) throw new Error(`${agent.name} runs one-shot Opus reviews, which can't be resumed; launch it again with the full review packet`);
+	if (launch.fork) throw new Error(`${agent.name} sees only its task packet; launch it with context "fresh" (the default) and put the material to review in the task`);
+	if (policy.model !== undefined || policy.provider !== undefined) throw new Error(`${agent.name} selects Claude Opus in Pi first, with CLI fallback only if unavailable; omit model and provider`);
+	if (policy.family !== undefined && !matchesFamily({ provider: CLAUDE_CODE_RUNNER, id: "claude-opus", reasoning: true }, policy.family)) {
+		throw new Error(`${agent.name} always runs Claude Opus, which doesn't match family "${policy.family}"; omit family or launch another agent`);
+	}
+	const thinking = policy.thinking ?? "high";
+	if (!CLAUDE_REVIEW_EFFORTS.includes(thinking as ClaudeReviewEffort)) {
+		throw new Error(`${agent.name} supports thinking ${CLAUDE_REVIEW_EFFORTS.join(", ")} on both review routes; no "${thinking}" level`);
+	}
+	return thinking as ClaudeReviewEffort;
+}
+
 async function runAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
@@ -848,7 +880,11 @@ async function runAgent(
 		const projectTrusted = isChildProjectTrusted(opts.parentCtx, provider, effectiveCwd);
 		const trustError = projectAgentTrustError(agent, projectTrusted, effectiveCwd);
 		if (trustError) throw new Error(trustError);
-		const requestedTools = agent.tools ?? ["read", "bash", "edit", "write"];
+		const policy = mergeModelPolicy(agent, opts.launchPolicy, opts.itemPolicy);
+		const reviewThinking = agent.runner !== undefined
+			? opusReviewThinking(agent, policy, { fork: Boolean(opts.forkedContext), resume: Boolean(opts.resume) })
+			: undefined;
+		const requestedTools = reviewThinking ? [] : agent.tools ?? ["read", "bash", "edit", "write"];
 		const customTools = provider?.tools.filter((tool) => requestedTools.includes(tool.name)) as ToolDefinition<any>[] | undefined;
 		if (provider) {
 			const missingTools = requestedTools.filter((name) => !customTools?.some((tool) => tool.name === name));
@@ -857,32 +893,103 @@ async function runAgent(
 
 		releaseSlot = await childLimiter.acquire(opts.signal);
 		if (opts.signal?.aborted) throw new Error("Subagent aborted before start");
-
-		const policy = mergeModelPolicy(agent, opts.launchPolicy, opts.itemPolicy);
-		const refresh = await refreshModelCatalog(opts.parentCtx, policy, opts.signal);
-		const selection = await resolveModelSelection({
-			policy,
-			availableModels: opts.parentCtx.modelRegistry.getAvailable(),
-			allModels: opts.parentCtx.modelRegistry.getAll(),
-			parentModel: opts.parentCtx.model,
-			parentThinkingLevel: opts.parentCtx.thinkingLevel,
-			authenticate: async (candidate) => {
-				const auth = await opts.parentCtx.modelRegistry.getApiKeyAndHeaders(candidate);
-				return auth.ok ? { ok: true as const } : { ok: false as const, error: auth.error };
-			},
-			getSupportedThinkingLevels,
-			clampThinkingLevel,
-			catalogNotice: refresh.notice,
-			signal: opts.signal,
-		});
+		const selectionPolicy: ModelPolicy = reviewThinking
+			? { model: "auto:strong", family: "claude-opus", thinking: reviewThinking }
+			: policy;
+		const refresh = await refreshModelCatalog(opts.parentCtx, selectionPolicy, opts.signal);
 		opts.signal?.throwIfAborted();
+		let selection: SelectionResult<NonNullable<ExtensionContext["model"]>> | undefined;
+		try {
+			selection = await resolveModelSelection({
+				policy: selectionPolicy,
+				availableModels: opts.parentCtx.modelRegistry.getAvailable(),
+				allModels: opts.parentCtx.modelRegistry.getAll(),
+				parentModel: opts.parentCtx.model,
+				parentThinkingLevel: opts.parentCtx.thinkingLevel,
+				authenticate: async (candidate) => {
+					const auth = await opts.parentCtx.modelRegistry.getApiKeyAndHeaders(candidate);
+					return auth.ok ? { ok: true as const } : { ok: false as const, error: auth.error };
+				},
+				getSupportedThinkingLevels,
+				clampThinkingLevel,
+				catalogNotice: refresh.notice,
+				signal: opts.signal,
+			});
+		} catch (error) {
+			// A failed refresh can't prove unavailability; cached native candidates may still work.
+			if (!reviewThinking || refresh.stale || !(error instanceof AutoModelUnavailableError)) throw error;
+			result.selectionReason = `Claude Code CLI fallback: Pi Opus unavailable (${error.message}); Claude Code login, --model opus`;
+		}
+		opts.signal?.throwIfAborted();
+		if (!selection) {
+			const effort = reviewThinking!;
+			result.model = "claude-code/opus";
+			result.thinkingLevel = effort;
+			try {
+				childSession = createChildSession(effectiveCwd, opts.parentCtx.sessionManager.getSessionId(), opts.parentCtx.sessionManager.getSessionFile());
+			} catch (error) {
+				result.persistenceError = `Cannot create native child session: ${error instanceof Error ? error.message : String(error)}`;
+				throw new Error(result.persistenceError);
+			}
+			const sessionFile = childSession.getSessionFile();
+			if (sessionFile) sessionLease = acquireChildSessionLease(sessionFile);
+			const prompt = `Task: ${task}`;
+			childSession.appendMessage({ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() });
+			result.sessionFile = sessionFile;
+			updateState("running");
+			emitUpdate();
+			const review = await runClaudeReview({
+				prompt,
+				systemPrompt: agent.systemPrompt,
+				effort,
+				workspace: effectiveCwd,
+				signal: opts.signal,
+				onProgress: (progress) => {
+					// Reuse the inspector's bounded live-text handling for the answer stream.
+					if (progress.type === "text") trackChildEvent(result.inspection!, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: progress.text } } as any);
+					else result.inspection!.lastActivityAt = Date.now();
+					if (Date.now() - lastEventUpdate >= 500) {
+						lastEventUpdate = Date.now();
+						emitUpdate();
+					}
+				},
+			});
+			const { usage } = review;
+			const message = {
+				role: "assistant",
+				content: [{ type: "text", text: review.text }],
+				api: "anthropic-messages",
+				provider: CLAUDE_CODE_RUNNER,
+				model: review.model,
+				usage: {
+					input: usage.input,
+					output: usage.output,
+					cacheRead: usage.cacheRead,
+					cacheWrite: usage.cacheWrite,
+					totalTokens: usage.totalTokens,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage.cost },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			} as AssistantMessage;
+			childSession.appendMessage(message);
+			appendBoundedMessage(result, message);
+			result.model = `${CLAUDE_CODE_RUNNER}/${review.model}`;
+			result.usage = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost, contextTokens: usage.totalTokens, turns: 1 };
+			for (const notice of review.notices) result.selectionReason += `; ${notice}`;
+			result.stopReason = "stop";
+			result.exitCode = 0;
+			finishState("completed");
+			// The finally block below still records the outcome and releases the slot and lease.
+			return result;
+		}
 		const model = selection.model;
 		result.model = `${model.provider}/${model.id}`;
 		result.thinkingLevel = selection.thinkingLevel;
 		const overrideSources = Object.entries(policy.sources)
 			.filter(([, source]) => source !== "agent")
 			.map(([field, source]) => `${field} from ${source}`);
-		result.selectionReason = `${selection.reason}${overrideSources.length > 0 ? `; ${overrideSources.join(", ")}` : ""}`;
+		result.selectionReason = `${reviewThinking ? "native Pi Opus route; " : ""}${selection.reason}${overrideSources.length > 0 ? `; ${overrideSources.join(", ")}` : ""}`;
 		if (!projectTrusted && isParentProjectTrusted(opts.parentCtx)) {
 			result.selectionReason += "; project resources not loaded: cwd is outside the trusted parent workspace";
 		}
@@ -996,7 +1103,7 @@ async function runAgent(
 					session?.abort().catch((error) => recordControlError("Turn limit abort", error));
 				}
 			}
-			if (event.type === "agent_start" && !controlRegistered) {
+			if (event.type === "agent_start" && !controlRegistered && !reviewThinking) {
 				controlRegistered = true;
 				opts.onControlReady?.(controlIndex, {
 					async send(message, delivery) {
@@ -2051,6 +2158,14 @@ export default function (pi: ExtensionAPI) {
 			if (params.index !== undefined && (!Number.isInteger(params.index) || params.index < 0 || params.index >= job.total)) {
 				return { content: [{ type: "text", text: `Child index ${params.index} is outside this ${job.total}-child job.` }], details: undefined, isError: true };
 			}
+			const oneShotTargets = [...job.oneShotIndices].filter((index) => !isTerminalResult(job.results[index]));
+			if (params.index === undefined && oneShotTargets.length > 0) {
+				return {
+					content: [{ type: "text", text: `Children ${oneShotTargets.join(", ")} are one-shot Opus reviews and can't accept input. Specify a different child's index, or stop the job and launch again with a revised packet. Message: “${messagePreview}”` }],
+					details: undefined,
+					isError: true,
+				};
+			}
 			const untargetedChainIndex = job.mode === "chain" && params.index === undefined
 				? [...job.controls.keys()][0] ?? job.results.findIndex((result) => result.state === "queued")
 				: undefined;
@@ -2062,13 +2177,20 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+			if (targetIndex !== undefined && job.oneShotIndices.has(targetIndex)) {
+				return {
+					content: [{ type: "text", text: `Child ${targetIndex} is a one-shot Opus review and can't accept input; stop the job and launch again with a revised packet. Message: “${messagePreview}”` }],
+					details: undefined,
+					isError: true,
+				};
+			}
 			const targets = targetIndex === undefined
 				? [...job.controls.entries()]
 				: job.controls.has(targetIndex) ? [[targetIndex, job.controls.get(targetIndex)!] as const] : [];
 			if (targets.length === 0) {
 				const queuedIndices = targetIndex !== undefined
 					? [targetIndex]
-					: job.results.map((result, index) => result.state === "queued" ? index : -1).filter((index) => index >= 0);
+					: job.results.map((result, index) => result.state === "queued" ? index : -1).filter((index) => index >= 0 && !job.oneShotIndices.has(index));
 				if (queuedIndices.length === 0) {
 					recordDeliveryFailure(job, `no child accepted ${params.delivery ?? "steer"} input`);
 					return { content: [{ type: "text", text: `No active or queued child in ${job.id} can accept the input. Message: “${messagePreview}”` }], details: undefined, isError: true };
@@ -2141,6 +2263,7 @@ export default function (pi: ExtensionAPI) {
 		const agents = discoverAgentsFor(ctx);
 		const agent = agents.find((candidate) => candidate.name === record.agent);
 		if (!agent) throw new Error(`Agent "${record.agent}" no longer exists, so child ${params.index} of ${jobId} cannot be resumed. Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
+		if (agent.runner !== undefined) throw new Error(`Child ${params.index} of ${jobId} ran ${agent.name}, a one-shot Opus review that can't be resumed; launch it again with the full review packet`);
 		const gondolinProvider = getGondolinToolProvider();
 		const cwd = resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, record.cwd);
 		const trustError = projectAgentTrustError(agent, isChildProjectTrusted(ctx, gondolinProvider, cwd), cwd);
@@ -2200,6 +2323,7 @@ export default function (pi: ExtensionAPI) {
 			results: shape.results,
 			controls: new Map(),
 			pendingInputs: [],
+			oneShotIndices: new Set(launches.flatMap((launch, index) => agents.find((agent) => agent.name === launch.agent)?.runner !== undefined ? [index] : [])),
 			lastUpdateAt: new Map(),
 			stallNoticeFor: new Map(),
 			deliveryFailures: [],
@@ -2412,6 +2536,13 @@ export default function (pi: ExtensionAPI) {
 				const cwd = resolveAuthoritativeCwd(gondolinProvider, ctx.cwd, launch.cwd);
 				const trustError = projectAgentTrustError(agent, isChildProjectTrusted(ctx, gondolinProvider, cwd), cwd);
 				if (trustError) return { content: [{ type: "text", text: trustError }], details: undefined, isError: true };
+				if (agent.runner !== undefined) {
+					try {
+						opusReviewThinking(agent, mergeModelPolicy(agent, launchPolicy, modelPolicyFrom(launch)), { fork: childContext(launch, params) === "fork", resume: false });
+					} catch (error) {
+						return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true };
+					}
+				}
 				childLaunches.push({ agent: launch.agent, task: launch.task, cwd, policy: overridePolicy(launchPolicy, modelPolicyFrom(launch)) });
 			}
 

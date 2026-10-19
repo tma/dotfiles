@@ -7,7 +7,7 @@ description: Get 1-3 independent read-only reviews of changes, PRs, commits, bra
 
 Get one, two, or three independent advisory reviews by delegating self-contained review packets to child/subagents. Default to one review; follow a calling workflow's required count or an explicit request for more, up to three.
 
-This skill is harness-agnostic: prepare a review packet, then delegate it through the host harness's native child-agent/subagent mechanism. Do **not** shell out to model CLIs such as Codex, Claude, Gemini, or similar.
+This skill is harness-agnostic: prepare a review packet, then delegate it through the host harness's native child-agent/subagent mechanism. Do **not** shell out to model CLIs such as Codex, Claude, Gemini, or similar. Pi's `opus-review` agent uses native Pi Opus first; its built-in runner uses Claude Code CLI only when no Pi Opus model is accessible. Launch it through the `subagent` tool like any other child. Never run `claude` or another model CLI yourself.
 
 This skill owns the child-reviewer contract, launch mechanics, default routing, and reviewer error handling. A calling workflow may impose its own route, count, focus, or synthesis requirements; follow them within the three-reviewer cap and the read-only contract.
 
@@ -39,15 +39,17 @@ Do not use this skill when the harness cannot launch child/subagent reviewers, w
 
 ## Pi adapter
 
-Use the `subagent` tool with the `second-opinion` reviewer agent, which selects a strong model with `high` thinking. Pass `thinking: "max"` when a calling workflow, such as deep code review, requires maximum thinking. Every launch sets `agent: "second-opinion"` and an explicit `family` per task:
+Use the `subagent` tool. Both reviewer agents default to `high` thinking; pass `thinking: "max"` when a calling workflow, such as deep code review, requires maximum thinking. Pick the agent by route:
 
-- `family: "claude-opus"` — Claude Opus route.
-- `family: "gpt"` — GPT route.
-- `family: "grok"` — Grok route.
+- Claude Opus route — `agent: "opus-review"`, with no `family`, `model`, or `provider`. It selects authenticated Opus from any Pi provider first, using the local Claude Code CLI login only if none is accessible. Both routes have no tools, so the task must carry the whole packet: diff, file context, instructions, and command output. Status identifies the chosen route and selection or unavailability reason.
+- GPT route — `agent: "second-opinion"`, `family: "gpt"`.
+- Grok route — `agent: "second-opinion"`, `family: "grok"`.
 
 Never launch `second-opinion` without `family`. The agent has no family of its own, so the selector could pick any family, including the root agent's own.
 
-For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its own `family`, and put its reviewer label, route, and focus in the task text.
+Launch every reviewer with fresh context (the default); `opus-review` rejects `context: "fork"`. If `opus-review` fails, report the Opus route as failed and offer a retry. Errors after native selection don't reroute to CLI; cancellation, deadlines, and authentication exceptions don't trigger fallback either. Don't replace it with `second-opinion` on `family: "claude-opus"` unless the user asks for that.
+
+For multiple opinions, use `subagent` parallel mode (`tasks`) when possible. Give each task the same core review packet plus its own `agent` and, for `second-opinion`, its own `family`. Put each reviewer's label, route, and focus in the task text.
 
 ## Review packet
 

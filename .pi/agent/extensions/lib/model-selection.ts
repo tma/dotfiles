@@ -36,6 +36,14 @@ export interface SelectionResult<TModel extends CatalogModel> {
 	reason: string;
 }
 
+/** Automatic selection exhausted its matching catalog or rejected every candidate's authentication. */
+export class AutoModelUnavailableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AutoModelUnavailableError";
+	}
+}
+
 export interface SelectionOptions<TModel extends CatalogModel> {
 	policy: ModelPolicy;
 	availableModels: readonly TModel[];
@@ -379,7 +387,7 @@ async function selectModel<TModel extends CatalogModel>(
 	);
 	if (constrained.length === 0) {
 		const constraints = [provider ? `provider=${provider}` : "", family ? `family=${family}` : ""].filter(Boolean).join(", ");
-		throw new Error(`No available models match auto:${parsed.policy}${constraints ? ` (${constraints})` : ""}${catalogSuffix(options.catalogNotice)}`);
+		throw new AutoModelUnavailableError(`No available models match auto:${parsed.policy}${constraints ? ` (${constraints})` : ""}${catalogSuffix(options.catalogNotice)}`);
 	}
 
 	const recencyRank = new Map<TModel, number>();
@@ -443,7 +451,7 @@ async function selectModel<TModel extends CatalogModel>(
 		};
 	}
 
-	throw new Error(`No authenticated models remain for auto:${parsed.policy}; ${rejected.join("; ")}${catalogSuffix(options.catalogNotice)}`);
+	throw new AutoModelUnavailableError(`No authenticated models remain for auto:${parsed.policy}; ${rejected.join("; ")}${catalogSuffix(options.catalogNotice)}`);
 }
 
 // Bounds the caller even when an SDK facade cannot pass cancellation through.

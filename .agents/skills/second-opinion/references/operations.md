@@ -41,7 +41,7 @@ If the user asks for more than three, explain the cap and proceed with three unl
 Reviewer selection:
 
 - `auto` — prefer model families different from the current/root agent
-- `opus` — dynamically selected strong Claude Opus-family child reviewer (Pi `family: "claude-opus"`)
+- `opus` — native-first Claude Opus child reviewer; local Claude Code CLI login only if no Pi Opus is accessible (Pi `agent: "opus-review"`)
 - `gpt` — dynamically selected strong GPT-family child reviewer (Pi `family: "gpt"`)
 - `grok` — dynamically selected strong Grok-family child reviewer (Pi `family: "grok"`)
 - `mixed` — use multiple routed reviewers when available
@@ -59,13 +59,13 @@ Focus:
 
 For a single review, use the opposite family when the current/root family is known:
 
-| Current/root model family | Reviewer route | Pi `family` |
-|---------------------------|----------------|-------------|
-| GPT/OpenAI | Strong Claude Opus-family route | `claude-opus` |
-| Opus/Anthropic | Strong GPT-family route | `gpt` |
-| Grok/xAI | Strong Claude Opus-family route | `claude-opus` |
+| Current/root model family | Reviewer route | Pi launch |
+|---------------------------|----------------|-----------|
+| GPT/OpenAI | Claude Opus route | `agent: "opus-review"` |
+| Opus/Anthropic | Strong GPT-family route | `agent: "second-opinion"`, `family: "gpt"` |
+| Grok/xAI | Claude Opus route | `agent: "opus-review"` |
 
-In Pi, every route launches `agent: "second-opinion"` with the `family` above.
+The Grok route is `agent: "second-opinion"`, `family: "grok"`.
 
 For multiple reviews:
 
@@ -89,7 +89,9 @@ If the current/root model is unknown and reviewer choice matters, ask:
 
 ## Review material
 
-Build a review packet in the root agent before delegating. Use the host harness's normal context-gathering tools; never use external model CLIs.
+Build a review packet in the root agent before delegating. Use the host harness's normal context-gathering tools; never run external model CLIs yourself. Pi's `opus-review` runner is launched through `subagent`, not a shell.
+
+`opus-review` has no tools and can't read the repository, so its packet must carry everything: the diff, the surrounding file content it needs, instructions, and any command output. `second-opinion` can read local files but has no shell.
 
 For code reviews, include the most useful diff/context available:
 
@@ -163,19 +165,23 @@ For multiple reviewers, keep the shared packet identical and vary only reviewer 
 
 Use the Pi `subagent` tool.
 
-Every launch uses `agent: "second-opinion"` with an explicit `family` on each task, and the task text names the reviewer label and route. Never launch without `family`: the agent has no family of its own, so the selector could pick any family, including the root agent's own.
+The task text names the reviewer label and route on every launch.
+
+- Opus route: `agent: "opus-review"` with no `family`, `model`, or `provider`. The runner selects `auto:strong` with `family: claude-opus` from any available Pi provider, independently of `enabledModels`, and tries matching candidates' authentication. It uses the local Claude Code CLI login only if no matching Pi model is available or all matching candidates return unavailable authentication. `model` and `provider` are rejected, and so is a `family` that Opus doesn't match. It takes `thinking` from `low` to `max`, not `off` or `minimal`; Pi clamps it to the native model's supported levels. Both routes are packet-only with no tools and can't be forked, steered, sent follow-ups, or resumed. Status identifies the chosen route and selection or unavailability reason.
+- GPT and Grok routes: `agent: "second-opinion"` with an explicit `family`. Never launch it without `family`: the agent has no family of its own, so the selector could pick any family, including the root agent's own.
 
 Single review:
 
-- Current/root GPT/OpenAI → `agent: "second-opinion"`, `family: "claude-opus"`.
+- Current/root GPT/OpenAI → `agent: "opus-review"`.
 - Current/root Opus/Anthropic → `agent: "second-opinion"`, `family: "gpt"`.
-- Current/root Grok/xAI → `agent: "second-opinion"`, `family: "claude-opus"`.
-- Calling workflow with required routes → one task per required route, each with its own `family`.
+- Current/root Grok/xAI → `agent: "opus-review"`.
+- Calling workflow with required routes → one task per required route, each with its own route fields.
 
 Multiple reviews:
 
 - Prefer one `subagent` call with `tasks: [...]` for parallel delegation.
-- Set each task's `agent`, `family`, `task`, and `cwd` when reviewing a local repository.
+- Set each task's `agent` and `task`. Add `family` and, when reviewing a local repository, `cwd` for `second-opinion` tasks.
+- Set route fields on each task, not as shared launch defaults: a shared `family` would also reach `opus-review` and fail it.
 - If parallel delegation is unavailable, run reviewers sequentially.
 
 Example parallel launch:
@@ -184,7 +190,7 @@ Example parallel launch:
 {
   "tasks": [
     { "agent": "second-opinion", "family": "gpt", "cwd": "<repo>", "task": "You are Reviewer 1, on the GPT route. ..." },
-    { "agent": "second-opinion", "family": "claude-opus", "cwd": "<repo>", "task": "You are Reviewer 2, on the Opus route. ..." }
+    { "agent": "opus-review", "task": "You are Reviewer 2, on the Opus route. <full review packet>" }
   ]
 }
 ```
@@ -221,7 +227,8 @@ If multiple tasks reused the same route, mention that plainly.
 | Error | Action |
 |-------|--------|
 | Current/root model unknown | Ask which route(s) to use if needed |
-| Requested reviewer unavailable | Tell the user what routed child agent is missing; do not use model CLIs |
+| Requested reviewer unavailable | Tell the user what routed child agent is missing; do not run model CLIs yourself |
+| `opus-review` fails (native setup/prompt error, fallback CLI missing, not logged in, non-Opus CLI answer, timeout) | Report the Opus route as failed with its error and offer a retry; do not switch to another Opus route unless the user asks. Native runtime or prompt failures after selection never reroute to CLI. Cancellation, selection deadlines, authentication exceptions, and failed catalog refreshes don't trigger CLI fallback either |
 | Same-family reviewer requested | Ask for confirmation unless explicitly requested or required by the calling workflow |
 | Count > 3 | Explain the cap and use three unless narrowed |
 | Empty diff/input | Tell user there is nothing to review |

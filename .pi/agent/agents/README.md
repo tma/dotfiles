@@ -80,9 +80,10 @@ value outside its range, a non-integer, or an unknown key keeps that key's
 default and shows a warning. Without a UI, the warning is added to the next
 launch result.
 
-Nesting depth is fixed at 1. Children load with `noExtensions` plus only the
+Nesting depth is fixed at 1. Pi children load with `noExtensions` plus only the
 guard extensions (and a prompt helper under Gondolin), so they never get the
-`subagent` tool and can't launch children of their own.
+`subagent` tool and can't launch children of their own. The Opus review runner
+has no tools on either route.
 
 ## Completion delivery
 
@@ -145,7 +146,7 @@ that fail to save show a warning, and `subagent` status lists them.
 
 ## Parent-to-child context contract
 
-Child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and
+Pi child sessions load with `noExtensions`, `noSkills`, `noPromptTemplates`, and
 `noContextFiles` set, so a child never automatically receives project or global
 instruction files (`AGENTS.md`, `.agents/AGENTS.md`,
 `.github/copilot-instructions.md`, etc.), loaded skills, or extension tools,
@@ -202,7 +203,7 @@ trust, they aren't listed and can't override user agents. A trusted parent can
 run them only in its own workspace; a launch that gives a project agent another
 cwd is rejected.
 
-Every child loads the `permission-gate` and `protected-paths` extensions, in
+Every Pi child loads the `permission-gate` and `protected-paths` extensions, in
 native and Gondolin sessions. Children run without a UI, so a dangerous command
 is blocked instead of prompting. The guards are best-effort speed bumps, not a
 sandbox: they catch common commands and paths, not every way to write a file.
@@ -211,3 +212,88 @@ An agent's `tools` list is its real capability boundary. The `second-opinion`
 reviewer has no `bash`, so the caller supplies command output. `scout`,
 `planner`, and `researcher` keep `bash` for investigation; they're read-only
 by instruction only, so delegate to them only what the parent may authorize.
+
+## Native-first Opus review runner
+
+`runner: opus-review` in agent frontmatter runs a one-shot, packet-only Claude
+Opus review. The `opus-review` agent is the only one that uses it. It first
+selects `auto:strong` with `family: claude-opus` and the requested thinking
+level from all available Pi providers, independently of `enabledModels`.
+Authentication preflight tries matching candidates until one succeeds. The
+selected model runs in the normal in-process Pi child with no tools.
+
+Only when no matching Pi model is available, or every matching candidate
+returns unavailable authentication, does the runner use the existing local
+`claude` CLI login. Cancellation, selection deadlines, authentication
+exceptions, and other errors don't trigger fallback. A failed catalog refresh
+can't prove unavailability: cached native candidates can still run, but an
+unavailable selection fails instead of starting the CLI. Once native selection
+succeeds, runtime setup or prompt failures fail the child without a second
+review on another backend.
+
+The runner is built in; it isn't a way to shell out to arbitrary model CLIs.
+The parent launches it only through `subagent`, never by invoking `claude` in a
+shell. After `/reload`, launch it through the `subagent` tool:
+
+```json
+{
+  "agent": "opus-review",
+  "thinking": "max",
+  "task": "<complete review packet>"
+}
+```
+
+The CLI fallback needs `claude` on the host `PATH`, already logged in with a Claude
+subscription (`claude` and then `/login`). The runner never reads, copies, or
+logs credentials. It passes the CLI a short allowlist of environment
+variables: platform basics, proxy and certificate variables,
+`CLAUDE_CONFIG_DIR`, and `CLAUDE_CODE_OAUTH_TOKEN`. `ANTHROPIC_API_KEY`,
+`ANTHROPIC_BASE_URL`, Bedrock and Vertex routing, `NODE_OPTIONS`, and
+other variables aren't forwarded. The runner relies on Claude Code's stored
+authentication; it doesn't verify the account type or billing. Check
+`claude auth status` on the host and sign in with your subscription account
+before using the fallback. A failed CLI call doesn't retry in Pi or another backend.
+
+What the CLI gets: the agent prompt as its system prompt and `Task: <task>` on
+stdin, nothing else. Each run is `claude -p` with `--model opus`,
+`--max-turns 1`, `--tools ""`, `--strict-mcp-config`,
+`--permission-mode dontAsk`, `--safe-mode`, `--setting-sources ""`, settings
+that turn off hooks, auto memory, and claude.ai connectors,
+`--disable-slash-commands`, `--no-chrome`, and `--no-session-persistence`. It
+runs in a new empty temporary directory outside the workspace, which is removed
+only if it's still empty. The run fails if the CLI reports any tools or MCP
+servers at startup, or tries to use a tool.
+
+These are Claude Code settings, not an operating system sandbox. Managed
+policy settings still apply, including managed hooks. Under Gondolin the CLI
+runs on the host, never in the checkout, and the task packet is the only thing
+that crosses from the VM.
+
+Both routes use the same launch contract:
+
+- `thinking` accepts `low`, `medium`, `high` (default), `xhigh`, or `max`.
+  Pi clamps it to the native model's supported levels; the CLI maps it to
+  `--effort`. `off` and `minimal` are rejected.
+- `model` and `provider` are rejected. `family` is accepted only when Claude
+  Opus satisfies it, such as `claude-opus`.
+- For the CLI fallback, the model that wrote the answer must be Opus and must
+  appear in the result's `modelUsage`. A Sonnet or other non-Opus answer fails
+  the child. Other models the CLI used for side requests are listed in the
+  `selection:` line.
+
+Results arrive like any other child: the same limiter, background jobs, status,
+inspector, and completions. The `selection:` line identifies native Pi or CLI
+fallback and includes the catalog selection or unavailability reason. The
+inspector streams answer text, never thinking.
+For the fallback, only the CLI's final `result` counts. An error result, a non-zero exit,
+malformed or oversized output, a missing or duplicate result, an empty answer,
+an incomplete stop reason such as `max_tokens`, or the ten-minute deadline
+fails the child, and partial text is never reported
+as a review. Stopping the job terminates the CLI's process group. The task
+packet is capped at 1 MiB.
+
+Both routes have no tools or file access and review only the supplied task
+packet. The native child session stores the task and answer with usage on
+either route. These children can't be forked (`context: "fork"`), steered, sent
+follow-ups, or resumed, even when they use Pi. Launch again with a revised
+packet instead.
