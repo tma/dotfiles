@@ -50,6 +50,10 @@ function isRex(): boolean {
 	return !!process.env.REX_SESSION && !!process.env.REX_BLOCK;
 }
 
+function isStaleExtensionContext(error: unknown): boolean {
+	return error instanceof Error && error.message.includes("extension ctx is stale");
+}
+
 function isSplitStatusPanelOpen(): boolean {
 	if (!isRex()) return false;
 	try {
@@ -133,13 +137,27 @@ export default function (pi: ExtensionAPI) {
 
 	const shouldSuppressWidget = (): boolean => isSplitStatusPanelOpen();
 
+	const stopPanelPolling = () => {
+		if (!panelPoll) return;
+		clearInterval(panelPoll);
+		panelPoll = null;
+	};
+
+	// Reload replaces the extension runtime and makes this ctx stale. A tick
+	// already queued can still run; using ctx.ui then is an uncaught exception.
 	const ensurePanelPolling = () => {
 		if (panelPoll) return;
 		panelPoll = setInterval(() => {
-			if (!currentCtx) return;
+			const ctx = currentCtx;
+			if (!ctx) return;
 			const suppressed = shouldSuppressWidget();
-			if (suppressed !== lastWidgetSuppressed) {
-				updateWidget(currentCtx);
+			if (suppressed === lastWidgetSuppressed) return;
+			try {
+				updateWidget(ctx);
+			} catch (error) {
+				currentCtx = null;
+				stopPanelPolling();
+				if (!isStaleExtensionContext(error)) throw error;
 			}
 		}, 500);
 		panelPoll.unref?.();
@@ -191,6 +209,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_tree", async (_e, ctx) => {
 		currentCtx = ctx;
 		reconstructState(ctx);
+	});
+	pi.on("session_shutdown", async () => {
+		currentCtx = null;
+		stopPanelPolling();
 	});
 
 	// Clear widget once the agent finishes and all tasks are done
