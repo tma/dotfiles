@@ -4,8 +4,10 @@
  * Registers `web_search` and `web_read` tools.
  * - web_search: SearXNG when SEARXNG_URL is set, then DuckDuckGo lite, with
  *   Marginalia, Wikipedia, Hacker News, and Google News as fallbacks
- * - web_read: Fetch URLs with smart extraction, Wayback Machine fallback,
- *   GitHub raw file detection, and multi-URL support.
+ * - web_read: Fetch URLs as markdown or plain text. Never returns an HTML
+ *   document. Prefers text/markdown, then a same-host markdown alternate,
+ *   then extracted text. Wayback Machine fallback and GitHub raw file
+ *   detection still apply.
  *
  * Put SEARXNG_URL in ~/.pi/.env, in this repo's gitignored .pi/.env, export it,
  * or point PI_SEARXNG_ENV at another env file. Public engines run only when
@@ -45,6 +47,9 @@ const DDG_AGENTS = [UA_BOT, "Mozilla/5.0", UA];
 const SEARCH_TIMEOUT_MS = 8_000;
 const SEARCH_RESULT_LIMIT = 10;
 const MIN_CONTENT_LENGTH = 200; // below this, content is probably garbage
+// Prefer markdown. HTML stays acceptable so servers that only have HTML do not 406.
+const READ_ACCEPT =
+	"text/markdown, text/plain;q=0.9, text/html;q=0.5, application/xhtml+xml;q=0.5, */*;q=0.1";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -55,7 +60,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Search the web for current information",
 		promptGuidelines: [
 			"Use web_search when the user asks about current events, recent releases, or anything not in your training data.",
-			"Follow up with web_read to get full page content when a search result looks relevant.",
+			"Follow up with web_read to get full page content when a search result looks relevant. web_read returns markdown or plain text, not an HTML document.",
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
@@ -118,16 +123,24 @@ export default function (pi: ExtensionAPI) {
 		name: "web_read",
 		label: "Web Read",
 		description:
-			"Fetch a URL and extract its text content, stripping HTML tags. Supports multiple URLs. " +
+			"Fetch a URL and return markdown or plain text. Never returns an HTML document. " +
+			"Asks for text/markdown first, and follows a same-host markdown alternate when a site offers one. " +
 			"Only http(s) public web URLs are allowed; localhost, private IPs, and unsafe redirects are blocked. " +
-			"Automatically detects GitHub file URLs (serves raw content) and falls back to the Wayback Machine for blocked pages.",
-		promptSnippet: "Fetch and read a web page as plain text",
+			"GitHub file URLs are fetched as raw content. Falls back to the Wayback Machine for blocked pages.",
+		promptSnippet: "Fetch and read a web page as markdown or plain text",
+		promptGuidelines: [
+			"Use web_read for web pages. It will not put an HTML document in the session.",
+			"Do not curl, save, or otherwise dump HTML documents into the session as a workaround.",
+		],
 		parameters: Type.Object({
 			url: Type.String({ description: "URL to fetch" }),
 		}),
 
 		async execute(_toolCallId, params, signal) {
 			const result = await readUrl(params.url, signal);
+			if (looksLikeHtmlDocument(result.text)) {
+				throw new Error(`Refusing to return HTML from ${params.url}`);
+			}
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: { url: params.url, length: result.text.length, source: result.source },
@@ -181,100 +194,196 @@ function describeError(error: unknown): string {
 async function readUrl(url: string, signal?: AbortSignal | null): Promise<ReadResult> {
 	const inputUrl = assertSafeWebUrl(url).toString();
 	const attempts: ReadAttempt[] = [];
+	let thinContent: { text: string; source: ReadResult["source"] } | null = null;
 
-	// GitHub file URLs → raw content
+	const consider = (stage: string, source: ReadResult["source"], got: Fetched): ReadResult | null => {
+		if (got.status === "text") {
+			if (looksLikeHtmlDocument(got.text)) {
+				attempts.push({ stage, outcome: "refused HTML document" });
+				return null;
+			}
+			if (got.text.length >= MIN_CONTENT_LENGTH) return { text: got.text, source };
+			if (got.text.length > 0) thinContent = { text: got.text, source };
+			attempts.push({ stage, outcome: `only ${got.text.length} chars of text` });
+			return null;
+		}
+		attempts.push({ stage, outcome: got.outcome });
+		return null;
+	};
+
+	// GitHub file URLs → raw content. Still refuse an HTML document.
 	const rawUrl = githubToRaw(inputUrl);
 	if (rawUrl) {
-		try {
-			const res = await fetchPublic(rawUrl, {
-				headers: { "User-Agent": UA },
-				signal,
-				timeoutMs: FETCH_TIMEOUT_MS,
-				maxBytes: READ_MAX_BYTES,
-				context: "GitHub raw URL",
-			});
-			if (res.ok) {
-				return { text: truncate(res.text()), source: "github-raw" };
-			}
-			attempts.push({ stage: "github-raw", outcome: `HTTP ${res.status}` });
-		} catch (error) {
-			if (isFinalReadError(error, signal)) throw error;
-			attempts.push({ stage: "github-raw", outcome: describeError(error) });
-		}
+		const got = await fetchForRead(rawUrl, signal, { context: "GitHub raw URL", followMarkdown: false });
+		const hit = consider("github-raw", "github-raw", got);
+		if (hit) return hit;
 	}
 
-	// Direct fetch
-	let thinContent: string | null = null;
-	try {
-		const res = await fetchPublic(inputUrl, {
-			headers: {
-				"User-Agent": UA,
-				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
-				"Accept-Language": "en-US,en;q=0.9",
-			},
-			signal,
-			timeoutMs: FETCH_TIMEOUT_MS,
-			maxBytes: READ_MAX_BYTES,
-		});
-		if (res.ok) {
-			const contentType = res.headers.get("content-type") ?? "";
-			const body = res.text();
-
-			let text: string;
-			if (contentType.includes("html")) {
-				text = extractContent(body);
-			} else if (contentType.includes("json")) {
-				text = formatJson(body);
-			} else {
-				text = body;
-			}
-
-			text = truncate(text);
-
-			// If we got reasonable content, return it
-			if (text.length >= MIN_CONTENT_LENGTH) {
-				return { text, source: "direct" };
-			}
-			// Hold on to it: thin content still beats failing outright.
-			thinContent = text;
-			attempts.push({ stage: "direct", outcome: `only ${text.length} chars of text` });
-		} else {
-			attempts.push({ stage: "direct", outcome: `HTTP ${res.status}` });
-		}
-	} catch (error) {
-		if (isFinalReadError(error, signal)) throw error;
-		attempts.push({ stage: "direct", outcome: describeError(error) });
-	}
+	const direct = await fetchForRead(inputUrl, signal, { followMarkdown: true });
+	const hit = consider("direct", "direct", direct);
+	if (hit) return hit;
 
 	// Wayback fallback for pages that block direct fetches. Key-less, but the
 	// Internet Archive rate limits hard, so treat it as best effort.
-	try {
-		const res = await fetchPublic(WAYBACK_PREFIX + inputUrl, {
-			headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
-			signal,
-			timeoutMs: FETCH_TIMEOUT_MS,
-			maxBytes: READ_MAX_BYTES,
-			context: "Wayback URL",
-		});
-		if (res.ok) {
-			const text = truncate(extractContent(res.text()));
-			if (text.length >= MIN_CONTENT_LENGTH) {
-				return { text, source: "wayback" };
-			}
-			attempts.push({ stage: "wayback", outcome: `only ${text.length} chars of text` });
-		} else {
-			attempts.push({ stage: "wayback", outcome: `HTTP ${res.status}` });
+	const archived = await fetchForRead(WAYBACK_PREFIX + inputUrl, signal, {
+		context: "Wayback URL",
+		followMarkdown: true,
+	});
+	const fromArchive = consider("wayback", "wayback", archived);
+	if (fromArchive) return fromArchive;
+
+	if (thinContent && !looksLikeHtmlDocument(thinContent.text)) return thinContent;
+
+	const error = new ReadFailedError(inputUrl, attempts);
+	if (attempts.some((attempt) => attempt.outcome === "refused HTML document")) {
+		error.message += ". Refusing to return an HTML document; do not fetch the HTML with another tool";
+	}
+	throw error;
+}
+
+type Fetched = { status: "text"; text: string } | { status: "fail"; outcome: string };
+
+async function fetchForRead(
+	url: string,
+	signal?: AbortSignal | null,
+	options: { context?: string; followMarkdown?: boolean } = {},
+): Promise<Fetched> {
+	const seen = new Set<string>();
+	const queue = [url];
+	let extracted: string | null = null;
+	let lastFail: Fetched = { status: "fail", outcome: "no response" };
+
+	while (queue.length > 0) {
+		const next = queue.shift();
+		if (!next || seen.has(next)) continue;
+		seen.add(next);
+
+		let res: Awaited<ReturnType<typeof fetchPublic>>;
+		try {
+			res = await fetchPublic(next, {
+				headers: {
+					"User-Agent": UA,
+					Accept: READ_ACCEPT,
+					"Accept-Language": "en-US,en;q=0.9",
+				},
+				signal,
+				timeoutMs: FETCH_TIMEOUT_MS,
+				maxBytes: READ_MAX_BYTES,
+				context: options.context,
+			});
+		} catch (error) {
+			if (isFinalReadError(error, signal)) throw error;
+			lastFail = { status: "fail", outcome: describeError(error) };
+			continue;
 		}
-	} catch (error) {
-		if (isFinalReadError(error, signal)) throw error;
-		attempts.push({ stage: "wayback", outcome: describeError(error) });
+		if (!res.ok) {
+			lastFail = { status: "fail", outcome: `HTTP ${res.status}` };
+			continue;
+		}
+
+		const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+		const body = res.text();
+		if (isHtmlBody(contentType, body)) {
+			if (options.followMarkdown && seen.size < 3) {
+				const alternate = markdownAlternate(next, body);
+				if (alternate && !seen.has(alternate)) queue.push(alternate);
+			}
+			const plain = extractContent(body).trim();
+			if (plain && !looksLikeHtmlDocument(plain)) extracted = truncate(plain);
+			else lastFail = { status: "fail", outcome: "refused HTML document" };
+			continue;
+		}
+
+		const text = (contentType.includes("json") ? formatJson(body) : body).trim();
+		if (!text) {
+			lastFail = { status: "fail", outcome: "empty body" };
+			continue;
+		}
+		if (looksLikeHtmlDocument(text)) {
+			lastFail = { status: "fail", outcome: "refused HTML document" };
+			continue;
+		}
+		// Markdown or plain text wins over extracted HTML from an earlier hop.
+		return { status: "text", text: truncate(text) };
 	}
 
-	if (thinContent !== null && thinContent.length > 0) {
-		return { text: thinContent, source: "direct" };
+	if (extracted) return { status: "text", text: extracted };
+	return lastFail;
+}
+
+function isHtmlBody(contentType: string, body: string): boolean {
+	return contentType.includes("html") || looksLikeHtmlDocument(body);
+}
+
+function looksLikeHtmlDocument(text: string): boolean {
+	const head = text.slice(0, 1500).trimStart().toLowerCase();
+	if (
+		head.startsWith("<!doctype") ||
+		head.startsWith("<html") ||
+		head.startsWith("<head") ||
+		head.startsWith("<body")
+	) {
+		return true;
+	}
+	const sample = text.slice(0, 8000);
+	const tags = sample.match(/<\/?[a-z][^>\n]{0,200}>/gi);
+	if (!tags || tags.length < 20) return false;
+	const tagChars = tags.reduce((sum, tag) => sum + tag.length, 0);
+	return tagChars / sample.length > 0.2;
+}
+
+// Same-host markdown version advertised by the HTML page. Do not guess a
+// sibling URL; a 404 on every .html page is worse than extracting text.
+function markdownAlternate(pageUrl: string, html: string): string | null {
+	let page: URL;
+	try {
+		page = new URL(pageUrl);
+	} catch {
+		return null;
+	}
+	if (page.hostname === "web.archive.org") return null;
+
+	const linkTags = html.match(/<link\b[^>]*>/gi) ?? [];
+	for (const tag of linkTags) {
+		if (!/text\/markdown/i.test(tag)) continue;
+		const resolved = sameHostHttpUrl(readAttr(tag, "href"), page);
+		if (resolved) return resolved;
 	}
 
-	throw new ReadFailedError(inputUrl, attempts);
+	const anchors = html.match(/<a\b[^>]*>[^<]{0,80}<\/a>/gi) ?? [];
+	for (const tag of anchors) {
+		if (!/markdown/i.test(tag)) continue;
+		const resolved = sameHostHttpUrl(readAttr(tag, "href"), page);
+		if (resolved) return resolved;
+	}
+
+	if (/\.html?$/i.test(page.pathname)) {
+		const mdName = page.pathname.split("/").pop()?.replace(/\.html?$/i, ".md");
+		if (mdName && html.includes(mdName)) {
+			const sibling = new URL(page.href);
+			sibling.pathname = page.pathname.replace(/\.html?$/i, ".md");
+			return sibling.toString();
+		}
+	}
+	return null;
+}
+
+function readAttr(tag: string, name: string): string | null {
+	const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i"));
+	return match?.[1] ?? null;
+}
+
+function sameHostHttpUrl(href: string | null, page: URL): string | null {
+	if (!href) return null;
+	try {
+		const resolved = new URL(href, page);
+		if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+		if (resolved.hostname !== page.hostname) return null;
+		if (resolved.username || resolved.password) return null;
+		return resolved.toString();
+	} catch {
+		return null;
+	}
 }
 
 // Unsafe URLs and caller aborts end the read; other failures try the next source.
