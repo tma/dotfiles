@@ -12,12 +12,13 @@
   "followUpMode": "one-at-a-time",
   "treeFilterMode": "default",
   "enableSkillCommands": true,
+  "defaultTools": ["+codemode"],
   "compaction": {
     "enabled": true,
     "keepRecentTokens": 30000
   },
   "enabledModels": [
-    "xai/grok-4.7",
+    "xai/grok-4.7"
   ],
   "lastChangelogVersion": "99.99.99",
   "packages": [

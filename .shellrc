@@ -108,8 +108,23 @@ pi-work() {
     return 127
   fi
   # Gondolin is linked with the shared extensions. Keep it off for this profile.
-  PI_CODING_AGENT_DIR="$dir" PI_DISABLE_GONDOLIN=1 \
-    command pi --session-dir "$dir/sessions" "$@"
+  # Work settings are not shared with the regular profile, so enable codemode
+  # here. Skip that when this invocation already chooses tools or disables
+  # extensions; plain --tools lists cannot be mixed with +name.
+  local arg tools_flag=0
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --tools|-t|--no-tools|-nt|--no-extensions|-ne|--tools=*) tools_flag=1 ;;
+    esac
+  done
+  if [ "$tools_flag" -eq 0 ]; then
+    PI_CODING_AGENT_DIR="$dir" PI_DISABLE_GONDOLIN=1 \
+      command pi --session-dir "$dir/sessions" --tools +codemode "$@"
+  else
+    PI_CODING_AGENT_DIR="$dir" PI_DISABLE_GONDOLIN=1 \
+      command pi --session-dir "$dir/sessions" "$@"
+  fi
 }
 
 # Local-only Pi: LM Studio + LAN tools. Separate configuration so the coding
